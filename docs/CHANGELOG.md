@@ -1191,5 +1191,5 @@ tensorboard --logdir results/logs
 - Visible AMR levels updated on configurable schedule
 - Detailed reward component breakdown in step info
 
-[Unreleased]: https://github.com/jl56923/abx_amr_capacitor_rl/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/jl56923/abx_amr_capacitor_rl/releases/tag/v0.1.0
+[Unreleased]: https://github.com/jl56923/abx_amr_simulator/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/jl56923/abx_amr_simulator/releases/tag/v0.1.0

@@ -17,7 +17,7 @@ The core insight: prescribing antibiotics drives up AMR levels like "capacitors 
 
 ```bash
 git clone <repo-url>
-cd abx_amr_capacitor_rl
+cd abx_amr_simulator
 pip install -e .
 ```
 
@@ -40,7 +40,7 @@ Both apps are now accessible from any directory. For more options and troublesho
 ## Project Structure
 
 ```
-abx_amr_capacitor_rl/
+abx_amr_simulator/
 ├── src/abx_amr_simulator/          # ← Main package (pip install -e .)
 │   ├── core/                       # Domain classes (env, rewards, patients)
 │   ├── training/                   # Training loop
@@ -200,7 +200,7 @@ Expected: **226 tests pass** (see [tests/README.md](tests/README.md) for suite d
   title = {ABX AMR Simulator: Reinforcement Learning for Antibiotic Stewardship},
   author = {Joyce Lee},
   year = {2026},
-  url = {https://github.com/<owner>/abx_amr_capacitor_rl}
+  url = {https://github.com/<owner>/abx_amr_simulator}
 }
 ```
 

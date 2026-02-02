@@ -24,8 +24,8 @@ Install the `abx_amr_simulator` package in editable mode (for development) or st
 ### Development Installation (if modifying code)
 
 ```bash
-git clone https://github.com/your-repo/abx_amr_capacitor_rl.git
-cd abx_amr_capacitor_rl
+git clone https://github.com/your-repo/abx_amr_simulator.git
+cd abx_amr_simulator
 pip install -e .
 ```
 

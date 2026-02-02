@@ -8,9 +8,30 @@ version = "0.1.0"
 description = "Reinforcement learning simulator for optimizing antibiotic prescribing under antimicrobial resistance"
 readme = "README.md"
 requires-python = ">=3.8"
+license = {text = "MIT"}
 authors = [
     {name = "ABX AMR Team"},
 ]
+keywords = ["reinforcement-learning", "antibiotic", "antimicrobial-resistance", "amr", "healthcare", "rl", "gymnasium"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Healthcare Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+
+[project.urls]
+Homepage = "https://github.com/jl56923/abx_amr_simulator"
+Repository = "https://github.com/jl56923/abx_amr_simulator"
+Documentation = "https://github.com/jl56923/abx_amr_simulator#readme"
+Changelog = "https://github.com/jl56923/abx_amr_simulator/blob/main/CHANGELOG.md"
 
 dependencies = [
     "numpy>=1.25,<2.0",
@@ -46,11 +67,7 @@ abx-amr-simulator-experiment-runner = "abx_amr_simulator.gui.runner_entry:main"
 abx-amr-simulator-experiment-viewer = "abx_amr_simulator.gui.viewer_entry:main"
 abx-amr-simulator-launch-gui = "abx_amr_simulator.gui.launch_apps:main"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-
 [tool.setuptools.packages.find]
-where = ["src"]
 include = ["abx_amr_simulator", "abx_amr_simulator.*"]
 
 [tool.setuptools.package-data]

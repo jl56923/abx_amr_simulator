@@ -8,7 +8,7 @@ A reinforcement learning simulator for optimizing antibiotic prescribing under a
 
 ```bash
 git clone <repo-url>
-cd abx_amr_capacitor_rl
+cd abx_amr_simulator
 pip install -e .
 ```
 
@@ -160,7 +160,7 @@ python -m abx_amr_simulator.analysis.evaluative_plots \
 
 # Or use absolute path
 python -m abx_amr_simulator.analysis.evaluative_plots \
-  --results-dir /Users/joycelee/Work/Code/abx_amr_capacitor_rl/workspace/results
+  --results-dir /Users/joycelee/Work/Code/abx_amr_simulator/workspace/results
 ```
 
 ---
