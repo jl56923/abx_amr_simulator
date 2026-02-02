@@ -317,6 +317,6 @@ pytest tests/
   title = {ABX AMR Simulator: Reinforcement Learning for Antibiotic Stewardship},
   author = {Joyce Lee},
   year = {2026},
-  url = {<repo-url>}
+  url = {https://github.com/jl56923/abx_simulator}
 }
 ```

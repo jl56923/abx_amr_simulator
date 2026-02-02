@@ -26,13 +26,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
-
-[project.urls]
-Homepage = "https://github.com/jl56923/abx_amr_simulator"
-Repository = "https://github.com/jl56923/abx_amr_simulator"
-Documentation = "https://github.com/jl56923/abx_amr_simulator#readme"
-Changelog = "https://github.com/jl56923/abx_amr_simulator/blob/main/CHANGELOG.md"
-
 dependencies = [
     "numpy>=1.25,<2.0",
     "pyyaml>=6.0",
@@ -49,6 +42,12 @@ dependencies = [
     "tqdm>=4.65",
     "rich",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jl56923/abx_amr_simulator"
+Repository = "https://github.com/jl56923/abx_amr_simulator"
+Documentation = "https://github.com/jl56923/abx_amr_simulator#readme"
+Changelog = "https://github.com/jl56923/abx_amr_simulator/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
