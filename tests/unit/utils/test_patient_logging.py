@@ -12,7 +12,7 @@ Verifies that:
 import numpy as np
 import pytest
 
-from unit.utils.test_reference_helpers import create_mock_environment
+from tests.unit.utils.test_reference_helpers import create_mock_environment
 from abx_amr_simulator.core import ABXAMREnv
 
 

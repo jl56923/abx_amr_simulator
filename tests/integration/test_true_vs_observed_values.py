@@ -23,7 +23,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from unit.utils.test_reference_helpers import create_mock_environment
+from tests.unit.utils.test_reference_helpers import create_mock_environment
 from abx_amr_simulator.core import ABXAMREnv, RewardCalculator, PatientGenerator, Patient
 
 

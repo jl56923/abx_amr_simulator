@@ -5,7 +5,7 @@ from typing import Optional
 
 import numpy as np
 
-from unit.utils.test_reference_helpers import create_mock_environment
+from tests.unit.utils.test_reference_helpers import create_mock_environment
 from abx_amr_simulator.core import ABXAMREnv
 from abx_amr_simulator.core import RewardCalculator
 from abx_amr_simulator.core import PatientGenerator
