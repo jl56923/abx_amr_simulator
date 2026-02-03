@@ -1,0 +1,33 @@
+# Environment configuration with temporal features enabled
+# This config adds prescription history and AMR delta tracking to observations
+
+# Antibiotic AMR dictionary (leak, flatness_parameter, permanent_residual_volume, initial_amr_level)
+antibiotics_AMR_dict:
+  Antibiotic_A:
+    leak: 0.2
+    flatness_parameter: 50
+    permanent_residual_volume: 0.0
+    initial_amr_level: 0.0
+  Antibiotic_B:
+    leak: 0.1
+    flatness_parameter: 25
+    permanent_residual_volume: 0.0
+    initial_amr_level: 0.0
+
+# Crossresistance matrix: defines off-diagonal AMR interactions between antibiotics
+crossresistance_matrix:
+  Antibiotic_A:
+    Antibiotic_B: 0.3
+  Antibiotic_B:
+    Antibiotic_A: 0.1
+
+num_patients_per_time_step: 5
+update_visible_AMR_levels_every_n_timesteps: 1
+add_noise_to_visible_AMR_levels: 0.0
+add_bias_to_visible_AMR_levels: 0.0
+max_time_steps: 500
+include_steps_since_amr_update_in_obs: false
+
+# Temporal features: adds prescription counts and AMR deltas to observations
+enable_temporal_features: true
+temporal_windows: [10, 50]  # Track prescriptions over 10 and 50 step windows

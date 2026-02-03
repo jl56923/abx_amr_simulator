@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Temporal features support in ABXAMREnv: optional prescription history tracking and AMR deltas in observations via `enable_temporal_features` and `temporal_windows` config parameters.
+
 ## [0.1.0] - 2026-02-01
 
 ### Added
