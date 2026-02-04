@@ -122,7 +122,7 @@ class MBPOAgent:
 
         # Experience replay filtering for dynamics model training
         self.dynamics_training_filter_mode = mbpo_config.get(
-            "dynamics_training_filter_mode", "none"  # "none", "threshold", "adaptive_threshold"
+            "dynamics_training_filter_mode", "none"  # "none", "threshold", "adaptive_threshold", "percentile"
         )
         self.dynamics_training_min_return_initial = float(
             mbpo_config.get("dynamics_training_min_return_initial", -500)
@@ -132,6 +132,24 @@ class MBPOAgent:
         )
         self.dynamics_training_filter_schedule_episodes = int(
             mbpo_config.get("dynamics_training_filter_schedule_episodes", 50)
+        )
+        
+        # Percentile-based filtering
+        self.dynamics_training_keep_top_fraction = float(
+            mbpo_config.get("dynamics_training_keep_top_fraction", 0.7)
+        )
+        
+        # Minimum data requirements for hybrid mode
+        self.min_good_transitions_for_model = int(
+            mbpo_config.get("min_good_transitions_for_model", 1000)
+        )
+        self.min_good_episodes_for_model = int(
+            mbpo_config.get("min_good_episodes_for_model", 5)
+        )
+        
+        # Logging
+        self.verbose_filtering = bool(
+            mbpo_config.get("verbose_filtering", False)
         )
 
         self.real_data: List[Dict[str, Any]] = []
@@ -245,34 +263,32 @@ class MBPOAgent:
                                self.dynamics_training_min_return_initial))
         return float(threshold)
 
-    def _get_filtered_real_data(self) -> List[Dict[str, Any]]:
+    def _get_percentile_filtered_data(self) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Filter real data based on episode returns using configured filter mode.
+        Filter real data using percentile-based threshold.
         
         Returns:
-            Filtered list of transitions, or all transitions if filtering yields empty set.
+            filtered_data: List of transitions from top episodes
+            stats: Dict with keys ['threshold', 'num_episodes_kept', 'num_transitions_kept']
         """
-        if self.dynamics_training_filter_mode == "none":
-            return self.real_data
-        
         if not self.episode_returns or not self.episode_start_indices:
-            return self.real_data
+            return self.real_data, {
+                'threshold': float('nan'),
+                'num_episodes_kept': 0,
+                'num_transitions_kept': len(self.real_data),
+            }
         
-        # For adaptive threshold, we need current episode index
-        # Use len(episode_returns) - 1 as proxy for current episode
-        current_episode_idx = len(self.episode_returns) - 1
-        
-        if self.dynamics_training_filter_mode == "adaptive_threshold":
-            threshold = self._get_adaptive_threshold(episode_idx=current_episode_idx)
-        elif self.dynamics_training_filter_mode == "threshold":
-            threshold = self.dynamics_training_min_return_final
-        else:
-            return self.real_data
+        # Compute percentile threshold
+        keep_fraction = self.dynamics_training_keep_top_fraction
+        percentile_rank = (1.0 - keep_fraction) * 100.0
+        threshold = float(np.percentile(a=self.episode_returns, q=percentile_rank))
         
         # Collect indices of episodes that meet threshold
         filtered_indices = set()
+        num_episodes_kept = 0
         for ep_idx, ep_return in enumerate(self.episode_returns):
             if float(ep_return) >= threshold:
+                num_episodes_kept += 1
                 # Add all transitions from this episode
                 start_idx = self.episode_start_indices[ep_idx]
                 if ep_idx + 1 < len(self.episode_start_indices):
@@ -285,8 +301,111 @@ class MBPOAgent:
         
         # Build filtered data in original order
         filtered_data = [self.real_data[i] for i in sorted(filtered_indices)]
-        return filtered_data
+        
+        stats = {
+            'threshold': threshold,
+            'num_episodes_kept': num_episodes_kept,
+            'num_transitions_kept': len(filtered_data),
+        }
+        
+        return filtered_data, stats
+    
+    def _get_filtered_real_data(self) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Filter real data based on episode returns using configured filter mode.
+        
+        Returns:
+            filtered_data: Filtered list of transitions
+            stats: Dict with diagnostic information (threshold, episodes kept, transitions kept)
+        """
+        if self.dynamics_training_filter_mode == "none":
+            return self.real_data, {
+                'threshold': float('nan'),
+                'num_episodes_kept': len(self.episode_returns),
+                'num_transitions_kept': len(self.real_data),
+            }
+        
+        if self.dynamics_training_filter_mode == "percentile":
+            return self._get_percentile_filtered_data()
+        
+        # Legacy modes: threshold and adaptive_threshold
+        if not self.episode_returns or not self.episode_start_indices:
+            return self.real_data, {
+                'threshold': float('nan'),
+                'num_episodes_kept': 0,
+                'num_transitions_kept': len(self.real_data),
+            }
+        
+        # For adaptive threshold, we need current episode index
+        # Use len(episode_returns) - 1 as proxy for current episode
+        current_episode_idx = len(self.episode_returns) - 1
+        
+        if self.dynamics_training_filter_mode == "adaptive_threshold":
+            threshold = self._get_adaptive_threshold(episode_idx=current_episode_idx)
+        elif self.dynamics_training_filter_mode == "threshold":
+            threshold = self.dynamics_training_min_return_final
+        else:
+            return self.real_data, {
+                'threshold': float('nan'),
+                'num_episodes_kept': len(self.episode_returns),
+                'num_transitions_kept': len(self.real_data),
+            }
+        
+        # Collect indices of episodes that meet threshold
+        filtered_indices = set()
+        num_episodes_kept = 0
+        for ep_idx, ep_return in enumerate(self.episode_returns):
+            if float(ep_return) >= threshold:
+                num_episodes_kept += 1
+                # Add all transitions from this episode
+                start_idx = self.episode_start_indices[ep_idx]
+                if ep_idx + 1 < len(self.episode_start_indices):
+                    end_idx = self.episode_start_indices[ep_idx + 1]
+                else:
+                    end_idx = len(self.real_data)
+                
+                for trans_idx in range(start_idx, end_idx):
+                    filtered_indices.add(trans_idx)
+        
+        # Build filtered data in original order
+        filtered_data = [self.real_data[i] for i in sorted(filtered_indices)]
+        
+        stats = {
+            'threshold': threshold,
+            'num_episodes_kept': num_episodes_kept,
+            'num_transitions_kept': len(filtered_data),
+        }
+        
+        return filtered_data, stats
 
+    def _check_sufficient_data_for_model(self, filtered_data: List[Dict[str, Any]], num_episodes_kept: int) -> tuple[bool, str]:
+        """
+        Check if filtered data meets minimum requirements for model training.
+        
+        Args:
+            filtered_data: List of filtered transitions
+            num_episodes_kept: Number of episodes in filtered data
+        
+        Returns:
+            sufficient: True if requirements met
+            reason: Explanation if insufficient
+        """
+        num_transitions = len(filtered_data)
+        
+        if num_transitions < self.min_good_transitions_for_model:
+            return False, (
+                f"Insufficient transitions: {num_transitions}/{self.min_good_transitions_for_model} "
+                f"(from {num_episodes_kept} episodes)"
+            )
+        
+        if num_episodes_kept < self.min_good_episodes_for_model:
+            return False, (
+                f"Insufficient episodes: {num_episodes_kept}/{self.min_good_episodes_for_model} "
+                f"(with {num_transitions} transitions)"
+            )
+        
+        return True, ""
+    
     def _add_to_real_data(self, trajectory: Dict[str, List[Any]]) -> None:
         """Add trajectory transitions to real data buffer, tracking episode metadata."""
         observations = trajectory["observations"]
@@ -311,12 +430,18 @@ class MBPOAgent:
                 }
             )
 
-    def _train_dynamics_model(self) -> Dict[str, float]:
-        """Train dynamics model on accumulated real data with optional filtering."""
-        if self.dynamics_training_filter_mode == "none":
+    def _train_dynamics_model(self, data: List[Dict[str, Any]] = None) -> Dict[str, float]:
+        """Train dynamics model on accumulated real data with optional filtering.
+        
+        Args:
+            data: Optional pre-filtered data to train on. If None, uses self.real_data.
+        """
+        if data is not None:
+            data_for_training = data
+        elif self.dynamics_training_filter_mode == "none":
             data_for_training = self.real_data
         else:
-            data_for_training = self._get_filtered_real_data()
+            data_for_training, _ = self._get_filtered_real_data()
         
         if len(data_for_training) == 0:
             # No data passes filter, train on all data as fallback
