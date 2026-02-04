@@ -93,21 +93,29 @@ class DynamicsModel:
             action = torch.as_tensor(action, dtype=torch.long)
         elif isinstance(action, (int, np.integer)):
             action = torch.tensor([action], dtype=torch.long)
+        elif isinstance(action, torch.Tensor):
+            action = action.long()
         else:
             action = torch.as_tensor(action, dtype=torch.long)
+        
+        # Handle 0-dim tensors (convert to 1-dim)
+        if action.dim() == 0:
+            action = action.unsqueeze(0)
         
         if self.is_multidiscrete:
             # MultiDiscrete: concatenate one-hot for each dimension
             one_hots = []
             for i, (a, n) in enumerate(zip(action, self.action_nvec)):
                 one_hot = torch.zeros(int(n), device=self.device)
-                one_hot[int(a)] = 1.0
+                a_val = int(a.item() if isinstance(a, torch.Tensor) else a)
+                one_hot[a_val] = 1.0
                 one_hots.append(one_hot)
             return torch.cat(one_hots)
         else:
             # Discrete: single one-hot
             one_hot = torch.zeros(self.action_dim, device=self.device)
-            one_hot[int(action[0])] = 1.0
+            a_val = int(action[0].item() if isinstance(action[0], torch.Tensor) else action[0])
+            one_hot[a_val] = 1.0
             return one_hot
     
     def predict(self, obs: np.ndarray, action: np.ndarray) -> Tuple[np.ndarray, float]:

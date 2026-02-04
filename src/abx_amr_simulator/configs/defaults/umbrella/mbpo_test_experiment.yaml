@@ -1,0 +1,18 @@
+# Minimal MBPO test configuration for validation
+# References component configs with minimal setup
+# Override parameters via command-line flags
+
+# Component configurations
+environment: ../environment/default.yaml
+reward_calculator: ../reward_calculator/default.yaml
+patient_generator: ../patient_generator/default.yaml
+agent_algorithm: ../agent_algorithm/mbpo.yaml
+
+# Training configuration (minimal for quick validation)
+training:
+  run_name: mbpo_test_run
+  total_num_training_episodes: 2
+  seed: 42
+
+# Output directory
+output_dir: results

@@ -9,6 +9,8 @@ from typing import Dict, List, Tuple, Optional, Any
 import numpy as np
 import gymnasium as gym
 from gymnasium.spaces import Space
+import csv
+from pathlib import Path
 
 
 class TrajectoryReplayEnv(gym.Env):
@@ -23,7 +25,9 @@ class TrajectoryReplayEnv(gym.Env):
         self,
         trajectories: List[Dict[str, List]],
         action_space: Space,
-        observation_space: Space
+        observation_space: Space,
+        log_file: Optional[str] = None,
+        verbose: bool = False
     ):
         """
         Initialize the trajectory replay environment.
@@ -35,6 +39,8 @@ class TrajectoryReplayEnv(gym.Env):
                 - 'rewards': List[float] (length T)
             action_space: Gymnasium action space (must match trajectories)
             observation_space: Gymnasium observation space (must match trajectories)
+            log_file: Optional path to CSV log file for detailed debugging
+            verbose: If True, print detailed step information
         """
         super().__init__()
         
@@ -52,6 +58,32 @@ class TrajectoryReplayEnv(gym.Env):
         self.current_traj_idx = 0
         self.current_step = 0
         self.num_trajectories = len(trajectories)
+        self.total_steps = 0  # Total steps across all resets
+        self.total_resets = 0  # Total number of resets
+        self.episode_count = 0  # Episodes completed
+        
+        # Logging setup
+        self.log_file = log_file
+        self.verbose = verbose
+        self.log_writer = None
+        self.log_handle = None
+        
+        if log_file:
+            # Initialize CSV log
+            self.log_handle = open(log_file, 'w', newline='')
+            self.log_writer = csv.writer(self.log_handle)
+            self.log_writer.writerow([
+                'total_steps',
+                'episode_count',
+                'traj_idx',
+                'traj_step',
+                'event',
+                'obs_sum',  # Sum of observation for quick sanity check
+                'reward',
+                'done',
+                'truncated',
+            ])
+            self.log_handle.flush()
     
     def _validate_trajectories(self):
         """Validate that all trajectories have correct structure."""
@@ -93,9 +125,13 @@ class TrajectoryReplayEnv(gym.Env):
         """
         super().reset(seed=seed)
         
+        self.total_resets += 1
+        
         # Move to next trajectory (loop back to start if at end)
         if self.current_traj_idx >= self.num_trajectories:
             self.current_traj_idx = 0
+            if self.verbose:
+                print(f"[TrajectoryReplayEnv] Cycling back to trajectory 0 (completed all {self.num_trajectories} trajectories)")
         
         # Reset step counter
         self.current_step = 0
@@ -103,6 +139,24 @@ class TrajectoryReplayEnv(gym.Env):
         # Return first observation
         traj = self.trajectories[self.current_traj_idx]
         obs = traj['observations'][0]
+        
+        # Log reset
+        if self.log_writer:
+            self.log_writer.writerow([
+                self.total_steps,
+                self.episode_count,
+                self.current_traj_idx,
+                self.current_step,
+                'RESET',
+                float(np.sum(obs)),
+                '',
+                '',
+                '',
+            ])
+            self.log_handle.flush()
+        
+        if self.verbose:
+            print(f"[TrajectoryReplayEnv] RESET: traj_idx={self.current_traj_idx}, obs_sum={np.sum(obs):.4f}, total_resets={self.total_resets}")
         
         return obs, {}
     
@@ -128,17 +182,45 @@ class TrajectoryReplayEnv(gym.Env):
         # Get current transition
         reward = float(traj['rewards'][self.current_step])
         
+        # Store step index before advancing
+        step_before = self.current_step
+        
         # Advance step
         self.current_step += 1
+        self.total_steps += 1
         
         # Check if trajectory is done
         if self.current_step >= len(traj['actions']):
             done = True
             next_obs = traj['observations'][-1]  # Final observation
+            self.episode_count += 1
+            
+            traj_idx_before = self.current_traj_idx
             self.current_traj_idx += 1  # Prepare for next trajectory
+            
+            if self.verbose:
+                print(f"[TrajectoryReplayEnv] EPISODE DONE: traj_idx={traj_idx_before}, step={step_before}, reward={reward:.2f}, episode_count={self.episode_count}")
         else:
             done = False
             next_obs = traj['observations'][self.current_step]
+        
+        # Log step
+        if self.log_writer:
+            self.log_writer.writerow([
+                self.total_steps,
+                self.episode_count,
+                self.current_traj_idx if not done else self.current_traj_idx - 1,
+                step_before,
+                'STEP' if not done else 'DONE',
+                float(np.sum(next_obs)),
+                reward,
+                done,
+                False,
+            ])
+            self.log_handle.flush()
+        
+        if self.verbose and not done:
+            print(f"[TrajectoryReplayEnv] STEP: traj_idx={self.current_traj_idx}, step={self.current_step}, reward={reward:.2f}, obs_sum={np.sum(next_obs):.4f}")
         
         return next_obs, reward, done, False, {}
     
@@ -148,4 +230,9 @@ class TrajectoryReplayEnv(gym.Env):
     
     def close(self):
         """Clean up resources."""
-        pass
+        if self.log_handle:
+            self.log_handle.close()
+            self.log_handle = None
+            self.log_writer = None
+            if self.verbose:
+                print(f"[TrajectoryReplayEnv] Closed log file: {self.log_file}")

@@ -1,0 +1,59 @@
+# MBPO (Model-Based Policy Optimization) agent configuration
+# Combines model-based learning (DynamicsModel) with model-free policy improvement (PPO)
+
+algorithm: "MBPO"
+
+
+# Policy network architecture for PPO
+policy_kwargs:
+  net_arch:
+    - 128
+    - 128
+
+# PPO algorithm hyperparameters (for training on synthetic rollouts)
+ppo:
+  learning_rate: 3.0e-4
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  verbose: 0
+
+# MBPO-specific hyperparameters
+mbpo:
+  # Rollout parameters
+  rollout_length: 5                    # Number of steps per synthetic rollout
+  rollout_length_start: 1              # Starting rollout length for scheduled ramp
+  rollout_length_max: 5                # Max rollout length for scheduled ramp
+  rollout_length_schedule_episodes: 0  # 0 disables scheduling; >0 enables linear ramp
+
+  num_synthetic_per_real: 16           # Number of synthetic rollouts per real episode
+  num_synthetic_per_real_start: 4      # Starting synthetic rollouts per real episode
+  num_synthetic_per_real_max: 16       # Max synthetic rollouts per real episode
+  num_synthetic_schedule_episodes: 0   # 0 disables scheduling; >0 enables linear ramp
+  
+  # Real policy updates (optional)
+  real_policy_train_freq: 0            # 0 disables real-data PPO updates
+  real_policy_train_start_episode: 0   # Episode index to begin real-data PPO updates
+  real_policy_updates_multiplier: 1    # Multiply real replay timesteps per update
+
+  # Model training schedule
+  model_train_freq: 1                  # Train dynamics model every N real episodes (1 = every episode)
+  model_warmup_episodes: 10            # Collect this many real episodes before starting synthetic rollouts
+  model_train_epochs: 100              # Number of supervised learning epochs per model training
+  model_batch_size: 256                # Batch size for dynamics model supervised learning
+  
+  # Evaluation schedule
+  eval_freq: 5                         # Evaluate policy every N episodes
+  eval_episodes: 5                     # Number of episodes per evaluation
+
+# Dynamics model neural network hyperparameters
+dynamics_model:
+  hidden_dims: [256, 256]              # MLP architecture for state-action-to-next-state-reward mapping
+  learning_rate: 1.0e-3                # Supervised learning rate for dynamics model
+  device: "auto"                       # "auto" (use CUDA if available), "cuda", or "cpu"

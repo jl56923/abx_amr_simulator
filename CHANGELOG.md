@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Temporal features support in ABXAMREnv: optional prescription history tracking and AMR deltas in observations via `enable_temporal_features` and `temporal_windows` config parameters.
+- MBPO core components and training loop scaffolding:
+  - `DynamicsModel` for learning environment dynamics with MultiDiscrete action support
+  - `TrajectoryReplayEnv` for replaying synthetic trajectories during PPO training
+  - `MBPOAgent` with real-data collection, model training, synthetic rollouts, and replay training
+  - Unit tests covering DynamicsModel, TrajectoryReplayEnv, and MBPOAgent core behaviors
 
 ## [0.1.0] - 2026-02-01
 
