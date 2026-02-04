@@ -182,3 +182,64 @@ class TestMBPOAgentCore:
         assert agent._get_scheduled_rollout_length(episode_idx=10) == 5
         assert agent._get_scheduled_num_synthetic(episode_idx=0) == 2
         assert agent._get_scheduled_num_synthetic(episode_idx=10) == 6
+
+    def test_check_sufficient_data_blocks_below_min_good_return(self):
+        env = DummyMBPOEnv(episode_length=1)
+        config = _make_config()
+        config["mbpo"]["min_good_transitions_for_model"] = 1
+        config["mbpo"]["min_good_episodes_for_model"] = 1
+        config["mbpo"]["min_good_return_for_model"] = -200
+
+        agent = MBPOAgent(env=env, config=config)
+        agent.episode_returns = [-300.0, -250.0]
+        agent.episode_start_indices = [0, 1]
+        agent.real_data = [
+            {
+                "obs": np.zeros(shape=4),
+                "action": np.array(object=[0]),
+                "reward": -1.0,
+                "next_obs": np.zeros(shape=4),
+                "done": True,
+            },
+            {
+                "obs": np.zeros(shape=4),
+                "action": np.array(object=[0]),
+                "reward": -1.0,
+                "next_obs": np.zeros(shape=4),
+                "done": True,
+            },
+        ]
+
+        sufficient, reason = agent._check_sufficient_data_for_model(
+            filtered_data=agent.real_data,
+            num_episodes_kept=2,
+        )
+        assert not sufficient
+        assert "min_good_return" in reason
+
+    def test_check_sufficient_data_allows_above_min_good_return(self):
+        env = DummyMBPOEnv(episode_length=1)
+        config = _make_config()
+        config["mbpo"]["min_good_transitions_for_model"] = 1
+        config["mbpo"]["min_good_episodes_for_model"] = 1
+        config["mbpo"]["min_good_return_for_model"] = -200
+
+        agent = MBPOAgent(env=env, config=config)
+        agent.episode_returns = [-150.0]
+        agent.episode_start_indices = [0]
+        agent.real_data = [
+            {
+                "obs": np.zeros(shape=4),
+                "action": np.array(object=[0]),
+                "reward": -1.0,
+                "next_obs": np.zeros(shape=4),
+                "done": True,
+            }
+        ]
+
+        sufficient, reason = agent._check_sufficient_data_for_model(
+            filtered_data=agent.real_data,
+            num_episodes_kept=1,
+        )
+        assert sufficient
+        assert reason == ""

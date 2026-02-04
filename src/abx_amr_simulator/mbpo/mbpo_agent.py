@@ -146,6 +146,11 @@ class MBPOAgent:
         self.min_good_episodes_for_model = int(
             mbpo_config.get("min_good_episodes_for_model", 5)
         )
+        min_good_return_value = mbpo_config.get("min_good_return_for_model", None)
+        if min_good_return_value is None:
+            self.min_good_return_for_model = None
+        else:
+            self.min_good_return_for_model = float(min_good_return_value)
         
         # Logging
         self.verbose_filtering = bool(
@@ -391,6 +396,16 @@ class MBPOAgent:
             reason: Explanation if insufficient
         """
         num_transitions = len(filtered_data)
+
+        if self.min_good_return_for_model is not None:
+            if not self.episode_returns:
+                return False, "No episode returns available for min-good-return check"
+            best_return = float(max(self.episode_returns))
+            if best_return < self.min_good_return_for_model:
+                return False, (
+                    f"Best return {best_return:.1f} below min_good_return "
+                    f"{self.min_good_return_for_model:.1f}"
+                )
         
         if num_transitions < self.min_good_transitions_for_model:
             return False, (
@@ -444,8 +459,7 @@ class MBPOAgent:
             data_for_training, _ = self._get_filtered_real_data()
         
         if len(data_for_training) == 0:
-            # No data passes filter, train on all data as fallback
-            data_for_training = self.real_data
+            raise ValueError("No data available for dynamics model training after filtering")
         
         metrics = self.dynamics_model.train_on_data(
             data=data_for_training,
@@ -650,15 +664,36 @@ class MBPOAgent:
 
             if episode_idx >= self.model_warmup_episodes:
                 if episode_idx % self.model_train_freq == 0:
-                    metrics = self._train_dynamics_model()
-                    model_losses.append(metrics)
+                    filtered_data, filter_stats = self._get_filtered_real_data()
+                    sufficient, reason = self._check_sufficient_data_for_model(
+                        filtered_data=filtered_data,
+                        num_episodes_kept=filter_stats["num_episodes_kept"],
+                    )
 
-                synthetic_trajectories = self._generate_synthetic_rollouts(
-                    episode_idx=episode_idx,
-                )
-                self._train_policy_on_synthetic(
-                    synthetic_trajectories=synthetic_trajectories,
-                )
+                    if sufficient:
+                        metrics = self._train_dynamics_model(data=filtered_data)
+                        model_losses.append(metrics)
+
+                        if self.verbose_filtering:
+                            print(
+                                f"[MBPO] Filter threshold={filter_stats['threshold']:.1f}, "
+                                f"kept {filter_stats['num_episodes_kept']}/{len(self.episode_returns)} episodes, "
+                                f"{filter_stats['num_transitions_kept']} transitions"
+                            )
+
+                        synthetic_trajectories = self._generate_synthetic_rollouts(
+                            episode_idx=episode_idx,
+                        )
+                        self._train_policy_on_synthetic(
+                            synthetic_trajectories=synthetic_trajectories,
+                        )
+                    else:
+                        if self.verbose_filtering:
+                            print(
+                                f"[MBPO] Fallback to real-only mode: {reason}. "
+                                f"Filtered {filter_stats['num_transitions_kept']}/"
+                                f"{len(self.real_data)} transitions."
+                            )
 
             if self.eval_freq > 0 and (episode_idx + 1) % self.eval_freq == 0:
                 eval_stats = self.evaluate(num_episodes=5)
