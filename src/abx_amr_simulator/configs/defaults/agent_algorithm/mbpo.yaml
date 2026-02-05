@@ -3,7 +3,6 @@
 
 algorithm: "MBPO"
 
-
 # Policy network architecture for PPO
 policy_kwargs:
   net_arch:
@@ -47,6 +46,21 @@ mbpo:
   model_warmup_episodes: 10            # Collect this many real episodes before starting synthetic rollouts
   model_train_epochs: 100              # Number of supervised learning epochs per model training
   model_batch_size: 256                # Batch size for dynamics model supervised learning
+
+  # Dynamics model training data filtering
+  dynamics_training_filter_mode: none  # "none", "threshold", "adaptive_threshold", "percentile"
+  dynamics_training_min_return_initial: -500  # Initial return threshold (adaptive_threshold only)
+  dynamics_training_min_return_final: -100    # Final return threshold (adaptive_threshold/threshold)
+  dynamics_training_filter_schedule_episodes: 50  # Schedule length for adaptive threshold
+  dynamics_training_keep_top_fraction: 0.7   # Percentile filtering: keep top fraction of episodes
+
+  # Minimum data requirements for hybrid mode
+  min_good_transitions_for_model: 1000  # Minimum filtered transitions before model training
+  min_good_episodes_for_model: 5        # Minimum filtered episodes before model training
+  min_good_return_for_model: null       # Minimum best return required to enable hybrid mode
+
+  # Filtering/logging diagnostics
+  verbose_filtering: false              # Log filtering stats during training
   
   # Evaluation schedule
   eval_freq: 5                         # Evaluate policy every N episodes
