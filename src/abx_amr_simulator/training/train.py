@@ -300,7 +300,7 @@ def main():
             sys.exit(1)
         
         # Map algorithm names to classes
-        algorithm_map = {'PPO': PPO, 'DQN': DQN, 'A2C': A2C}
+        algorithm_map = {'PPO': PPO, 'DQN': DQN, 'A2C': A2C, 'HRL_PPO': PPO, 'HRL_DQN': DQN}
         if algorithm not in algorithm_map:
             print(f"Error: Unsupported algorithm '{algorithm}'")
             sys.exit(1)
@@ -328,6 +328,12 @@ def main():
         env = create_environment(config=config, reward_calculator=reward_calculator, patient_generator=patient_generator)
         env.reset(seed=seed)
         
+        # Wrap with OptionsWrapper if using HRL
+        if algorithm in ['HRL_PPO', 'HRL_DQN']:
+            from abx_amr_simulator.utils import wrap_environment_for_hrl
+            print("Wrapping environment with OptionsWrapper for HRL...")
+            env = wrap_environment_for_hrl(env, config)
+        
         # Now load the agent with the environment
         agent = AgentClass.load(path=model_path, env=env)
 
@@ -351,8 +357,11 @@ def main():
             wrap_monitor=True,
         )
         eval_env.reset(seed=seed + 1)
-        
-        # Set up callbacks for continued training
+                # Wrap eval env with OptionsWrapper if using HRL
+        if algorithm in ['HRL_PPO', 'HRL_DQN']:
+            from abx_amr_simulator.utils import wrap_environment_for_hrl
+            eval_env = wrap_environment_for_hrl(eval_env, config)
+                # Set up callbacks for continued training
         callbacks = setup_callbacks(config, run_dir, eval_env=eval_env)
         
         print(f"\nContinuing training for {additional_steps} additional timesteps...")
@@ -581,6 +590,15 @@ def main():
         print("Creating environment...")
         env = create_environment(config=config, reward_calculator=reward_calculator, patient_generator=patient_generator)
         env.reset(seed=seed)
+        
+        # Wrap with OptionsWrapper if using HRL
+        algorithm = config.get('algorithm', 'PPO')
+        if algorithm in ['HRL_PPO', 'HRL_DQN']:
+            from abx_amr_simulator.utils import wrap_environment_for_hrl
+            print("Wrapping environment with OptionsWrapper for HRL...")
+            env = wrap_environment_for_hrl(env, config)
+            print(f"Manager observation space: {env.observation_space}")
+            print(f"Manager action space (option selection): {env.action_space}")
 
         # Persist action mapping for analysis (abx -> index and index -> abx)
         try:
@@ -599,6 +617,11 @@ def main():
             wrap_monitor=True,
         )
         eval_env.reset(seed=seed + 1) # Different seed for eval env
+        
+        # Wrap eval env with OptionsWrapper if using HRL
+        if algorithm in ['HRL_PPO', 'HRL_DQN']:
+            from abx_amr_simulator.utils import wrap_environment_for_hrl
+            eval_env = wrap_environment_for_hrl(eval_env, config)
         
         # Create agent
         print("Creating agent...")
@@ -636,7 +659,7 @@ def main():
         
         # Map algorithm names to classes for loading best model
         algorithm = config.get('algorithm', 'PPO')
-        algorithm_map = {'PPO': PPO, 'DQN': DQN, 'A2C': A2C}
+        algorithm_map = {'PPO': PPO, 'DQN': DQN, 'A2C': A2C, 'HRL_PPO': PPO, 'HRL_DQN': DQN}
         AgentClass = algorithm_map.get(algorithm, PPO)
         
         # Plot metrics for final agent (agent in memory after training)

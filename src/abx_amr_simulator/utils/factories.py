@@ -227,6 +227,63 @@ def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculat
     return env
 
 
+def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> gym.Env:
+    """Wrap ABXAMREnv with OptionsWrapper for hierarchical RL.
+    
+    Creates OptionsWrapper with option library and manager observation configuration.
+    Only called when algorithm is 'HRL_PPO' or 'HRL_DQN'.
+    
+    Args:
+        env (ABXAMREnv): Base environment to wrap.
+        config (Dict[str, Any]): Full experiment config. Must contain 'hrl' section with:
+            - option_library: 'default' or path to custom library
+            - option_gamma: Discount factor for macro-reward aggregation
+            - include_prospective_cohort_stats: Whether to include patient cohort stats
+            - prospective_attributes: List of patient attributes for cohort stats
+    
+    Returns:
+        gym.Env: OptionsWrapper-wrapped environment ready for manager training.
+    
+    Raises:
+        ValueError: If HRL config section missing or option library invalid.
+    
+    Example:
+        >>> base_env = create_environment(config, rc, pg)
+        >>> hrl_env = wrap_environment_for_hrl(base_env, config)
+        >>> agent = create_agent(config, hrl_env, tb_log_path=...)
+    """
+    # Import HRL components from abx_amr_simulator.hrl
+    from abx_amr_simulator.hrl import OptionsWrapper, get_default_option_library
+    
+    hrl_config = config.get('hrl', {})
+    if not hrl_config:
+        raise ValueError("HRL algorithm selected but 'hrl' config section missing")
+    
+    # Get option library
+    option_library_spec = hrl_config.get('option_library', 'default')
+    if option_library_spec == 'default':
+        option_library = get_default_option_library()
+    else:
+        # Load from path (future extension)
+        raise NotImplementedError(f"Custom option library loading not yet implemented: {option_library_spec}")
+    
+    # Get HRL wrapper parameters
+    gamma = hrl_config.get('option_gamma', 0.99)
+    include_prospective_cohort_stats = hrl_config.get('include_prospective_cohort_stats', False)
+    prospective_attributes = hrl_config.get('prospective_attributes', [])
+    
+    # Wrap environment
+    wrapped_env = OptionsWrapper(
+        env=env,
+        option_library=option_library,
+        gamma=gamma,
+        include_prospective_cohort_stats=include_prospective_cohort_stats,
+        prospective_attributes=prospective_attributes if prospective_attributes else None,
+    )
+    
+    return wrapped_env
+
+
 def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str] = None, verbose: int = 0) -> Any:
     """Instantiate RL agent (PPO, DQN, A2C, RecurrentPPO, or MBPO) from config.
     
@@ -375,6 +432,31 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
         # Instantiate MBPOAgent with full config dict
         # MBPOAgent expects: env, config (containing 'ppo', 'mbpo', 'dynamics_model' sections)
         agent = MBPOAgent(env=env, config=config)
+    elif algorithm == 'HRL_PPO':
+        # Hierarchical RL with options-based wrapper
+        # Env is already wrapped with OptionsWrapper before reaching here
+        # Manager uses PPO to select options
+        ppo_config = config.get('ppo', {})
+        learning_rate = ppo_config.get('learning_rate', 3.0e-4)
+        
+        agent = PPO(
+            policy='MlpPolicy',
+            env=env,
+            learning_rate=learning_rate,
+            n_steps=ppo_config.get('n_steps', 256),
+            batch_size=ppo_config.get('batch_size', 64),
+            n_epochs=ppo_config.get('n_epochs', 10),
+            gamma=ppo_config.get('gamma', 0.99),
+            gae_lambda=ppo_config.get('gae_lambda', 0.95),
+            clip_range=ppo_config.get('clip_range', 0.2),
+            ent_coef=ppo_config.get('ent_coef', 0.02),
+            vf_coef=ppo_config.get('vf_coef', 0.5),
+            max_grad_norm=ppo_config.get('max_grad_norm', 0.5),
+            policy_kwargs=policy_kwargs,
+            verbose=ppo_config.get('verbose', 1),
+            tensorboard_log=tb_log_path,
+            seed=seed,
+        )
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}")
     
