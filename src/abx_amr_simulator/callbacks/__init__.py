@@ -83,8 +83,16 @@ class PatientStatsLoggingCallback(BaseCallback):
             aggregated_stats = stats_list[0]
         
         # Log all stats to TensorBoard under patient_stats/ namespace
+        # Shorten long keys to avoid TensorBoard truncation errors
         for key, value in aggregated_stats.items():
-            self.logger.record(f'patient_stats/{key}', value)
+            # Shorten common long prefixes to avoid key collisions
+            short_key = key.replace('benefit_probability_multiplier', 'benefit_prob_mult')
+            short_key = short_key.replace('failure_probability_multiplier', 'failure_prob_mult')
+            short_key = short_key.replace('recovery_without_treatment_prob', 'recovery_no_rx_prob')
+            short_key = short_key.replace('benefit_value_multiplier', 'benefit_val_mult')
+            short_key = short_key.replace('failure_value_multiplier', 'failure_val_mult')
+            short_key = short_key.replace('_obs_error_', '_err_')
+            self.logger.record(f'patient_stats/{short_key}', value, exclude=None)
         
         return True
     
