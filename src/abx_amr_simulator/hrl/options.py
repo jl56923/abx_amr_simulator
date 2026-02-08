@@ -178,21 +178,21 @@ class OptionLibrary:
 
             # Check 3: AMR levels requirement
             if option.REQUIRES_AMR_LEVELS:
-                has_amr = hasattr(env.unwrapped, 'leaky_balloons')
+                has_amr = hasattr(env.unwrapped, 'amr_balloon_models')
                 if not has_amr:
                     raise ValueError(
                         f"Option '{option_name}' requires AMR levels (REQUIRES_AMR_LEVELS=True), "
-                        f"but environment doesn't provide leaky_balloons. "
+                        f"but environment doesn't provide amr_balloon_models. "
                         f"Ensure environment is ABXAMREnv with AMR tracking enabled."
                     )
 
             # Check 4: Step number requirement
             if option.REQUIRES_STEP_NUMBER:
-                has_step = hasattr(env.unwrapped, 'current_step')
+                has_step = hasattr(env.unwrapped, 'current_time_step')
                 if not has_step:
                     raise ValueError(
                         f"Option '{option_name}' requires step number (REQUIRES_STEP_NUMBER=True), "
-                        f"but environment doesn't track current_step. "
+                        f"but environment doesn't track current_time_step. "
                         f"Ensure environment is ABXAMREnv with step tracking enabled."
                     )
 

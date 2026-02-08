@@ -21,6 +21,9 @@ class PatientGeneratorBase(ABC):
     
     # Class constant declaring which attributes generated Patients will have
     PROVIDES_ATTRIBUTES: ClassVar[List[str]] = []
+
+    # Instance attribute declaring which patient attributes are visible in observations
+    visible_patient_attributes: List[str]
     
     @abstractmethod
     def sample(self, n: int, true_amr_levels: Dict[str, float], rng: np.random.Generator) -> List[Any]:

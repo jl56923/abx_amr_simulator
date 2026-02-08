@@ -85,12 +85,13 @@ class OptionBase(ABC):
                   Keys in each dict correspond to the PatientGenerator's visible_patient_attributes.
                   Example: [{'prob_infected': 0.8, 'benefit_value_multiplier': 1.2}, ...]
                 - 'num_patients': Number of patients per timestep.
+                - 'current_step': Current timestep in episode (int, 0 if not available).
+                  Useful for options that adapt behavior near episode boundaries (e.g., to avoid starting
+                  multi-step macro-actions late in episode when they'd be cut off).
+                - 'max_steps': Total episode length limit.
+                  Used with 'current_step' to detect remaining steps: max_steps - current_step.
                 - 'current_amr_levels': Dict mapping antibiotic name -> resistance (float in [0, 1]).
                   Only present if REQUIRES_AMR_LEVELS=True; empty dict otherwise.
-                - 'current_step': Current timestep in episode (int).
-                  Only present if REQUIRES_STEP_NUMBER=True.
-                - 'max_steps': Total episode length limit.
-                  Only present if REQUIRES_STEP_NUMBER=True.
                 - 'option_library': Reference to OptionLibrary instance.
                   Used to access abx_name_to_index mapping via env_state['option_library'].abx_name_to_index
         

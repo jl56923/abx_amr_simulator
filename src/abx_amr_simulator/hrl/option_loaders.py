@@ -43,6 +43,11 @@ class OptionLibraryLoader:
                 Example: 'experiments/options/option_libraries/default_deterministic.yaml'
             env: The ABXAMREnv instance (passed to OptionLibrary for antibiotic mapping extraction).
             library_name: Optional override for library name (from config if not provided).
+
+        Path handling:
+            - Relative paths inside the library config (option_subconfig_file, loader_module)
+              are resolved relative to the directory containing the library config file.
+            - Absolute paths are used as-is.
         
         Returns:
             Tuple of:
@@ -139,6 +144,11 @@ class OptionLibraryLoader:
             option_type: Option type (e.g., 'block').
             opt_spec: Full option spec dict from library config.
             base_dir: Base directory for resolving relative paths.
+
+                Path handling:
+                        - Relative paths in option_subconfig_file and loader_module are resolved
+                            relative to base_dir (the library config's directory).
+                        - Absolute paths are used as-is.
         
         Returns:
             Tuple of:
@@ -160,15 +170,17 @@ class OptionLibraryLoader:
             raise ValueError(f"Option '{name}' missing 'loader_module'")
 
         # Resolve paths: handle both absolute and relative paths
-        subconfig_path = Path(subconfig_file).resolve()
+        subconfig_path = Path(subconfig_file)
         if not subconfig_path.is_absolute():
-            # If relative, resolve relative to base_dir
-            subconfig_path = (base_dir / subconfig_file).resolve()
-        
-        loader_module_path = Path(loader_module).resolve()
+            subconfig_path = (base_dir / subconfig_path).resolve()
+        else:
+            subconfig_path = subconfig_path.resolve()
+
+        loader_module_path = Path(loader_module)
         if not loader_module_path.is_absolute():
-            # If relative, resolve relative to base_dir
-            loader_module_path = (base_dir / loader_module).resolve()
+            loader_module_path = (base_dir / loader_module_path).resolve()
+        else:
+            loader_module_path = loader_module_path.resolve()
 
         if not subconfig_path.exists():
             raise FileNotFoundError(f"Option subconfig not found: {subconfig_path}")

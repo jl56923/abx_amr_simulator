@@ -164,7 +164,7 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
         return PatientGenerator(config=patient_gen_config)
 
 
-def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculator, patient_generator: PatientGenerator, wrap_monitor: bool = False, monitor_dir: Optional[str] = None) -> ABXAMREnv:
+def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculator, patient_generator: PatientGenerator, wrap_monitor: bool = False, monitor_dir: Optional[str] = None) -> gym.Env:
     """Create ABXAMREnv from pre-instantiated RewardCalculator and PatientGenerator.
     
     Follows the clean orchestration pattern: core components (RewardCalculator,
@@ -186,7 +186,7 @@ def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculat
             API compatibility).
     
     Returns:
-        ABXAMREnv: Initialized environment instance, optionally wrapped in Monitor.
+        gym.Env: Initialized environment instance, optionally wrapped in Monitor.
     
     Raises:
         ValueError: If 'patient_generator' or 'visible_patient_attributes' found in
@@ -224,6 +224,7 @@ def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculat
     
     if wrap_monitor:
         env = Monitor(env)
+        
     return env
 
 
@@ -238,8 +239,8 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> gym.Env:
         config (Dict[str, Any]): Full experiment config. Must contain 'hrl' section with:
             - option_library: 'default' or path to custom library
             - option_gamma: Discount factor for macro-reward aggregation
-            - include_prospective_cohort_stats: Whether to include patient cohort stats
-            - prospective_attributes: List of patient attributes for cohort stats
+                        - front_edge_use_full_vector: If True, manager gets full boundary cohort
+                            vector. If False, manager gets mean + std for each visible attribute.
     
     Returns:
         gym.Env: OptionsWrapper-wrapped environment ready for manager training.
@@ -253,7 +254,7 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> gym.Env:
         >>> agent = create_agent(config, hrl_env, tb_log_path=...)
     """
     # Import HRL components from abx_amr_simulator.hrl
-    from abx_amr_simulator.hrl import OptionsWrapper, get_default_option_library
+    from abx_amr_simulator.hrl import OptionsWrapper, OptionLibraryLoader
     
     hrl_config = config.get('hrl', {})
     if not hrl_config:
@@ -261,24 +262,35 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> gym.Env:
     
     # Get option library
     option_library_spec = hrl_config.get('option_library', 'default')
+    project_root = Path(__file__).resolve().parents[5]
+
     if option_library_spec == 'default':
-        option_library = get_default_option_library()
+        library_path = project_root / "workspace" / "experiments" / "options" / "option_libraries" / "default_deterministic.yaml"
     else:
-        # Load from path (future extension)
-        raise NotImplementedError(f"Custom option library loading not yet implemented: {option_library_spec}")
+        library_path = Path(option_library_spec)
+        if not library_path.is_absolute():
+            library_path = (project_root / library_path).resolve()
+        else:
+            library_path = library_path.resolve()
+
+    if not library_path.exists():
+        raise ValueError(f"Option library config not found: {library_path}")
+
+    option_library, _ = OptionLibraryLoader.load_library(
+        library_config_path=str(library_path),
+        env=env,
+    )
     
     # Get HRL wrapper parameters
     gamma = hrl_config.get('option_gamma', 0.99)
-    include_prospective_cohort_stats = hrl_config.get('include_prospective_cohort_stats', False)
-    prospective_attributes = hrl_config.get('prospective_attributes', [])
+    front_edge_use_full_vector = hrl_config.get('front_edge_use_full_vector', False)
     
     # Wrap environment
     wrapped_env = OptionsWrapper(
         env=env,
         option_library=option_library,
         gamma=gamma,
-        include_prospective_cohort_stats=include_prospective_cohort_stats,
-        prospective_attributes=prospective_attributes if prospective_attributes else None,
+        front_edge_use_full_vector=front_edge_use_full_vector,
     )
     
     return wrapped_env

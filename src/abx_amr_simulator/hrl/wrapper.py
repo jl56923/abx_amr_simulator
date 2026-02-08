@@ -6,13 +6,14 @@ The OptionsWrapper converts a flat-action environment into a hierarchical one:
 - Wrapper handles env_state construction, action validation, and reward aggregation
 """
 
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional, cast
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
 from abx_amr_simulator.hrl.base_option import OptionBase
 from abx_amr_simulator.hrl.options import OptionLibrary
+from abx_amr_simulator.core import ABXAMREnv
 
 
 class OptionsWrapper(gym.Wrapper):
@@ -33,9 +34,10 @@ class OptionsWrapper(gym.Wrapper):
 
     def __init__(
         self,
-        env: gym.Env,
+        env: ABXAMREnv,
         option_library: OptionLibrary,
         gamma: float = 0.99,
+        front_edge_use_full_vector: bool = False,
     ):
         """Initialize OptionsWrapper.
         
@@ -43,6 +45,10 @@ class OptionsWrapper(gym.Wrapper):
             env: Base Gymnasium environment (expected to be ABXAMREnv).
             option_library: OptionLibrary with instantiated options.
             gamma: Discount factor for reward aggregation (default 0.99).
+            front_edge_use_full_vector: If True, append the full boundary cohort
+                feature vector (num_patients * num_visible_attrs). If False,
+                append summary stats (mean + std) for each visible attribute.
+                For large cohorts, summary stats are recommended.
         
         Raises:
             ValueError: If environment or option library invalid.
@@ -50,14 +56,22 @@ class OptionsWrapper(gym.Wrapper):
         """
         super().__init__(env)
 
+        self._base_env = cast(ABXAMREnv, env.unwrapped)
+
         self.option_library = option_library
         self.gamma = gamma
+        self.front_edge_use_full_vector = front_edge_use_full_vector
+
+        self.antibiotic_names = list(self.option_library.abx_name_to_index.keys())
+        self._action_index_to_abx = {
+            idx: abx_name for abx_name, idx in self.option_library.abx_name_to_index.items()
+        }
 
         # Antibiotic names are accessed via option_library.abx_name_to_index (no duplication)
 
         # Extract patient generator
         try:
-            self.patient_generator = env.unwrapped.patient_generator
+            self.patient_generator = self._base_env.patient_generator
         except AttributeError as e:
             raise ValueError(
                 f"Environment must have patient_generator. Error: {e}"
@@ -85,9 +99,15 @@ class OptionsWrapper(gym.Wrapper):
         )
 
         # State tracking
-        self.current_env_obs = None
+        self.current_env_obs: Optional[np.ndarray] = None
         self.current_step = 0
-        self.max_steps = None
+        self.max_steps = 0
+        self._previous_option_id = -1
+        self._consecutive_same_option_count = 0
+        self._steps_since_prescribed = {abx: 0 for abx in self.antibiotic_names}
+        self._last_aggregate_stats = None
+        self._last_amr_start = None
+        self._last_amr_end = None
 
     def reset(self, seed=None, options=None):
         """Reset environment and option state.
@@ -101,15 +121,23 @@ class OptionsWrapper(gym.Wrapper):
         """
         # Reset base environment
         base_obs, info = self.env.reset(seed=seed, options=options)
-        self.current_env_obs = base_obs
+        self.current_env_obs = cast(np.ndarray, base_obs)
 
         # Extract max_steps from environment
         try:
-            self.max_steps = self.env.unwrapped.max_steps
+            self.max_steps = self._base_env.max_time_steps
         except AttributeError:
             self.max_steps = 1000  # Default fallback
 
         self.current_step = 0
+        self._previous_option_id = -1
+        self._consecutive_same_option_count = 0
+        self._steps_since_prescribed = {abx: 0 for abx in self.antibiotic_names}
+
+        current_amr = self._get_current_amr_levels()
+        self._last_amr_start = current_amr
+        self._last_amr_end = current_amr
+        self._last_aggregate_stats = self._initialize_empty_aggregate_stats()
 
         # Reset all options
         for option in self.option_library.options.values():
@@ -117,6 +145,14 @@ class OptionsWrapper(gym.Wrapper):
 
         # Build initial manager observation
         manager_obs = self._build_manager_observation()
+
+        # Update observation space to match manager observation shape
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=manager_obs.shape,
+            dtype=np.float32,
+        )
 
         return manager_obs, info
 
@@ -150,9 +186,17 @@ class OptionsWrapper(gym.Wrapper):
         episode_terminated = False
         episode_truncated = False
 
+        amr_start = self._get_current_amr_levels()
+        tracked_patients = []
+
+        if self.current_env_obs is None:
+            raise RuntimeError("Environment observation not initialized. Call reset() first.")
+
+        current_obs = cast(np.ndarray, self.current_env_obs)
+
         for substep in range(int(option.k) if option.k != float('inf') else self.max_steps):
             # Build env_state
-            env_state = self._build_env_state(self.current_env_obs)
+            env_state = self._build_env_state(current_obs)
 
             # Get action from option (option accesses abx_name_to_index via env_state['option_library'])
             try:
@@ -168,11 +212,16 @@ class OptionsWrapper(gym.Wrapper):
 
             # Step base environment
             base_obs, base_reward, terminated, truncated, info = self.env.step(actions)
-            self.current_env_obs = base_obs
+            self.current_env_obs = cast(np.ndarray, base_obs)
+            current_obs = self.current_env_obs
             self.current_step += 1
 
+            tracked_patients.extend(env_state["patients"])
+            self._update_steps_since_prescribed(actions=actions)
+
             # Accumulate discounted reward
-            macro_reward += discount * base_reward
+            base_reward_value = float(base_reward)
+            macro_reward += discount * base_reward_value
             discount *= self.gamma
 
             # Check for early termination by option
@@ -186,6 +235,10 @@ class OptionsWrapper(gym.Wrapper):
                 break
 
         # Build manager observation
+        self._last_aggregate_stats = self._compute_aggregate_stats(tracked_patients=tracked_patients)
+        self._last_amr_start = amr_start
+        self._last_amr_end = self._get_current_amr_levels()
+        self._update_option_history(option_id=manager_action)
         manager_obs = self._build_manager_observation()
 
         # Build info dict
@@ -209,21 +262,28 @@ class OptionsWrapper(gym.Wrapper):
                 - 'patients': List of patient dicts
                 - 'num_patients': Number of patients
                 - 'current_amr_levels': Dict mapping antibiotic -> resistance
-                - 'current_step': Current timestep
+                - 'current_step': Current episode timestep (from env.current_time_step)
                 - 'max_steps': Episode length limit
+                - 'option_library': Reference to OptionLibrary for accessing abx_name_to_index
         """
         # Extract patient data using patient generator
-        num_patients = self.env.unwrapped.num_patients_per_time_step
+        num_patients = self._base_env.num_patients_per_time_step
         patients = self._extract_patients_from_obs(observation, num_patients)
 
         # Extract AMR levels
         current_amr_levels = self._get_current_amr_levels()
 
+        # Get current step from environment (should be exposed as current_time_step)
+        try:
+            current_step = self._base_env.current_time_step
+        except AttributeError:
+            current_step = 0
+
         env_state = {
             'patients': patients,
             'num_patients': num_patients,
             'current_amr_levels': current_amr_levels,
-            'current_step': self.current_step,
+            'current_step': current_step,
             'max_steps': self.max_steps,
             'option_library': self.option_library,  # Reference for options to access abx_name_to_index
         }
@@ -247,7 +307,9 @@ class OptionsWrapper(gym.Wrapper):
         patients = []
         try:
             # Get the patient objects from the environment
-            env_patients = self.env.unwrapped.current_patients
+            env_patients = self._base_env.current_patients
+            if env_patients is None:
+                raise ValueError("Environment current_patients not initialized.")
             for patient in env_patients:
                 patient_dict = {}
                 for attr in self.patient_generator.visible_patient_attributes:
@@ -259,7 +321,7 @@ class OptionsWrapper(gym.Wrapper):
                         # Fall back to true value
                         patient_dict[attr] = getattr(patient, attr, 0.0)
                 patients.append(patient_dict)
-        except (AttributeError, IndexError):
+        except (AttributeError, IndexError, ValueError):
             # Fallback: create dummy patient dicts if extraction fails
             patients = [
                 {attr: 0.5 for attr in self.patient_generator.visible_patient_attributes}
@@ -275,10 +337,10 @@ class OptionsWrapper(gym.Wrapper):
             Dict mapping antibiotic name -> resistance level (float in [0, 1]).
         """
         try:
-            leaky_balloons = self.env.unwrapped.leaky_balloons
+            amr_balloons = self._base_env.amr_balloon_models
             current_amr = {
-                abx_name: balloon.get_current_level()
-                for abx_name, balloon in leaky_balloons.items()
+                abx_name: balloon.get_volume()
+                for abx_name, balloon in amr_balloons.items()
             }
         except (AttributeError, TypeError):
             # Fallback: return zeros if not available
@@ -289,28 +351,143 @@ class OptionsWrapper(gym.Wrapper):
     def _build_manager_observation(self) -> np.ndarray:
         """Build manager-level observation.
         
-        For MVP, returns minimal observation:
-        - Current AMR levels for all antibiotics
-        - Current step / max_steps (progress)
+        Manager sees:
+        - Aggregate patient statistics over the previous macro-action
+        - AMR trajectory at macro-action start/end
+        - Option history and steps since last prescribed
+        - Episode progress
+        - Front-edge cohort features (summary stats or full vector)
         
         Returns:
             1D numpy array of floats.
         """
-        # Get current AMR levels
-        amr_levels = self._get_current_amr_levels()
-        antibiotic_names = list(self.option_library.abx_name_to_index.keys())
+        if self._last_aggregate_stats is None:
+            aggregate_stats = self._initialize_empty_aggregate_stats()
+        else:
+            aggregate_stats = self._last_aggregate_stats
+
+        amr_start = self._last_amr_start
+        if amr_start is None:
+            amr_start = self._get_current_amr_levels()
+
+        amr_end = self._last_amr_end
+        if amr_end is None:
+            amr_end = self._get_current_amr_levels()
+
         amr_obs = np.array(
-            [amr_levels.get(abx, 0.0) for abx in antibiotic_names],
+            [amr_start.get(abx, 0.0) for abx in self.antibiotic_names]
+            + [amr_end.get(abx, 0.0) for abx in self.antibiotic_names],
             dtype=np.float32,
         )
 
-        # Progress: normalized current step
+        option_history = np.array(
+            [
+                float(self._previous_option_id),
+                float(self._consecutive_same_option_count),
+            ]
+            + [float(self._steps_since_prescribed[abx]) for abx in self.antibiotic_names],
+            dtype=np.float32,
+        )
+
         progress = np.array([self.current_step / self.max_steps], dtype=np.float32)
+        front_edge = self._build_front_edge_features()
 
-        # Concatenate
-        manager_obs = np.concatenate([amr_obs, progress])
+        return np.concatenate([aggregate_stats, amr_obs, option_history, progress, front_edge])
 
-        return manager_obs
+    def _build_front_edge_features(self) -> np.ndarray:
+        """Build front-edge patient cohort features at the boundary timestep.
+
+        Returns:
+            np.ndarray: Either full cohort vector or summary stats (mean + std)
+                for each visible attribute.
+        """
+        num_patients = self._base_env.num_patients_per_time_step
+        visible_attrs = list(self.patient_generator.visible_patient_attributes)
+        if self.current_env_obs is None:
+            raise RuntimeError("Environment observation not initialized. Call reset() first.")
+        current_obs = cast(np.ndarray, self.current_env_obs)
+        patients = self._extract_patients_from_obs(current_obs, num_patients)
+
+        if not visible_attrs:
+            return np.zeros(0, dtype=np.float32)
+        if not patients:
+            if self.front_edge_use_full_vector:
+                length = num_patients * len(visible_attrs)
+            else:
+                length = 2 * len(visible_attrs)
+            return np.zeros(length, dtype=np.float32)
+
+        if self.front_edge_use_full_vector:
+            values = []
+            for patient in patients:
+                for attr in visible_attrs:
+                    values.append(float(patient.get(attr, 0.0)))
+            return np.array(values, dtype=np.float32)
+
+        cohort_matrix = np.array(
+            [
+                [float(patient.get(attr, 0.0)) for attr in visible_attrs]
+                for patient in patients
+            ],
+            dtype=np.float32,
+        )
+
+        means = np.mean(cohort_matrix, axis=0)
+        stds = np.std(cohort_matrix, axis=0)
+        stats = []
+        for idx in range(len(visible_attrs)):
+            stats.extend([means[idx], stds[idx]])
+        return np.array(stats, dtype=np.float32)
+
+    def _initialize_empty_aggregate_stats(self) -> np.ndarray:
+        visible_attrs = list(self.patient_generator.visible_patient_attributes)
+        if not visible_attrs:
+            return np.zeros(0, dtype=np.float32)
+        return np.zeros(len(visible_attrs) * 4, dtype=np.float32)
+
+    def _compute_aggregate_stats(self, tracked_patients: List[Dict[str, float]]) -> np.ndarray:
+        visible_attrs = list(self.patient_generator.visible_patient_attributes)
+        if not visible_attrs:
+            return np.zeros(0, dtype=np.float32)
+        if not tracked_patients:
+            return np.zeros(len(visible_attrs) * 4, dtype=np.float32)
+
+        matrix = np.array(
+            [
+                [float(patient.get(attr, 0.0)) for attr in visible_attrs]
+                for patient in tracked_patients
+            ],
+            dtype=np.float32,
+        )
+        means = np.mean(matrix, axis=0)
+        stds = np.std(matrix, axis=0)
+        maxs = np.max(matrix, axis=0)
+        mins = np.min(matrix, axis=0)
+        stats = []
+        for idx in range(len(visible_attrs)):
+            stats.extend([means[idx], stds[idx], maxs[idx], mins[idx]])
+        return np.array(stats, dtype=np.float32)
+
+    def _update_option_history(self, option_id: int) -> None:
+        if option_id == self._previous_option_id:
+            self._consecutive_same_option_count += 1
+        else:
+            self._consecutive_same_option_count = 1
+        self._previous_option_id = option_id
+
+    def _update_steps_since_prescribed(self, actions: np.ndarray) -> None:
+        prescribed = set()
+        for action in actions:
+            abx_name = self._action_index_to_abx.get(int(action))
+            if abx_name is None or abx_name == "no_treatment":
+                continue
+            prescribed.add(abx_name)
+
+        for abx in self.antibiotic_names:
+            if abx in prescribed:
+                self._steps_since_prescribed[abx] = 0
+            else:
+                self._steps_since_prescribed[abx] += 1
 
     def _validate_actions(self, actions: np.ndarray, option_name: str) -> None:
         """Validate actions returned by option.decide() (Layer 3 validation).
@@ -331,7 +508,7 @@ class OptionsWrapper(gym.Wrapper):
             )
 
         # Check shape
-        num_patients = self.env.unwrapped.num_patients_per_time_step
+        num_patients = self._base_env.num_patients_per_time_step
         if actions.shape != (num_patients,):
             raise ValueError(
                 f"Option '{option_name}': Expected action shape ({num_patients},), "

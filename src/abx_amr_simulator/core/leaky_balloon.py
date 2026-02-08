@@ -243,7 +243,7 @@ class AMR_LeakyBalloon:
         output_str = "Timestep\tPuffs\tVolume\n"
         
         for t, puffs in enumerate(puff_sequence):
-            volume = self.step(puffs, print_internal_state=True)
+            volume = self.step(puffs=puffs)
             output_str += f"{t}\t{puffs}\t{volume:.4f}\n"
             
         print(output_str)
@@ -289,7 +289,7 @@ class AMR_LeakyBalloon:
         
         volumes = []
         for puffs in puff_sequence:
-            volume = self.step(puffs)
+            volume = self.step(puffs=puffs)
             volumes.append(volume)
             
         plt.plot(volumes, label=title)

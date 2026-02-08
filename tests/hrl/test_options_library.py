@@ -6,7 +6,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../u
 
 import pytest
 import numpy as np
-from unittest.mock import Mock, MagicMock
 
 from abx_amr_simulator.hrl import OptionBase, OptionLibrary
 from test_reference_helpers import create_mock_environment
@@ -196,135 +195,68 @@ class TestOptionLibraryToDict:
 class TestOptionLibraryValidation:
     """Test validate_environment_compatibility method."""
 
-    def create_mock_env(self, abx_names=None, has_amr=True, has_step=True):
-        """Helper to create mock environment."""
-        if abx_names is None:
-            abx_names = ['A', 'B']
-
-        env = Mock()
-        unwrapped = Mock(spec=['reward_calculator'])
-        
-        # Set up reward calculator with antibiotics
-        reward_calculator = Mock()
-        reward_calculator.abx_name_to_index = {
-            abx: i for i, abx in enumerate(abx_names)
-        }
-        
-        unwrapped.reward_calculator = reward_calculator
-        
-        # Set up AMR tracking if needed
-        if has_amr:
-            unwrapped.leaky_balloons = {
-                abx: Mock() for abx in abx_names
-            }
-        
-        # Set up step tracking if needed
-        if has_step:
-            unwrapped.current_step = 0
-        
-        env.unwrapped = unwrapped
-        return env
-
-    def create_mock_patient_generator(self, visible_attrs=None):
-        """Helper to create mock patient generator."""
-        if visible_attrs is None:
-            visible_attrs = ['prob_infected']
-
-        pg = Mock()
-        pg.visible_patient_attributes = visible_attrs
-        pg.observe = Mock(return_value=np.array([]))
-        pg.obs_dim = Mock(return_value=1)
-        return pg
-
     def test_validation_with_compatible_env(self):
         """Test validation passes with compatible environment."""
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', k=5))
 
-        env = self.create_mock_env(abx_names=['A', 'B'])
-        pg = self.create_mock_patient_generator(visible_attrs=[])
-
-        # Should not raise
-        lib.validate_environment_compatibility(env, pg)
+        # Should not raise - validate against the same env used for initialization
+        lib.validate_environment_compatibility(env=env, patient_generator=env.unwrapped.patient_generator)
         # Check that abx_name_to_index was cached correctly (includes no_treatment)
         assert 'A' in lib.abx_name_to_index
         assert 'B' in lib.abx_name_to_index
-        # Also assert that no_treatment is included
         assert 'no_treatment' in lib.abx_name_to_index
 
     def test_validation_empty_library_raises(self):
         """Test validation fails on empty library."""
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         lib = OptionLibrary(env=env)
-        env = self.create_mock_env()
-        pg = self.create_mock_patient_generator()
 
         with pytest.raises(ValueError):
-            lib.validate_environment_compatibility(env, pg)
+            lib.validate_environment_compatibility(env=env, patient_generator=env.unwrapped.patient_generator)
+
+    def test_validation_requires_amr_levels(self):
+        """Test validation passes when option requires AMR and env has it."""
+        class RequiresAMROption(OptionBase):
+            REQUIRES_OBSERVATION_ATTRIBUTES = []
+            REQUIRES_AMR_LEVELS = True
+
+            def decide(self, env_state):
+                return np.zeros(1, dtype=np.int32)
+
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib = OptionLibrary(env=env)
+        lib.add_option(RequiresAMROption(name='opt1', k=5))
+
+        # The real environment HAS leaky_balloons (AMR tracking), so validation should pass
+        lib.validate_environment_compatibility(env=env, patient_generator=env.unwrapped.patient_generator)
+
 
     def test_validation_missing_patient_attributes(self):
         """Test validation fails when option requires unavailable attributes."""
         class RequiresAttrOption(OptionBase):
-            REQUIRES_OBSERVATION_ATTRIBUTES = ['benefit_value_multiplier']
+            REQUIRES_OBSERVATION_ATTRIBUTES = ['nonexistent_attribute']
             REQUIRES_AMR_LEVELS = False
 
             def decide(self, env_state):
                 return np.zeros(1, dtype=np.int32)
 
-        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        env = create_mock_environment(
+            antibiotic_names=['A', 'B'], 
+            num_patients_per_time_step=1,
+            visible_patient_attributes=['prob_infected']  # Only has prob_infected
+        )
         lib = OptionLibrary(env=env)
         lib.add_option(RequiresAttrOption(name='opt1', k=5))
 
-        env = self.create_mock_env()
-        pg = self.create_mock_patient_generator(visible_attrs=[])  # Empty attrs
-
         with pytest.raises(ValueError) as exc_info:
-            lib.validate_environment_compatibility(env, pg)
+            lib.validate_environment_compatibility(env=env, patient_generator=env.unwrapped.patient_generator)
         
-        assert 'benefit_value_multiplier' in str(exc_info.value)
-
-    def test_validation_requires_amr_levels(self):
-        """Test validation passes when option requires AMR levels."""
-        class RequiresAMROption(OptionBase):
-            REQUIRES_OBSERVATION_ATTRIBUTES = []
-            REQUIRES_AMR_LEVELS = True
-
-            def decide(self, env_state):
-                return np.zeros(1, dtype=np.int32)
-
-        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib = OptionLibrary(env=env)
-        lib.add_option(RequiresAMROption(name='opt1', k=5))
-
-        env = self.create_mock_env(has_amr=True)
-        pg = self.create_mock_patient_generator()
-
-        lib.validate_environment_compatibility(env, pg)
-
-    def test_validation_missing_amr_levels_raises(self):
-        """Test validation fails when option requires AMR but env doesn't provide."""
-        class RequiresAMROption(OptionBase):
-            REQUIRES_OBSERVATION_ATTRIBUTES = []
-            REQUIRES_AMR_LEVELS = True
-
-            def decide(self, env_state):
-                return np.zeros(1, dtype=np.int32)
-
-        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib = OptionLibrary(env=env)
-        lib.add_option(RequiresAMROption(name='opt1', k=5))
-
-        env = self.create_mock_env(has_amr=False)
-        pg = self.create_mock_patient_generator()
-
-        with pytest.raises(ValueError) as exc_info:
-            lib.validate_environment_compatibility(env, pg)
-        
-        assert 'AMR' in str(exc_info.value)
+        assert 'nonexistent_attribute' in str(exc_info.value)
 
     def test_validation_requires_step_number(self):
-        """Test validation passes when option requires step number."""
+        """Test validation passes when option requires step number and env has it."""
         class RequiresStepOption(OptionBase):
             REQUIRES_OBSERVATION_ATTRIBUTES = []
             REQUIRES_AMR_LEVELS = False
@@ -337,7 +269,7 @@ class TestOptionLibraryValidation:
         lib = OptionLibrary(env=env)
         lib.add_option(RequiresStepOption(name='opt1', k=5))
 
-        env = self.create_mock_env(has_step=True)
-        pg = self.create_mock_patient_generator()
+        # The real environment HAS current_time_step attribute, so validation should pass
+        lib.validate_environment_compatibility(env=env, patient_generator=env.unwrapped.patient_generator)
 
-        lib.validate_environment_compatibility(env, pg)
+

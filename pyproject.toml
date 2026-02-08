@@ -65,6 +65,7 @@ gui = [
 abx-amr-simulator-experiment-runner = "abx_amr_simulator.gui.runner_entry:main"
 abx-amr-simulator-experiment-viewer = "abx_amr_simulator.gui.viewer_entry:main"
 abx-amr-simulator-launch-gui = "abx_amr_simulator.gui.launch_apps:main"
+abx-amr-simulator-setup-options = "abx_amr_simulator.hrl.setup_options:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

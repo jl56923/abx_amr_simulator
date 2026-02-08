@@ -28,15 +28,27 @@ class SimpleOption(OptionBase):
         return np.full(num_patients, self.action_value, dtype=np.int32)
 
 
-def create_mock_env(num_patients=2, num_abx=2, max_steps=100):
+def create_mock_env(num_patients=2, num_abx=2, max_steps=100, visible_attrs=None, patient_values=None):
     """Helper to create a mock environment."""
     env = Mock(spec=gym.Env)
     unwrapped = Mock()
+
+    if visible_attrs is None:
+        visible_attrs = ["prob_infected"]
     
     # Set up basic attributes
     unwrapped.num_patients_per_time_step = num_patients
     unwrapped.max_steps = max_steps
-    unwrapped.current_patients = [Mock() for _ in range(num_patients)]
+    unwrapped.current_patients = []
+    for i in range(num_patients):
+        patient = Mock()
+        for attr in visible_attrs:
+            if patient_values and attr in patient_values:
+                value = patient_values[attr][i]
+            else:
+                value = float(i + 1) / 10.0
+            setattr(patient, f"{attr}_obs", value)
+        unwrapped.current_patients.append(patient)
     unwrapped.current_step = 0
     
     # Set up reward calculator
@@ -45,15 +57,15 @@ def create_mock_env(num_patients=2, num_abx=2, max_steps=100):
     reward_calculator.abx_name_to_index = {abx: i for i, abx in enumerate(abx_names)}
     unwrapped.reward_calculator = reward_calculator
     
-    # Set up leaky balloons for AMR tracking
-    unwrapped.leaky_balloons = {
+    # Set up AMR balloon models for AMR tracking
+    unwrapped.amr_balloon_models = {
         abx: Mock(get_current_level=Mock(return_value=0.5))
         for abx in abx_names
     }
     
     # Set up patient generator
     patient_generator = Mock()
-    patient_generator.visible_patient_attributes = []
+    patient_generator.visible_patient_attributes = visible_attrs
     unwrapped.patient_generator = patient_generator
     
     env.unwrapped = unwrapped
@@ -143,8 +155,72 @@ class TestOptionsWrapperReset:
         
         assert isinstance(manager_obs, np.ndarray)
         assert isinstance(info, dict)
-        # Manager obs should have: 2 AMR levels + 1 progress = 3
-        assert manager_obs.shape == (3,)
+        # Manager obs should include:
+        # - aggregate stats (4 * num_visible_attrs)
+        # - AMR trajectory (2 * num_abx)
+        # - option history (1 + 1 + num_abx)
+        # - progress (1)
+        # - front-edge stats (2 * num_visible_attrs)
+        assert manager_obs.shape == (15,)
+
+    def test_reset_includes_front_edge_summary_stats(self):
+        """Test that reset appends mean + std for front-edge attributes."""
+        patient_values = {
+            "prob_infected": [0.2, 0.4, 0.6],
+            "benefit_value_multiplier": [1.0, 2.0, 3.0],
+        }
+        env = create_mock_env(
+            num_patients=3,
+            num_abx=2,
+            visible_attrs=["prob_infected", "benefit_value_multiplier"],
+            patient_values=patient_values,
+        )
+        lib = OptionLibrary(env=env)
+        lib.add_option(SimpleOption(name='opt1', action_value=0))
+
+        wrapper = OptionsWrapper(env=env, option_library=lib, front_edge_use_full_vector=False)
+        manager_obs, _ = wrapper.reset()
+
+        front_edge = manager_obs[-4:]
+        expected = np.array(
+            [
+                np.mean(patient_values["prob_infected"]),
+                np.std(patient_values["prob_infected"]),
+                np.mean(patient_values["benefit_value_multiplier"]),
+                np.std(patient_values["benefit_value_multiplier"]),
+            ],
+            dtype=np.float32,
+        )
+        assert np.allclose(front_edge, expected, atol=1e-6)
+
+    def test_reset_includes_front_edge_full_vector(self):
+        """Test that reset appends full cohort vector when enabled."""
+        patient_values = {
+            "prob_infected": [0.2, 0.4, 0.6],
+            "benefit_value_multiplier": [1.0, 2.0, 3.0],
+        }
+        env = create_mock_env(
+            num_patients=3,
+            num_abx=2,
+            visible_attrs=["prob_infected", "benefit_value_multiplier"],
+            patient_values=patient_values,
+        )
+        lib = OptionLibrary(env=env)
+        lib.add_option(SimpleOption(name='opt1', action_value=0))
+
+        wrapper = OptionsWrapper(env=env, option_library=lib, front_edge_use_full_vector=True)
+        manager_obs, _ = wrapper.reset()
+
+        front_edge = manager_obs[-6:]
+        expected = np.array(
+            [
+                0.2, 1.0,
+                0.4, 2.0,
+                0.6, 3.0,
+            ],
+            dtype=np.float32,
+        )
+        assert np.allclose(front_edge, expected, atol=1e-6)
 
     def test_reset_calls_option_reset(self):
         """Test that reset calls reset on all options."""
