@@ -229,7 +229,7 @@ def get_example_config(name: str) -> Path:
 
     examples_dir = files("abx_amr_simulator").joinpath("configs/examples")
     candidate = examples_dir / f"{name}.yaml"
-    return Path(candidate)
+    return Path(str(candidate))
 
 
 def setup_config_folders_with_defaults(target_path: Path) -> None:

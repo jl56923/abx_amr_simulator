@@ -173,8 +173,36 @@ class OptionLibrary:
                     f"Add missing attributes to patient_generator.visible_patient_attributes."
                 )
 
-            # Check 2: Antibiotic references (implicit - options reference antibiotics via names)
-            # We don't explicitly check here, but OptionsWrapper will validate at runtime.
+            # Check 2: Antibiotic name compatibility
+            # Verify all antibiotics referenced by the option exist in environment's action space
+            try:
+                referenced_abx = option.get_referenced_antibiotics()
+            except NotImplementedError:
+                raise ValueError(
+                    f"Option '{option_name}' does not implement get_referenced_antibiotics(). "
+                    f"All options must implement this method for validation."
+                )
+            
+            # Validate each referenced antibiotic
+            available_abx = set(self.abx_name_to_index.keys())
+            for abx_name in referenced_abx:
+                if abx_name not in available_abx:
+                    # Check if user provided a variation of 'no_treatment'
+                    if abx_name.strip().upper() in {"NO_RX", "NO_TREAT"}:
+                        raise ValueError(
+                            f"Option '{option_name}' references antibiotic '{abx_name}', "
+                            f"but only 'no_treatment' (lowercase, with underscore) is valid. "
+                            f"Available antibiotics: {sorted(available_abx)}. "
+                            f"Fix: Change '{abx_name}' to 'no_treatment' in option config."
+                        )
+                    else:
+                        raise ValueError(
+                            f"Option '{option_name}' references antibiotic '{abx_name}', "
+                            f"but it is not in environment's action space. "
+                            f"Available antibiotics: {sorted(available_abx)}. "
+                            f"Fix: Either add '{abx_name}' to reward_calculator config or "
+                            f"change option to use an available antibiotic."
+                        )
 
             # Check 3: AMR levels requirement
             if option.REQUIRES_AMR_LEVELS:

@@ -1,0 +1,5 @@
+# Default config for block option
+# antibiotic: name of antibiotic or NO_RX
+# duration: number of steps to repeat the action
+antibiotic: "A"
+duration: 5

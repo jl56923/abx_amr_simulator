@@ -161,3 +161,36 @@ class OptionBase(ABC):
                 return current_amr > 0.8
         """
         return False
+
+    @abstractmethod
+    def get_referenced_antibiotics(self) -> List[str]:
+        """Return set of antibiotic names referenced by this option.
+        
+        This method enables validation that all antibiotics used by the option are
+        available in the environment's action space. Called during option library
+        compatibility validation before training starts.
+        
+        The antibiotic names must match EXACTLY the canonical forms in the environment's
+        reward calculator abx_name_to_index mapping. No normalization or fuzzy matching:
+        - 'no_treatment' is the ONLY valid form for the no-treatment action
+        - 'NO_RX', 'no_treat', 'None', etc. are INVALID and will fail validation
+        - Antibiotic names are case-sensitive and whitespace-sensitive
+        
+        Returns:
+            List[str]: List of antibiotic names this option references.
+                Empty list if option never prescribes (unlikely but valid).
+        
+        Example (BlockOption prescribes 'A'):
+            def get_referenced_antibiotics(self):
+                return [self.antibiotic]
+        
+        Example (AlternationOption cycles through ['A', 'B', 'no_treatment']):
+            def get_referenced_antibiotics(self):
+                return list(self.sequence)  # ['A', 'B', 'no_treatment']
+        
+        Example (Adaptive option with conditional logic):
+            def get_referenced_antibiotics(self):
+                # Return ALL antibiotics that might be prescribed
+                return ['A', 'B', 'no_treatment']
+        """
+        pass

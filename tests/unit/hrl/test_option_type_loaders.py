@@ -8,16 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import sys
-
 from abx_amr_simulator.hrl import OptionLibrary, OptionLibraryLoader
 
-
-UTILS_PATH = Path(__file__).resolve().parent.parent / "utils"
-sys.path = [f"{UTILS_PATH}"] + sys.path
-
-from test_reference_helpers import create_mock_environment
-
+from ..utils.test_reference_helpers import create_mock_environment
 
 def _load_module(module_name: str, module_path: Path):
     spec = importlib.util.spec_from_file_location(
