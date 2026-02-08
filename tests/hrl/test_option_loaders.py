@@ -1,5 +1,9 @@
 """Unit tests for OptionLibraryLoader class."""
 
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../unit/utils')))
+
 import pytest
 import tempfile
 import yaml
@@ -7,6 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from abx_amr_simulator.hrl import OptionBase, OptionLibrary, OptionLibraryLoader
+from test_reference_helpers import create_mock_environment
 import numpy as np
 
 
@@ -19,8 +24,14 @@ class SimpleBlockOption(OptionBase):
         super().__init__(name=name, k=duration)
         self.antibiotic = antibiotic
 
-    def decide(self, env_state, antibiotic_names):
+    def decide(self, env_state):
         num_patients = env_state['num_patients']
+        option_library = env_state.get('option_library')
+        if option_library is None:
+            raise ValueError("option_library not found in env_state")
+        abx_name_to_index = option_library.abx_name_to_index
+        antibiotic_names = list(abx_name_to_index.keys())
+        
         try:
             idx = antibiotic_names.index(self.antibiotic)
         except ValueError:
@@ -45,8 +56,14 @@ class BlockOption(OptionBase):
         super().__init__(name=name, k=duration)
         self.antibiotic = antibiotic
     
-    def decide(self, env_state, antibiotic_names):
+    def decide(self, env_state):
         num_patients = env_state['num_patients']
+        option_library = env_state.get('option_library')
+        if option_library is None:
+            raise ValueError("option_library not found in env_state")
+        abx_name_to_index = option_library.abx_name_to_index
+        antibiotic_names = list(abx_name_to_index.keys())
+        
         try:
             idx = antibiotic_names.index(self.antibiotic)
         except ValueError:
@@ -102,7 +119,8 @@ class TestOptionLibraryLoaderBasic:
         lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
         
         # Load library
-        lib, resolved = OptionLibraryLoader.load_library(str(lib_config_path))
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib, resolved = OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
         
         # Verify
         assert lib.name == 'test_lib'
@@ -113,16 +131,18 @@ class TestOptionLibraryLoaderBasic:
 
     def test_load_library_missing_file(self):
         """Test loading from nonexistent file."""
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(FileNotFoundError):
-            OptionLibraryLoader.load_library('/nonexistent/path/config.yaml')
+            OptionLibraryLoader.load_library(library_config_path='/nonexistent/path/config.yaml', env=env)
 
     def test_load_library_empty_config(self, tmp_path):
         """Test loading from empty config."""
         lib_config_path = tmp_path / 'empty.yaml'
         lib_config_path.write_text('', encoding='utf-8')
         
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(ValueError):
-            OptionLibraryLoader.load_library(str(lib_config_path))
+            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
 
     def test_load_library_no_options(self, tmp_path):
         """Test loading config with no options."""
@@ -133,8 +153,9 @@ class TestOptionLibraryLoaderBasic:
         lib_config_path = tmp_path / 'empty_lib.yaml'
         lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
         
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(ValueError):
-            OptionLibraryLoader.load_library(str(lib_config_path))
+            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
 
 
 class TestOptionLibraryLoaderMultipleOptions:
@@ -177,7 +198,8 @@ class TestOptionLibraryLoaderMultipleOptions:
         lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
         
         # Load library
-        lib, resolved = OptionLibraryLoader.load_library(str(lib_config_path))
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib, resolved = OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
         
         # Verify
         assert len(lib) == 3
@@ -206,8 +228,9 @@ class TestOptionLibraryLoaderErrors:
         lib_config_path = lib_dir / 'test_lib.yaml'
         lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
         
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(RuntimeError) as exc_info:
-            OptionLibraryLoader.load_library(str(lib_config_path))
+            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
         
         assert 'option_name' in str(exc_info.value)
 
@@ -230,8 +253,9 @@ class TestOptionLibraryLoaderErrors:
         lib_config_path = lib_dir / 'test_lib.yaml'
         lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
         
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(RuntimeError):
-            OptionLibraryLoader.load_library(str(lib_config_path))
+            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
 
     def test_loader_missing_function(self, tmp_path):
         """Test error when loader module missing function."""
@@ -265,8 +289,9 @@ class TestOptionLibraryLoaderErrors:
         lib_config_path = lib_dir / 'test_lib.yaml'
         lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
         
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(RuntimeError) as exc_info:
-            OptionLibraryLoader.load_library(str(lib_config_path))
+            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
         
         assert 'load_block_option' in str(exc_info.value)
 
@@ -310,7 +335,8 @@ class TestOptionLibraryLoaderConfigMerge:
         lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
         
         # Load and verify
-        lib, resolved = OptionLibraryLoader.load_library(str(lib_config_path))
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib, resolved = OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
         
         # Check resolved config shows the merge
         opt_resolved = resolved['options'][0]

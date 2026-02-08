@@ -128,6 +128,7 @@ def create_mock_environment(
         update_visible_AMR_levels_every_n_timesteps=update_visible_AMR_levels_every_n_timesteps,
         add_noise_to_visible_AMR_levels=add_noise_to_visible_AMR_levels,
         add_bias_to_visible_AMR_levels=add_bias_to_visible_AMR_levels,
+        max_time_steps=max_time_steps,
         crossresistance_matrix=crossresistance_matrix,
         include_steps_since_amr_update_in_obs=include_steps_since_amr_update_in_obs,
     )

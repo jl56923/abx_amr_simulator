@@ -14,21 +14,38 @@ class OptionLibrary:
     The library stores option instances and provides validation to ensure all options
     are compatible with the environment's patient generator and antibiotic configuration.
     
+    The library also stores a reference to the environment and caches the antibiotic
+    name-to-index mapping from the environment's RewardCalculator. This provides a
+    single source of truth that options can access via env_state.
+    
     Attributes:
         name: Human-readable name for this library (e.g., "default_deterministic").
+        env: Reference to the ABXAMREnv instance (used to extract antibiotic mappings).
         options: Dict mapping option name (str) -> OptionBase instance.
-        antibiotic_names: Ordered list of antibiotic names (extracted and cached during validation).
+        abx_name_to_index: Dict mapping antibiotic name -> action index (cached from env).
     """
 
-    def __init__(self, name: str = "default"):
-        """Initialize an empty option library.
+    def __init__(self, env: Any, name: str = "default"):
+        """Initialize option library with environment reference.
         
         Args:
+            env: The ABXAMREnv instance (stores reference and extracts antibiotic mappings).
             name: Human-readable identifier for this library.
+        
+        Raises:
+            ValueError: If env doesn't have reward_calculator.abx_name_to_index.
         """
         self.name = name
+        self.env = env
         self.options: Dict[str, OptionBase] = {}
-        self.antibiotic_names: List[str] = []
+        
+        # Extract and cache antibiotic mapping from environment (single source of truth)
+        try:
+            self.abx_name_to_index = env.unwrapped.reward_calculator.abx_name_to_index
+        except AttributeError as e:
+            raise ValueError(
+                f"Environment must have reward_calculator.abx_name_to_index. Error: {e}"
+            )
 
     def add_option(self, option: OptionBase) -> None:
         """Add an option to the library.
@@ -129,17 +146,8 @@ class OptionLibrary:
                 f"Library '{self.name}' is empty. Add at least one option before validation."
             )
 
-        # Extract antibiotic names from environment
-        try:
-            abx_name_to_index = env.unwrapped.reward_calculator.abx_name_to_index
-            self.antibiotic_names = list(abx_name_to_index.keys())
-        except AttributeError as e:
-            raise ValueError(
-                f"Environment must have reward_calculator.abx_name_to_index dict. "
-                f"Got error: {e}"
-            )
-
-        if not self.antibiotic_names:
+        # Antibiotic names are already extracted and cached in self.abx_name_to_index at init
+        if not self.abx_name_to_index:
             raise ValueError(
                 "Environment has no antibiotics configured (abx_name_to_index is empty)."
             )
@@ -223,5 +231,5 @@ class OptionLibrary:
             'name': self.name,
             'num_options': len(self.options),
             'options': options_info,
-            'antibiotic_names': self.antibiotic_names,
+            'antibiotic_names': list(self.abx_name_to_index.keys()),
         }

@@ -53,17 +53,7 @@ class OptionsWrapper(gym.Wrapper):
         self.option_library = option_library
         self.gamma = gamma
 
-        # Extract antibiotic names from environment
-        try:
-            abx_name_to_index = env.unwrapped.reward_calculator.abx_name_to_index
-            self.antibiotic_names = list(abx_name_to_index.keys())
-        except AttributeError as e:
-            raise ValueError(
-                f"Environment must have reward_calculator.abx_name_to_index. Error: {e}"
-            )
-
-        if not self.antibiotic_names:
-            raise ValueError("Environment has no antibiotics configured.")
+        # Antibiotic names are accessed via option_library.abx_name_to_index (no duplication)
 
         # Extract patient generator
         try:
@@ -164,9 +154,9 @@ class OptionsWrapper(gym.Wrapper):
             # Build env_state
             env_state = self._build_env_state(self.current_env_obs)
 
-            # Get action from option
+            # Get action from option (option accesses abx_name_to_index via env_state['option_library'])
             try:
-                actions = option.decide(env_state, self.antibiotic_names)
+                actions = option.decide(env_state)
             except Exception as e:
                 raise RuntimeError(
                     f"Option '{option.name}' decide() failed: {e}\n"
@@ -235,6 +225,7 @@ class OptionsWrapper(gym.Wrapper):
             'current_amr_levels': current_amr_levels,
             'current_step': self.current_step,
             'max_steps': self.max_steps,
+            'option_library': self.option_library,  # Reference for options to access abx_name_to_index
         }
 
         return env_state
@@ -307,8 +298,9 @@ class OptionsWrapper(gym.Wrapper):
         """
         # Get current AMR levels
         amr_levels = self._get_current_amr_levels()
+        antibiotic_names = list(self.option_library.abx_name_to_index.keys())
         amr_obs = np.array(
-            [amr_levels.get(abx, 0.0) for abx in self.antibiotic_names],
+            [amr_levels.get(abx, 0.0) for abx in antibiotic_names],
             dtype=np.float32,
         )
 
@@ -353,11 +345,13 @@ class OptionsWrapper(gym.Wrapper):
             )
 
         # Check action range
-        max_action = len(self.antibiotic_names)  # 0 to len-1 = prescribe; len = NO_RX
+        num_antibiotics = len(self.option_library.abx_name_to_index)
+        max_action = num_antibiotics  # 0 to num_antibiotics-1 = prescribe; num_antibiotics = NO_RX
         if np.any((actions < 0) | (actions > max_action)):
             invalid_actions = actions[(actions < 0) | (actions > max_action)]
+            antibiotic_names = list(self.option_library.abx_name_to_index.keys())
             raise ValueError(
                 f"Option '{option_name}': Invalid action indices {set(invalid_actions)}. "
-                f"Valid range: [0, {max_action}] for {len(self.antibiotic_names)} antibiotics "
-                f"{self.antibiotic_names}"
+                f"Valid range: [0, {max_action}] for {num_antibiotics} antibiotics "
+                f"{antibiotic_names}"
             )

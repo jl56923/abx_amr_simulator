@@ -33,6 +33,7 @@ class OptionLibraryLoader:
     @staticmethod
     def load_library(
         library_config_path: str,
+        env: Any,
         library_name: str = None,
     ) -> Tuple[OptionLibrary, Dict[str, Any]]:
         """Load an option library from YAML configuration.
@@ -40,6 +41,7 @@ class OptionLibraryLoader:
         Args:
             library_config_path: Path to library meta-config YAML file.
                 Example: 'experiments/options/option_libraries/default_deterministic.yaml'
+            env: The ABXAMREnv instance (passed to OptionLibrary for antibiotic mapping extraction).
             library_name: Optional override for library name (from config if not provided).
         
         Returns:
@@ -54,7 +56,8 @@ class OptionLibraryLoader:
         
         Example:
             lib, resolved_cfg = OptionLibraryLoader.load_library(
-                'experiments/options/option_libraries/default_deterministic.yaml'
+                library_config_path='experiments/options/option_libraries/default_deterministic.yaml',
+                env=env
             )
             # Now lib contains all options, ready for OptionsWrapper
         """
@@ -78,8 +81,8 @@ class OptionLibraryLoader:
         if not options_specs:
             raise ValueError(f"Library config has no options: {config_path}")
 
-        # Create library
-        library = OptionLibrary(name=lib_name)
+        # Create library (pass env to extract antibiotic mappings)
+        library = OptionLibrary(env=env, name=lib_name)
         resolved_options = []
 
         # Load each option

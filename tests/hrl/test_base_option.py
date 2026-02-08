@@ -28,7 +28,7 @@ class ConcreteTestOption(OptionBase):
     REQUIRES_AMR_LEVELS = False
     REQUIRES_STEP_NUMBER = False
 
-    def decide(self, env_state, antibiotic_names):
+    def decide(self, env_state):
         num_patients = env_state['num_patients']
         return np.zeros(num_patients, dtype=np.int32)
 
@@ -87,7 +87,7 @@ class TestOptionBaseDecide:
             'num_patients': 2,
             'current_amr_levels': {},
         }
-        actions = opt.decide(env_state, ['A', 'B'])
+        actions = opt.decide(env_state)
 
         assert isinstance(actions, np.ndarray)
         assert actions.shape == (2,)
@@ -103,7 +103,7 @@ class TestOptionBaseDecide:
                 'num_patients': n_patients,
                 'current_amr_levels': {},
             }
-            actions = opt.decide(env_state, ['A', 'B'])
+            actions = opt.decide(env_state)
             assert actions.shape == (n_patients,)
 
 
@@ -156,8 +156,16 @@ class TestOptionBaseSubclassExample:
             super().__init__(name=name, k=k)
             self.antibiotic = antibiotic
 
-        def decide(self, env_state, antibiotic_names):
+        def decide(self, env_state):
             num_patients = env_state['num_patients']
+            # Get antibiotic names from option_library in env_state
+            option_library = env_state.get('option_library')
+            if option_library is None:
+                raise ValueError("option_library not found in env_state")
+            
+            abx_name_to_index = option_library.abx_name_to_index
+            antibiotic_names = list(abx_name_to_index.keys())
+            
             try:
                 action_idx = antibiotic_names.index(self.antibiotic)
             except ValueError:
@@ -168,24 +176,43 @@ class TestOptionBaseSubclassExample:
 
     def test_block_option_prescribe_a(self):
         """Test BlockOption prescribing antibiotic A."""
+        # Create mock option_library
+        class MockOptionLibrary:
+            abx_name_to_index = {'A': 0, 'B': 1, 'C': 2}
+        
         opt = self.BlockOption(name='A_5', antibiotic='A', k=5)
-        env_state = {'num_patients': 3}
-        actions = opt.decide(env_state, ['A', 'B', 'C'])
+        env_state = {
+            'num_patients': 3,
+            'option_library': MockOptionLibrary()
+        }
+        actions = opt.decide(env_state)
 
         assert np.array_equal(actions, [0, 0, 0])
 
     def test_block_option_prescribe_different_abx(self):
         """Test BlockOption with different antibiotics."""
+        class MockOptionLibrary:
+            abx_name_to_index = {'A': 0, 'B': 1}
+        
         opt_b = self.BlockOption(name='B_10', antibiotic='B', k=10)
-        env_state = {'num_patients': 2}
-        actions = opt_b.decide(env_state, ['A', 'B'])
+        env_state = {
+            'num_patients': 2,
+            'option_library': MockOptionLibrary()
+        }
+        actions = opt_b.decide(env_state)
 
         assert np.array_equal(actions, [1, 1])
 
     def test_block_option_invalid_antibiotic(self):
         """Test BlockOption with invalid antibiotic."""
+        class MockOptionLibrary:
+            abx_name_to_index = {'A': 0, 'B': 1}
+        
         opt = self.BlockOption(name='X_5', antibiotic='X', k=5)
-        env_state = {'num_patients': 1}
+        env_state = {
+            'num_patients': 1,
+            'option_library': MockOptionLibrary()
+        }
         
         with pytest.raises(ValueError):
-            opt.decide(env_state, ['A', 'B'])
+            opt.decide(env_state)
