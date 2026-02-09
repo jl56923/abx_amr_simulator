@@ -233,9 +233,9 @@ def main():
             sys.exit(1)
         
         # Load config from prior results
-        prior_config_path = os.path.join(prior_results_path, 'config.yaml')
+        prior_config_path = os.path.join(prior_results_path, 'full_agent_env_config.yaml')
         if not os.path.exists(prior_config_path):
-            print(f"Error: config.yaml not found in {prior_results_path}")
+            print(f"Error: full_agent_env_config.yaml not found in {prior_results_path}")
             sys.exit(1)
         
         config = load_config(prior_config_path)
@@ -330,9 +330,12 @@ def main():
         
         # Wrap with OptionsWrapper if using HRL
         if algorithm in ['HRL_PPO', 'HRL_DQN']:
-            from abx_amr_simulator.utils import wrap_environment_for_hrl
+            from abx_amr_simulator.utils import wrap_environment_for_hrl, save_option_library_config
             print("Wrapping environment with OptionsWrapper for HRL...")
             env = wrap_environment_for_hrl(env, config)
+            # Save resolved option library config for reproducibility
+            if hasattr(env, 'resolved_option_library_config'):
+                save_option_library_config(env.resolved_option_library_config, run_dir)
         
         # Now load the agent with the environment
         agent = AgentClass.load(path=model_path, env=env)
@@ -594,11 +597,14 @@ def main():
         # Wrap with OptionsWrapper if using HRL
         algorithm = config.get('algorithm', 'PPO')
         if algorithm in ['HRL_PPO', 'HRL_DQN']:
-            from abx_amr_simulator.utils import wrap_environment_for_hrl
+            from abx_amr_simulator.utils import wrap_environment_for_hrl, save_option_library_config
             print("Wrapping environment with OptionsWrapper for HRL...")
             env = wrap_environment_for_hrl(env, config)
             print(f"Manager observation space: {env.observation_space}")
             print(f"Manager action space (option selection): {env.action_space}")
+            # Save resolved option library config for reproducibility
+            if hasattr(env, 'resolved_option_library_config'):
+                save_option_library_config(env.resolved_option_library_config, run_dir)
 
         # Persist action mapping for analysis (abx -> index and index -> abx)
         try:

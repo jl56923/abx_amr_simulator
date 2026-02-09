@@ -300,7 +300,7 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "Options
             f"  option_library: {option_library_path}"
         )
 
-    option_library, _ = OptionLibraryLoader.load_library(
+    option_library, resolved_option_library_config = OptionLibraryLoader.load_library(
         library_config_path=str(library_path),
         env=env,
     )
@@ -316,6 +316,11 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "Options
         gamma=gamma,
         front_edge_use_full_vector=front_edge_use_full_vector,
     )
+    
+    # Attach resolved config to wrapped environment for saving
+    # Include the absolute library path for reproducibility
+    resolved_option_library_config['library_config_path'] = str(library_path)
+    wrapped_env.resolved_option_library_config = resolved_option_library_config
     
     return wrapped_env
 
@@ -635,8 +640,10 @@ def create_run_directory(config: Dict[str, Any], project_root: str) -> tuple:
 def save_training_config(config: Dict[str, Any], run_dir: str):
     """Save full experiment configuration as YAML in run directory.
     
-    Writes config dictionary to <run_dir>/config.yaml for reproducibility and
-    experiment record-keeping. This enables exact replication of training runs.
+    Writes the fully resolved agent and environment configuration to 
+    <run_dir>/full_agent_env_config.yaml for reproducibility and experiment 
+    record-keeping. This is the complete, merged umbrella config (all subconfigs 
+    resolved and all parameter overrides applied).
     
     Args:
         config (Dict[str, Any]): Full experiment configuration dictionary (as loaded
@@ -645,11 +652,33 @@ def save_training_config(config: Dict[str, Any], run_dir: str):
     
     Example:
         >>> save_training_config(config, run_dir)
-        >>> # Creates: <run_dir>/config.yaml
+        >>> # Creates: <run_dir>/full_agent_env_config.yaml
     """
-    config_path = os.path.join(run_dir, 'config.yaml')
+    config_path = os.path.join(run_dir, 'full_agent_env_config.yaml')
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False)
+
+
+def save_option_library_config(resolved_config: Dict[str, Any], run_dir: str):
+    """Save fully resolved option library configuration as YAML in run directory.
+    
+    Writes the resolved option library configuration (with absolute paths and 
+    all option specs merged) to <run_dir>/full_options_library.yaml. Only used 
+    for HRL experiments.
+    
+    Args:
+        resolved_config (Dict[str, Any]): Resolved option library configuration
+            (returned by OptionLibraryLoader.load_library as second return value).
+        run_dir (str): Absolute path to run directory (from create_run_directory).
+    
+    Example:
+        >>> # After wrapping environment for HRL:
+        >>> save_option_library_config(wrapped_env.resolved_option_library_config, run_dir)
+        >>> # Creates: <run_dir>/full_options_library.yaml
+    """
+    config_path = os.path.join(run_dir, 'full_options_library.yaml')
+    with open(config_path, 'w') as f:
+        yaml.dump(resolved_config, f, default_flow_style=False)
 
 
 def save_training_summary(config: Dict[str, Any], run_dir: str, total_timesteps: int, total_episodes: int):

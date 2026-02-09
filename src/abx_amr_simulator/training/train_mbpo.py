@@ -133,9 +133,9 @@ def main():
             sys.exit(1)
         
         # Load config from prior results
-        prior_config_path = os.path.join(prior_results_path, 'config.yaml')
+        prior_config_path = os.path.join(prior_results_path, 'full_agent_env_config.yaml')
         if not os.path.exists(prior_config_path):
-            print(f"Error: config.yaml not found in {prior_results_path}")
+            print(f"Error: full_agent_env_config.yaml not found in {prior_results_path}")
             sys.exit(1)
         
         config = load_config(prior_config_path)

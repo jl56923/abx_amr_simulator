@@ -32,8 +32,8 @@ RESULTS_DIR = get_results_directory()
 
 
 def load_config_from_run(run_dir: Path) -> dict:
-    """Load config.yaml from a run directory."""
-    config_path = run_dir / "config.yaml"
+    """Load full_agent_env_config.yaml from a run directory."""
+    config_path = run_dir / "full_agent_env_config.yaml"
     if config_path.exists():
         with open(config_path, 'r') as f:
             return yaml.safe_load(f)
@@ -318,7 +318,7 @@ def main():
                 st.json(other_params)
     
     else:
-        st.info("No config.yaml found for this experiment.")
+        st.info("No full_agent_env_config.yaml found for this experiment.")
 
 
 if __name__ == "__main__":

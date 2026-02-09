@@ -76,9 +76,9 @@ def load_best_model_from_run(run_folder: Path) -> Optional[Any]:
         return None
     
     # Detect algorithm type from config
-    cfg_path = run_folder / "config.yaml"
+    cfg_path = run_folder / "full_agent_env_config.yaml"
     if not cfg_path.exists():
-        print(f"    [WARN] No config.yaml found; assuming PPO")
+        print(f"    [WARN] No full_agent_env_config.yaml found; assuming PPO")
         agent_class = PPO
     else:
         try:
@@ -100,7 +100,7 @@ def load_best_model_from_run(run_folder: Path) -> Optional[Any]:
 
 def load_config_from_run(run_folder: Path) -> Optional[Dict[str, Any]]:
     """Load config from run folder."""
-    cfg_path = run_folder / "config.yaml"
+    cfg_path = run_folder / "full_agent_env_config.yaml"
     if not cfg_path.exists():
         return None
     

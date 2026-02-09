@@ -40,9 +40,9 @@ def convert_models_in_results():
         print(f"\n[{i}/{len(model_files)}] Converting: {run_dir.name}")
         
         # Load config to determine algorithm
-        config_path = run_dir / "config.yaml"
+        config_path = run_dir / "full_agent_env_config.yaml"
         if not config_path.exists():
-            print(f"  WARNING: config.yaml not found, skipping")
+            print(f"  WARNING: full_agent_env_config.yaml not found, skipping")
             continue
         
         # Read algorithm from config

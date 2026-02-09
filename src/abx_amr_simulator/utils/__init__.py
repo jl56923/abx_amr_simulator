@@ -29,6 +29,7 @@ from .factories import (
     setup_callbacks,
     create_run_directory,
     save_training_config,
+    save_option_library_config,
     save_training_summary,
 )
 
