@@ -1,17 +1,13 @@
 """Unit tests for OptionLibraryLoader class."""
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../unit/utils')))
-
 import pytest
 import tempfile
 import yaml
 from pathlib import Path
-from unittest.mock import Mock
 
 from abx_amr_simulator.hrl import OptionBase, OptionLibrary, OptionLibraryLoader
-from test_reference_helpers import create_mock_environment
+# Import test helpers (sys.path configured in tests/conftest.py)
+from test_reference_helpers import create_mock_environment  # type: ignore[import-not-found]
 import numpy as np
 
 
@@ -36,7 +32,10 @@ class SimpleBlockOption(OptionBase):
             idx = antibiotic_names.index(self.antibiotic)
         except ValueError:
             raise ValueError(f"Antibiotic '{self.antibiotic}' not found")
-        return np.full(num_patients, idx, dtype=np.int32)
+        return np.full(shape=num_patients, fill_value=idx, dtype=np.int32)
+
+    def get_referenced_antibiotics(self):
+        return [self.antibiotic]
 
 
 def create_loader_module(tmpdir, option_type='block'):
@@ -68,7 +67,10 @@ class BlockOption(OptionBase):
             idx = antibiotic_names.index(self.antibiotic)
         except ValueError:
             raise ValueError(f"Antibiotic '{{self.antibiotic}}' not found")
-        return np.full(num_patients, idx, dtype=np.int32)
+        return np.full(shape=num_patients, fill_value=idx, dtype=np.int32)
+
+    def get_referenced_antibiotics(self):
+        return [self.antibiotic]
 
 def load_{option_type}_option(name, config):
     antibiotic = config.get('antibiotic', 'A')

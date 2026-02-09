@@ -1,17 +1,11 @@
 """Unit tests for OptionsWrapper class."""
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../unit/utils')))
-
 import pytest
 import numpy as np
-import gymnasium as gym
-from unittest.mock import Mock, MagicMock, patch
-from gymnasium import spaces
 
 from abx_amr_simulator.hrl import OptionBase, OptionLibrary, OptionsWrapper
-from test_reference_helpers import create_mock_environment
+# Import test helpers (sys.path configured in tests/conftest.py)
+from test_reference_helpers import create_mock_environment  # type: ignore[import-not-found]
 
 
 class SimpleOption(OptionBase):
@@ -25,70 +19,41 @@ class SimpleOption(OptionBase):
 
     def decide(self, env_state):
         num_patients = env_state['num_patients']
-        return np.full(num_patients, self.action_value, dtype=np.int32)
+        return np.full(shape=num_patients, fill_value=self.action_value, dtype=np.int32)
+    
+    def get_referenced_antibiotics(self):
+        """Test option returns no specific antibiotics."""
+        return []
 
 
-def create_mock_env(num_patients=2, num_abx=2, max_steps=100, visible_attrs=None, patient_values=None):
-    """Helper to create a mock environment."""
-    env = Mock(spec=gym.Env)
-    unwrapped = Mock()
-
+def create_test_environment(
+    num_patients: int = 2,
+    num_abx: int = 2,
+    max_steps: int = 100,
+    visible_attrs: list[str] | None = None,
+):
+    """Helper to create a real environment with small deterministic settings."""
     if visible_attrs is None:
         visible_attrs = ["prob_infected"]
-    
-    # Set up basic attributes
-    unwrapped.num_patients_per_time_step = num_patients
-    unwrapped.max_steps = max_steps
-    unwrapped.current_patients = []
-    for i in range(num_patients):
-        patient = Mock()
+    antibiotic_names = [f"ABX_{i}" for i in range(num_abx)]
+    return create_mock_environment(
+        antibiotic_names=antibiotic_names,
+        num_patients_per_time_step=num_patients,
+        max_time_steps=max_steps,
+        visible_patient_attributes=visible_attrs,
+    )
+
+
+def extract_patient_matrix(patients, visible_attrs):
+    """Extract observed attribute matrix from patient objects."""
+    values = []
+    for patient in patients:
+        row = []
         for attr in visible_attrs:
-            if patient_values and attr in patient_values:
-                value = patient_values[attr][i]
-            else:
-                value = float(i + 1) / 10.0
-            setattr(patient, f"{attr}_obs", value)
-        unwrapped.current_patients.append(patient)
-    unwrapped.current_step = 0
-    
-    # Set up reward calculator
-    abx_names = [f'ABX_{i}' for i in range(num_abx)]
-    reward_calculator = Mock()
-    reward_calculator.abx_name_to_index = {abx: i for i, abx in enumerate(abx_names)}
-    unwrapped.reward_calculator = reward_calculator
-    
-    # Set up AMR balloon models for AMR tracking
-    unwrapped.amr_balloon_models = {
-        abx: Mock(get_current_level=Mock(return_value=0.5))
-        for abx in abx_names
-    }
-    
-    # Set up patient generator
-    patient_generator = Mock()
-    patient_generator.visible_patient_attributes = visible_attrs
-    unwrapped.patient_generator = patient_generator
-    
-    env.unwrapped = unwrapped
-    
-    # Mock reset and step methods
-    def mock_reset(seed=None, options=None):
-        obs = np.zeros(num_patients * 2 + num_abx, dtype=np.float32)
-        return obs, {}
-    
-    def mock_step(action):
-        obs = np.zeros(num_patients * 2 + num_abx, dtype=np.float32)
-        reward = 1.0
-        terminated = False
-        truncated = False
-        info = {}
-        return obs, reward, terminated, truncated, info
-    
-    env.reset = mock_reset
-    env.step = mock_step
-    env.observation_space = spaces.Box(0, 1, shape=(10,))
-    env.action_space = spaces.MultiDiscrete([num_abx + 1] * num_patients)
-    
-    return env
+            obs_attr = f"{attr}_obs"
+            row.append(float(getattr(patient, obs_attr, getattr(patient, attr, 0.0))))
+        values.append(row)
+    return np.array(object=values, dtype=np.float32)
 
 
 class TestOptionsWrapperInit:
@@ -96,7 +61,7 @@ class TestOptionsWrapperInit:
 
     def test_init_with_valid_env_and_library(self):
         """Test initialization with valid environment and library."""
-        env = create_mock_environment(antibiotic_names=['ABX_0', 'ABX_1'], num_patients_per_time_step=2)
+        env = create_test_environment(num_patients=2, num_abx=2)
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', action_value=0, k=5))
         
@@ -109,36 +74,36 @@ class TestOptionsWrapperInit:
     def test_init_with_invalid_env_no_reward_calculator(self):
         """Test initialization fails if env missing reward_calculator."""
         # Create a valid env for OptionLibrary initialization
-        valid_env = create_mock_env()
+        valid_env = create_test_environment()
         lib = OptionLibrary(env=valid_env)
         lib.add_option(SimpleOption(name='opt1', action_value=0))
         
-        # Create invalid env without reward_calculator for OptionsWrapper
-        invalid_env = Mock()
-        invalid_env.unwrapped = Mock(spec=[])  # No reward_calculator or patient_generator
+        # Create invalid env with patient_generator set to None for OptionsWrapper
+        invalid_env = create_test_environment()
+        invalid_env.patient_generator = None
         
         with pytest.raises(ValueError) as exc_info:
             OptionsWrapper(env=invalid_env, option_library=lib)
         
-        # Should fail on one of the required attributes (reward_calculator or patient_generator)
+        # Should fail on missing PatientGenerator attributes
         error_msg = str(exc_info.value)
-        assert 'reward_calculator' in error_msg or 'patient_generator' in error_msg
+        assert 'PatientGenerator' in error_msg or 'visible_patient_attributes' in error_msg
 
     def test_init_validates_option_library_compatibility(self):
         """Test that init calls validation."""
-        env = create_mock_env()
+        env = create_test_environment(num_abx=1)
         lib = OptionLibrary(env=env)
-        lib.add_option(SimpleOption(name='opt1', action_value=0))
         
-        # Mock validate to raise an error
-        with patch.object(lib, 'validate_environment_compatibility') as mock_validate:
-            mock_validate.side_effect = ValueError("Incompatible!")
-            
-            with pytest.raises(ValueError) as exc_info:
-                OptionsWrapper(env=env, option_library=lib)
-            
-            assert 'Incompatible' in str(exc_info.value)
-            mock_validate.assert_called_once()
+        class BadOption(SimpleOption):
+            def get_referenced_antibiotics(self):
+                return ["MISSING_ABX"]
+
+        lib.add_option(BadOption(name='opt1', action_value=0))
+
+        with pytest.raises(ValueError) as exc_info:
+            OptionsWrapper(env=env, option_library=lib)
+        
+        assert 'MISSING_ABX' in str(exc_info.value)
 
 
 class TestOptionsWrapperReset:
@@ -146,7 +111,7 @@ class TestOptionsWrapperReset:
 
     def test_reset_returns_manager_obs(self):
         """Test that reset returns manager observation."""
-        env = create_mock_env(num_patients=2, num_abx=2)
+        env = create_test_environment(num_patients=2, num_abx=2)
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', action_value=0))
         
@@ -155,25 +120,24 @@ class TestOptionsWrapperReset:
         
         assert isinstance(manager_obs, np.ndarray)
         assert isinstance(info, dict)
-        # Manager obs should include:
-        # - aggregate stats (4 * num_visible_attrs)
-        # - AMR trajectory (2 * num_abx)
-        # - option history (1 + 1 + num_abx)
-        # - progress (1)
-        # - front-edge stats (2 * num_visible_attrs)
-        assert manager_obs.shape == (15,)
+        visible_attrs = list(env.patient_generator.visible_patient_attributes)
+        num_abx = len(env.reward_calculator.abx_name_to_index)
+        expected_len = (
+            4 * len(visible_attrs)
+            + 2 * num_abx
+            + (2 + num_abx)
+            + 1
+            + 2 * len(visible_attrs)
+        )
+        assert manager_obs.shape == (expected_len,)
 
     def test_reset_includes_front_edge_summary_stats(self):
         """Test that reset appends mean + std for front-edge attributes."""
-        patient_values = {
-            "prob_infected": [0.2, 0.4, 0.6],
-            "benefit_value_multiplier": [1.0, 2.0, 3.0],
-        }
-        env = create_mock_env(
+        visible_attrs = ["prob_infected", "benefit_value_multiplier"]
+        env = create_test_environment(
             num_patients=3,
             num_abx=2,
-            visible_attrs=["prob_infected", "benefit_value_multiplier"],
-            patient_values=patient_values,
+            visible_attrs=visible_attrs,
         )
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', action_value=0))
@@ -182,28 +146,22 @@ class TestOptionsWrapperReset:
         manager_obs, _ = wrapper.reset()
 
         front_edge = manager_obs[-4:]
+        cohort_matrix = extract_patient_matrix(env.current_patients, visible_attrs)
+        means = np.mean(a=cohort_matrix, axis=0)
+        stds = np.std(a=cohort_matrix, axis=0)
         expected = np.array(
-            [
-                np.mean(patient_values["prob_infected"]),
-                np.std(patient_values["prob_infected"]),
-                np.mean(patient_values["benefit_value_multiplier"]),
-                np.std(patient_values["benefit_value_multiplier"]),
-            ],
+            object=[means[0], stds[0], means[1], stds[1]],
             dtype=np.float32,
         )
-        assert np.allclose(front_edge, expected, atol=1e-6)
+        assert np.allclose(a=front_edge, b=expected, atol=1e-6)
 
     def test_reset_includes_front_edge_full_vector(self):
         """Test that reset appends full cohort vector when enabled."""
-        patient_values = {
-            "prob_infected": [0.2, 0.4, 0.6],
-            "benefit_value_multiplier": [1.0, 2.0, 3.0],
-        }
-        env = create_mock_env(
+        visible_attrs = ["prob_infected", "benefit_value_multiplier"]
+        env = create_test_environment(
             num_patients=3,
             num_abx=2,
-            visible_attrs=["prob_infected", "benefit_value_multiplier"],
-            patient_values=patient_values,
+            visible_attrs=visible_attrs,
         )
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', action_value=0))
@@ -212,36 +170,33 @@ class TestOptionsWrapperReset:
         manager_obs, _ = wrapper.reset()
 
         front_edge = manager_obs[-6:]
-        expected = np.array(
-            [
-                0.2, 1.0,
-                0.4, 2.0,
-                0.6, 3.0,
-            ],
-            dtype=np.float32,
-        )
-        assert np.allclose(front_edge, expected, atol=1e-6)
+        cohort_matrix = extract_patient_matrix(env.current_patients, visible_attrs)
+        expected = cohort_matrix.flatten()
+        assert np.allclose(a=front_edge, b=expected, atol=1e-6)
 
     def test_reset_calls_option_reset(self):
         """Test that reset calls reset on all options."""
-        env = create_mock_env()
+        env = create_test_environment()
         lib = OptionLibrary(env=env)
-        
-        opt1 = SimpleOption(name='opt1', action_value=0)
-        opt2 = SimpleOption(name='opt2', action_value=1)
+
+        class ResetTrackingOption(SimpleOption):
+            def __init__(self, name: str, action_value: int, k: int = 5):
+                super().__init__(name=name, action_value=action_value, k=k)
+                self.reset_count = 0
+
+            def reset(self) -> None:
+                self.reset_count += 1
+
+        opt1 = ResetTrackingOption(name='opt1', action_value=0)
+        opt2 = ResetTrackingOption(name='opt2', action_value=1)
         lib.add_option(opt1)
         lib.add_option(opt2)
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
-        
-        # Mock option reset methods
-        opt1.reset = Mock()
-        opt2.reset = Mock()
-        
         wrapper.reset()
         
-        opt1.reset.assert_called_once()
-        opt2.reset.assert_called_once()
+        assert opt1.reset_count == 1
+        assert opt2.reset_count == 1
 
 
 class TestOptionsWrapperStep:
@@ -249,14 +204,14 @@ class TestOptionsWrapperStep:
 
     def test_step_with_valid_manager_action(self):
         """Test step with valid manager action."""
-        env = create_mock_env()
+        env = create_test_environment()
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', action_value=0, k=2))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
         wrapper.reset()
         
-        manager_obs, reward, terminated, truncated, info = wrapper.step(0)
+        manager_obs, reward, terminated, truncated, info = wrapper.step(manager_action=0)
         
         assert isinstance(manager_obs, np.ndarray)
         assert isinstance(reward, float)
@@ -267,7 +222,7 @@ class TestOptionsWrapperStep:
 
     def test_step_executes_option_for_k_steps(self):
         """Test that step executes option for k substeps."""
-        env = create_mock_env()
+        env = create_test_environment()
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', action_value=0, k=3))
         
@@ -280,18 +235,18 @@ class TestOptionsWrapperStep:
         
         def tracked_step(action):
             step_calls.append(action)
-            return original_step(action)
+            return original_step(action=action)
         
         env.step = tracked_step
         
-        wrapper.step(0)
+        wrapper.step(manager_action=0)
         
         # Should have called env.step 3 times (once for each substep)
         assert len(step_calls) == 3
 
     def test_step_accumulates_discounted_reward(self):
         """Test that step accumulates rewards with discounting."""
-        env = create_mock_env()
+        env = create_test_environment()
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', action_value=0, k=3))
         
@@ -300,7 +255,7 @@ class TestOptionsWrapperStep:
         
         # Mock env.step to return reward=1.0
         def mock_step_reward_1(action):
-            obs = np.zeros(10, dtype=np.float32)
+            obs = np.zeros(shape=10, dtype=np.float32)
             reward = 1.0
             terminated = False
             truncated = False
@@ -310,15 +265,15 @@ class TestOptionsWrapperStep:
         env.step = mock_step_reward_1
         
         # Execute option
-        manager_obs, reward, terminated, truncated, info = wrapper.step(0)
+        manager_obs, reward, terminated, truncated, info = wrapper.step(manager_action=0)
         
         # Expected: 1.0 + 0.99*1.0 + 0.99^2*1.0 ≈ 2.9701
         expected_reward = 1.0 + 0.99 + 0.99**2
-        assert np.isclose(reward, expected_reward)
+        assert np.isclose(a=reward, b=expected_reward)
 
     def test_step_with_invalid_manager_action(self):
         """Test step with invalid manager action."""
-        env = create_mock_env()
+        env = create_test_environment()
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', action_value=0))
         
@@ -326,11 +281,11 @@ class TestOptionsWrapperStep:
         wrapper.reset()
         
         with pytest.raises(ValueError):
-            wrapper.step(99)  # Out of range
+            wrapper.step(manager_action=99)  # Out of range
 
     def test_step_early_termination_by_episode(self):
         """Test that step stops if episode terminates."""
-        env = create_mock_env()
+        env = create_test_environment()
         lib = OptionLibrary(env=env)
         lib.add_option(SimpleOption(name='opt1', action_value=0, k=10))
         
@@ -341,7 +296,7 @@ class TestOptionsWrapperStep:
         call_count = [0]
         def mock_step_terminate(action):
             call_count[0] += 1
-            obs = np.zeros(10, dtype=np.float32)
+            obs = np.zeros(shape=10, dtype=np.float32)
             reward = 1.0
             terminated = call_count[0] >= 2  # Terminate on 2nd step
             truncated = False
@@ -350,7 +305,7 @@ class TestOptionsWrapperStep:
         
         env.step = mock_step_terminate
         
-        manager_obs, reward, terminated, truncated, info = wrapper.step(0)
+        manager_obs, reward, terminated, truncated, info = wrapper.step(manager_action=0)
         
         # Should have stopped after 2 substeps even though k=10
         assert info['option_duration'] == 2
@@ -362,7 +317,7 @@ class TestOptionsWrapperActionValidation:
 
     def test_validate_actions_wrong_type(self):
         """Test validation fails if actions wrong type."""
-        env = create_mock_env()
+        env = create_test_environment()
         lib = OptionLibrary(env=env)
         
         class BadOption(OptionBase):
@@ -371,6 +326,9 @@ class TestOptionsWrapperActionValidation:
             
             def decide(self, env_state):
                 return [0, 1]  # List instead of ndarray
+            
+            def get_referenced_antibiotics(self):
+                return []
         
         lib.add_option(BadOption(name='bad', k=1))
         
@@ -378,11 +336,11 @@ class TestOptionsWrapperActionValidation:
         wrapper.reset()
         
         with pytest.raises(TypeError):
-            wrapper.step(0)
+            wrapper.step(manager_action=0)
 
     def test_validate_actions_wrong_shape(self):
         """Test validation fails if shape wrong."""
-        env = create_mock_env(num_patients=2)
+        env = create_test_environment(num_patients=2)
         lib = OptionLibrary(env=env)
         
         class BadOption(OptionBase):
@@ -390,7 +348,10 @@ class TestOptionsWrapperActionValidation:
             REQUIRES_AMR_LEVELS = False
             
             def decide(self, env_state):
-                return np.array([0])  # Wrong shape (1,) instead of (2,)
+                return np.array(object=[0])  # Wrong shape (1,) instead of (2,)
+            
+            def get_referenced_antibiotics(self):
+                return []
         
         lib.add_option(BadOption(name='bad', k=1))
         
@@ -398,11 +359,11 @@ class TestOptionsWrapperActionValidation:
         wrapper.reset()
         
         with pytest.raises(ValueError):
-            wrapper.step(0)
+            wrapper.step(manager_action=0)
 
     def test_validate_actions_out_of_range(self):
         """Test validation fails if action indices out of range."""
-        env = create_mock_env(num_patients=2, num_abx=2)
+        env = create_test_environment(num_patients=2, num_abx=2)
         lib = OptionLibrary(env=env)
         
         class BadOption(OptionBase):
@@ -410,7 +371,10 @@ class TestOptionsWrapperActionValidation:
             REQUIRES_AMR_LEVELS = False
             
             def decide(self, env_state):
-                return np.array([0, 99], dtype=np.int32)  # 99 out of range
+                return np.array(object=[0, 99], dtype=np.int32)  # 99 out of range
+            
+            def get_referenced_antibiotics(self):
+                return []
         
         lib.add_option(BadOption(name='bad', k=1))
         
@@ -418,7 +382,7 @@ class TestOptionsWrapperActionValidation:
         wrapper.reset()
         
         with pytest.raises(ValueError):
-            wrapper.step(0)
+            wrapper.step(manager_action=0)
 
 
 class TestOptionsWrapperBuildsEnvState:
@@ -426,7 +390,7 @@ class TestOptionsWrapperBuildsEnvState:
 
     def test_build_env_state_structure(self):
         """Test that env_state has correct structure."""
-        env = create_mock_env(num_patients=2, num_abx=2)
+        env = create_test_environment(num_patients=2, num_abx=2)
         lib = OptionLibrary(env=env)
         
         class StateCheckOption(OptionBase):
@@ -443,8 +407,11 @@ class TestOptionsWrapperBuildsEnvState:
                 
                 assert env_state['num_patients'] == 2
                 assert len(env_state['patients']) == 2
-                
-                return np.zeros(env_state['num_patients'], dtype=np.int32)
+
+                return np.zeros(shape=env_state['num_patients'], dtype=np.int32)
+            
+            def get_referenced_antibiotics(self):
+                return []
         
         lib.add_option(StateCheckOption(name='check', k=1))
         
@@ -452,4 +419,4 @@ class TestOptionsWrapperBuildsEnvState:
         wrapper.reset()
         
         # Step should pass the assertion checks in decide()
-        wrapper.step(0)
+        wrapper.step(manager_action=0)

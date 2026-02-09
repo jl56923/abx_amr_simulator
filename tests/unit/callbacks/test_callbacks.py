@@ -14,7 +14,6 @@ import pytest
 import tempfile
 import shutil
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv

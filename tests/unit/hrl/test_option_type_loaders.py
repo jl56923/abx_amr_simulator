@@ -1,4 +1,10 @@
-"""Tests for block and alternation option loaders."""
+"""Tests for block and alternation option loaders.
+
+IMPORTANT: These tests load option loaders from the bundled package
+(external/abx_amr_simulator/src/abx_amr_simulator/options/defaults/),
+NOT from the workspace folder. This ensures complete independence from
+any user workspace configuration.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +16,36 @@ import pytest
 
 from abx_amr_simulator.hrl import OptionLibrary, OptionLibraryLoader
 
-from ..utils.test_reference_helpers import create_mock_environment
+# Import test helpers from centralized location
+# (sys.path is configured in tests/conftest.py)
+from test_reference_helpers import create_mock_environment  # type: ignore[import-not-found]
+
+def _get_bundled_option_loader_path(loader_type: str) -> Path:
+    """Get path to bundled option loader from installed package.
+    
+    Args:
+        loader_type: 'block' or 'alternation'
+    
+    Returns:
+        Path to the loader module in the package.
+    """
+    # Path from test: external/abx_amr_simulator/tests/unit/hrl/test_option_type_loaders.py
+    # parents[3] = external/abx_amr_simulator
+    package_root = Path(__file__).resolve().parents[3]  # external/abx_amr_simulator
+    loader_path = (
+        package_root
+        / "src"
+        / "abx_amr_simulator"
+        / "options"
+        / "defaults"
+        / "option_types"
+        / loader_type
+        / f"{loader_type}_option_loader.py"
+    )
+    if not loader_path.exists():
+        raise FileNotFoundError(f"Bundled {loader_type} option loader not found: {loader_path}")
+    return loader_path
+
 
 def _load_module(module_name: str, module_path: Path):
     spec = importlib.util.spec_from_file_location(
@@ -42,15 +77,7 @@ def test_block_option_decide_returns_single_action():
     )
     option_library = OptionLibrary(env=env)
 
-    module_path = (
-        Path(__file__).resolve().parents[5]
-        / "workspace"
-        / "experiments"
-        / "options"
-        / "option_types"
-        / "block"
-        / "block_option_loader.py"
-    )
+    module_path = _get_bundled_option_loader_path(loader_type="block")
     module = _load_module(module_name="block_option_loader", module_path=module_path)
 
     option = module.BlockOption(name="A_5", antibiotic="A", duration=5)
@@ -69,18 +96,10 @@ def test_block_option_supports_no_rx_alias():
     )
     option_library = OptionLibrary(env=env)
 
-    module_path = (
-        Path(__file__).resolve().parents[5]
-        / "workspace"
-        / "experiments"
-        / "options"
-        / "option_types"
-        / "block"
-        / "block_option_loader.py"
-    )
+    module_path = _get_bundled_option_loader_path(loader_type="block")
     module = _load_module(module_name="block_option_loader", module_path=module_path)
 
-    option = module.BlockOption(name="NO_RX_5", antibiotic="NO_RX", duration=5)
+    option = module.BlockOption(name="no_treatment_5", antibiotic="no_treatment", duration=5)
     env_state = _build_env_state(option_library=option_library, current_step=0)
 
     actions = option.decide(env_state=env_state)
@@ -90,15 +109,7 @@ def test_block_option_supports_no_rx_alias():
 
 
 def test_block_loader_validates_required_keys():
-    module_path = (
-        Path(__file__).resolve().parents[5]
-        / "workspace"
-        / "experiments"
-        / "options"
-        / "option_types"
-        / "block"
-        / "block_option_loader.py"
-    )
+    module_path = _get_bundled_option_loader_path(loader_type="block")
     module = _load_module(module_name="block_option_loader", module_path=module_path)
 
     with pytest.raises(ValueError):
@@ -118,20 +129,12 @@ def test_alternation_option_sequences_actions():
     )
     option_library = OptionLibrary(env=env)
 
-    module_path = (
-        Path(__file__).resolve().parents[5]
-        / "workspace"
-        / "experiments"
-        / "options"
-        / "option_types"
-        / "alternation"
-        / "alternation_option_loader.py"
-    )
+    module_path = _get_bundled_option_loader_path(loader_type="alternation")
     module = _load_module(module_name="alternation_option_loader", module_path=module_path)
 
     option = module.AlternationOption(
-        name="ALT_A_NO_RX_B",
-        sequence=["A", "NO_RX", "B"],
+        name="ALT_A_no_treatment_B",
+        sequence=["A", "no_treatment", "B"],
     )
 
     env_state = _build_env_state(option_library=option_library, current_step=0)
@@ -154,15 +157,7 @@ def test_alternation_resets_on_step_gap():
     )
     option_library = OptionLibrary(env=env)
 
-    module_path = (
-        Path(__file__).resolve().parents[5]
-        / "workspace"
-        / "experiments"
-        / "options"
-        / "option_types"
-        / "alternation"
-        / "alternation_option_loader.py"
-    )
+    module_path = _get_bundled_option_loader_path(loader_type="alternation")
     module = _load_module(module_name="alternation_option_loader", module_path=module_path)
 
     option = module.AlternationOption(
@@ -180,15 +175,7 @@ def test_alternation_resets_on_step_gap():
 
 
 def test_alternation_loader_validates_sequence():
-    module_path = (
-        Path(__file__).resolve().parents[5]
-        / "workspace"
-        / "experiments"
-        / "options"
-        / "option_types"
-        / "alternation"
-        / "alternation_option_loader.py"
-    )
+    module_path = _get_bundled_option_loader_path(loader_type="alternation")
     module = _load_module(module_name="alternation_option_loader", module_path=module_path)
 
     with pytest.raises(ValueError):
@@ -206,11 +193,15 @@ def test_default_deterministic_library_loads():
         antibiotic_names=["A", "B"],
         num_patients_per_time_step=1,
     )
+    # Path from test: external/abx_amr_simulator/tests/unit/hrl/test_option_type_loaders.py
+    # parents[3] = external/abx_amr_simulator
+    package_root = Path(__file__).resolve().parents[3]  # external/abx_amr_simulator
     library_path = (
-        Path(__file__).resolve().parents[5]
-        / "workspace"
-        / "experiments"
+        package_root
+        / "src"
+        / "abx_amr_simulator"
         / "options"
+        / "defaults"
         / "option_libraries"
         / "default_deterministic.yaml"
     )

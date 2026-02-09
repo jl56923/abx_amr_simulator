@@ -1,14 +1,11 @@
 """Unit tests for OptionLibrary class."""
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../unit/utils')))
-
 import pytest
 import numpy as np
 
 from abx_amr_simulator.hrl import OptionBase, OptionLibrary
-from test_reference_helpers import create_mock_environment
+# Import test helpers (sys.path configured in tests/conftest.py)
+from test_reference_helpers import create_mock_environment  # type: ignore[import-not-found]
 
 
 class SimpleOption(OptionBase):
@@ -20,6 +17,10 @@ class SimpleOption(OptionBase):
         """Decide method matching new signature (no antibiotic_names param)."""
         num_patients = env_state['num_patients']
         return np.zeros(num_patients, dtype=np.int32)
+    
+    def get_referenced_antibiotics(self):
+        """Test option returns no specific antibiotics."""
+        return []
 
 
 class TestOptionLibraryInit:
@@ -74,10 +75,10 @@ class TestOptionLibraryAddOption:
         lib = OptionLibrary(env=env)
         
         with pytest.raises(TypeError):
-            lib.add_option({'not': 'an_option'})
+            lib.add_option({'not': 'an_option'})  # type: ignore[arg-type]
 
         with pytest.raises(TypeError):
-            lib.add_option(None)
+            lib.add_option(None)  # type: ignore[arg-type]
 
 
 class TestOptionLibraryGetOption:
@@ -224,6 +225,9 @@ class TestOptionLibraryValidation:
 
             def decide(self, env_state):
                 return np.zeros(1, dtype=np.int32)
+            
+            def get_referenced_antibiotics(self):
+                return []
 
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         lib = OptionLibrary(env=env)
@@ -237,7 +241,11 @@ class TestOptionLibraryValidation:
         """Test validation fails when option requires unavailable attributes."""
         class RequiresAttrOption(OptionBase):
             REQUIRES_OBSERVATION_ATTRIBUTES = ['nonexistent_attribute']
+            
             REQUIRES_AMR_LEVELS = False
+
+            def get_referenced_antibiotics(self):
+                return []
 
             def decide(self, env_state):
                 return np.zeros(1, dtype=np.int32)
@@ -261,6 +269,9 @@ class TestOptionLibraryValidation:
             REQUIRES_OBSERVATION_ATTRIBUTES = []
             REQUIRES_AMR_LEVELS = False
             REQUIRES_STEP_NUMBER = True
+            
+            def get_referenced_antibiotics(self):
+                return []
 
             def decide(self, env_state):
                 return np.zeros(1, dtype=np.int32)

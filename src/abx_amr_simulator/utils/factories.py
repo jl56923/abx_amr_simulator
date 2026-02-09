@@ -10,7 +10,7 @@ import json
 import copy
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 
 import pdb
 
@@ -29,6 +29,10 @@ from abx_amr_simulator.core import (
     PatientGeneratorMixer,
 )
 from abx_amr_simulator.core.reward_calculator import BalancedReward
+
+# Import for type hints only (avoid circular imports at runtime)
+if TYPE_CHECKING:
+    from abx_amr_simulator.hrl import OptionsWrapper
 
 
 def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
@@ -228,7 +232,7 @@ def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculat
     return env
 
 
-def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> gym.Env:
+def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> OptionsWrapper:
     """Wrap ABXAMREnv with OptionsWrapper for hierarchical RL.
     
     Creates OptionsWrapper with option library and manager observation configuration.
@@ -239,11 +243,11 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> gym.Env:
         config (Dict[str, Any]): Full experiment config. Must contain 'hrl' section with:
             - option_library: 'default' or path to custom library
             - option_gamma: Discount factor for macro-reward aggregation
-                        - front_edge_use_full_vector: If True, manager gets full boundary cohort
-                            vector. If False, manager gets mean + std for each visible attribute.
+            - front_edge_use_full_vector: If True, manager gets full boundary cohort
+                vector. If False, manager gets mean + std for each visible attribute.
     
     Returns:
-        gym.Env: OptionsWrapper-wrapped environment ready for manager training.
+        OptionsWrapper: Hierarchy-aware environment wrapping ABXAMREnv with option selection.
     
     Raises:
         ValueError: If HRL config section missing or option library invalid.

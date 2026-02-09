@@ -3,28 +3,28 @@ description: "12 deterministic options: 9 blocks + 3 alternations"
 version: "1.0"
 
 options:
-  - option_name: "NO_RX_5"
+  - option_name: "no_treatment_5"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
     loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
-      antibiotic: "NO_RX"
+      antibiotic: "no_treatment"
       duration: 5
 
-  - option_name: "NO_RX_10"
+  - option_name: "no_treatment_10"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
     loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
-      antibiotic: "NO_RX"
+      antibiotic: "no_treatment"
       duration: 10
 
-  - option_name: "NO_RX_15"
+  - option_name: "no_treatment_15"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
     loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
-      antibiotic: "NO_RX"
+      antibiotic: "no_treatment"
       duration: 15
 
   - option_name: "A_5"
@@ -99,14 +99,14 @@ options:
         - "A"
         - "B"
 
-  - option_name: "ALT_A_NO_RX_B_A_NO_RX"
+  - option_name: "ALT_A_no_treatment_B_A_no_treatment"
     option_type: "alternation"
     option_subconfig_file: "../option_types/alternation/alternation_option_default_config.yaml"
     loader_module: "../option_types/alternation/alternation_option_loader.py"
     config_params_override:
       sequence:
         - "A"
-        - "NO_RX"
+        - "no_treatment"
         - "B"
         - "A"
-        - "NO_RX"
+        - "no_treatment"

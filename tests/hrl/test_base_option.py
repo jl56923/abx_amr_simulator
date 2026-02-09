@@ -31,6 +31,10 @@ class ConcreteTestOption(OptionBase):
     def decide(self, env_state):
         num_patients = env_state['num_patients']
         return np.zeros(num_patients, dtype=np.int32)
+    
+    def get_referenced_antibiotics(self):
+        """Test option returns no specific antibiotics."""
+        return []
 
 
 class TestOptionBaseAttributes:
@@ -173,6 +177,10 @@ class TestOptionBaseSubclassExample:
                     f"Antibiotic '{self.antibiotic}' not in {antibiotic_names}"
                 )
             return np.full(num_patients, action_idx, dtype=np.int32)
+        
+        def get_referenced_antibiotics(self):
+            """Return the single antibiotic this option uses."""
+            return [self.antibiotic]
 
     def test_block_option_prescribe_a(self):
         """Test BlockOption prescribing antibiotic A."""
