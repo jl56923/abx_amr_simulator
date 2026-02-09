@@ -99,7 +99,7 @@ options:
         - "A"
         - "B"
 
-  - option_name: "ALT_A_no_treatment_B_A_no_treatment"
+  - option_name: "ALT_A_NO_RX_B_A_NO_RX"
     option_type: "alternation"
     option_subconfig_file: "../option_types/alternation/alternation_option_default_config.yaml"
     loader_module: "../option_types/alternation/alternation_option_loader.py"

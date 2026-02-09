@@ -7,10 +7,10 @@ abx_clinical_reward_penalties_info_dict:
   clinical_failure_penalty: -10.0
   clinical_failure_probability: 1.0
   abx_adverse_effects_info:
-    Antibiotic_A:
+    A:
       adverse_effect_penalty: -2.0
       adverse_effect_probability: 0.1
-    Antibiotic_B:
+    B:
       adverse_effect_penalty: -3.0
       adverse_effect_probability: 0.15
 

@@ -196,6 +196,37 @@ class TestOptionLibraryToDict:
 class TestOptionLibraryValidation:
     """Test validate_environment_compatibility method."""
 
+    class BlockOption(OptionBase):
+        """Test implementation of BlockOption for validation tests."""
+        REQUIRES_OBSERVATION_ATTRIBUTES = []
+        REQUIRES_AMR_LEVELS = False
+        REQUIRES_STEP_NUMBER = False
+
+        def __init__(self, name: str, antibiotic: str, k: int):
+            super().__init__(name=name, k=k)
+            self.antibiotic = antibiotic
+
+        def decide(self, env_state):
+            num_patients = env_state['num_patients']
+            option_library = env_state.get('option_library')
+            if option_library is None:
+                raise ValueError("option_library not found in env_state")
+            
+            abx_name_to_index = option_library.abx_name_to_index
+            antibiotic_names = list(abx_name_to_index.keys())
+            
+            try:
+                action_idx = antibiotic_names.index(self.antibiotic)
+            except ValueError:
+                raise ValueError(
+                    f"Antibiotic '{self.antibiotic}' not in {antibiotic_names}"
+                )
+            return np.full(num_patients, action_idx, dtype=np.int32)
+        
+        def get_referenced_antibiotics(self):
+            """Return the single antibiotic this option uses."""
+            return [self.antibiotic]
+
     def test_validation_with_compatible_env(self):
         """Test validation passes with compatible environment."""
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
@@ -282,5 +313,32 @@ class TestOptionLibraryValidation:
 
         # The real environment HAS current_time_step attribute, so validation should pass
         lib.validate_environment_compatibility(env=env, patient_generator=env.unwrapped.patient_generator)
+
+    def test_validation_invalid_antibiotic_name(self):
+        """Test validation fails when option references non-existent antibiotic.
+        
+        This test ensures that antibiotic name mismatches (like 'Antibiotic_A' vs 'A')
+        are caught early with clear error messages, preventing silent failures.
+        """
+        env = create_mock_environment(
+            antibiotic_names=['A', 'B'],  # Environment has A and B
+            num_patients_per_time_step=1
+        )
+        lib = OptionLibrary(env=env)
+        # Option tries to use 'Antibiotic_A' which doesn't exist
+        lib.add_option(self.BlockOption(name='InvalidAbx', antibiotic='Antibiotic_A', k=5))
+        
+        with pytest.raises(ValueError) as exc_info:
+            lib.validate_environment_compatibility(
+                env=env, 
+                patient_generator=env.unwrapped.patient_generator
+            )
+        
+        # Verify error message contains all relevant information
+        error_msg = str(exc_info.value)
+        assert 'Antibiotic_A' in error_msg
+        assert 'not in environment' in error_msg or 'not in' in error_msg
+        # Should show available antibiotics for debugging
+        assert 'A' in error_msg and 'B' in error_msg
 
 

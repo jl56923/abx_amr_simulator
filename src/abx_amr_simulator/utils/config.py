@@ -115,7 +115,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
         merged_config.update(algo_config)
     
     # Copy metadata and training from base config when provided directly
-    for key in ['seed', 'output_dir', 'run_name', 'config_folder_location', 'options_folder_location']:
+    for key in ['seed', 'output_dir', 'run_name', 'config_folder_location', 'options_folder_location', 'hrl']:
         if key in config and not isinstance(config[key], str):
             merged_config[key] = config[key]
         elif key in config and isinstance(config[key], str):
@@ -262,8 +262,8 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
     Copies bundled default component configs from package into user's target directory.
     Creates nested structure:
         target_path/configs/
-            umbrella_configs/base_experiment.yaml
-            agent_algorithm/default.yaml, ppo.yaml, a2c.yaml
+            umbrella_configs/base_experiment.yaml, hrl_ppo_default.yaml
+            agent_algorithm/default.yaml, ppo.yaml, a2c.yaml, hrl_ppo.yaml
             environment/default.yaml
             patient_generator/default.yaml, patient_generator/default_mixer.yaml
             reward_calculator/default.yaml
@@ -299,9 +299,11 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
     copy_map = {
         # Umbrella config that stitches together the component defaults
         defaults_root.joinpath("umbrella/base_experiment.yaml"): umbrella_dir / "base_experiment.yaml",
+        defaults_root.joinpath("umbrella/hrl_ppo_default.yaml"): umbrella_dir / "hrl_ppo_default.yaml",
         # Agent algorithm extras (not matched by 'default*' copy below)
         defaults_root.joinpath("agent_algorithm/ppo.yaml"): agent_dir / "ppo.yaml",
         defaults_root.joinpath("agent_algorithm/a2c.yaml"): agent_dir / "a2c.yaml",
+        defaults_root.joinpath("agent_algorithm/hrl_ppo.yaml"): agent_dir / "hrl_ppo.yaml",
         # Explicit core defaults (will also be covered by recursive copy below)
         defaults_root.joinpath("agent_algorithm/default.yaml"): agent_dir / "default.yaml",
         defaults_root.joinpath("environment/default.yaml"): env_dir / "default.yaml",
