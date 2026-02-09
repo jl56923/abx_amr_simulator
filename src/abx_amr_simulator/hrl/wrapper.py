@@ -89,25 +89,61 @@ class OptionsWrapper(gym.Wrapper):
         # Manager action space: select option ID
         self.action_space = spaces.Discrete(len(option_library))
 
-        # Manager observation space: Will be set after first env reset
-        # For now, create a placeholder; will be updated in reset()
+        # Manager observation space: compute dimension analytically
+        obs_dim = self._compute_observation_dimension()
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(1,),  # Placeholder
+            shape=(obs_dim,),
             dtype=np.float32,
         )
 
         # State tracking
         self.current_env_obs: Optional[np.ndarray] = None
         self.current_step = 0
-        self.max_steps = 0
+        try:
+            self.max_steps = self._base_env.max_time_steps
+        except AttributeError:
+            self.max_steps = 1000  # Default fallback
         self._previous_option_id = -1
         self._consecutive_same_option_count = 0
         self._steps_since_prescribed = {abx: 0 for abx in self.antibiotic_names}
         self._last_aggregate_stats = None
         self._last_amr_start = None
         self._last_amr_end = None
+
+    def _compute_observation_dimension(self) -> int:
+        """Compute the manager observation space dimension analytically.
+        
+        Manager observation components:
+        1. Aggregate patient stats: len(visible_attrs) * 4 (mean, std, max, min)
+        2. AMR trajectory: 2 * num_antibiotics (start + end for each)
+        3. Option history: 2 + num_antibiotics (previous_option_id, consecutive_count, steps_since_prescribed for each)
+        4. Episode progress: 1 (current_step / max_steps)
+        5. Front-edge cohort features:
+           - If front_edge_use_full_vector: num_patients * len(visible_attrs)
+           - Else: 2 * len(visible_attrs) (mean + std for each)
+        
+        Returns:
+            Total observation dimension.
+        """
+        num_visible_attrs = len(self.patient_generator.visible_patient_attributes)
+        num_antibiotics = len(self.antibiotic_names)
+        num_patients = self._base_env.num_patients_per_time_step
+        
+        # Component dimensions
+        aggregate_stats_dim = num_visible_attrs * 4
+        amr_obs_dim = 2 * num_antibiotics
+        option_history_dim = 2 + num_antibiotics
+        progress_dim = 1
+        
+        if self.front_edge_use_full_vector:
+            front_edge_dim = num_patients * num_visible_attrs
+        else:
+            front_edge_dim = 2 * num_visible_attrs
+        
+        total_dim = aggregate_stats_dim + amr_obs_dim + option_history_dim + progress_dim + front_edge_dim
+        return total_dim
 
     def reset(self, seed=None, options=None):
         """Reset environment and option state.
@@ -122,12 +158,6 @@ class OptionsWrapper(gym.Wrapper):
         # Reset base environment
         base_obs, info = self.env.reset(seed=seed, options=options)
         self.current_env_obs = cast(np.ndarray, base_obs)
-
-        # Extract max_steps from environment
-        try:
-            self.max_steps = self._base_env.max_time_steps
-        except AttributeError:
-            self.max_steps = 1000  # Default fallback
 
         self.current_step = 0
         self._previous_option_id = -1
@@ -145,14 +175,6 @@ class OptionsWrapper(gym.Wrapper):
 
         # Build initial manager observation
         manager_obs = self._build_manager_observation()
-
-        # Update observation space to match manager observation shape
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=manager_obs.shape,
-            dtype=np.float32,
-        )
 
         return manager_obs, info
 

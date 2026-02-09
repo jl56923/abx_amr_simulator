@@ -187,6 +187,12 @@ def run_episode_and_get_trajectory(model, env, deterministic=True):
         # Ensure obs is a proper numpy array with explicit dtype for PyTorch compatibility
         obs = np.asarray(obs, dtype=np.float32)
         action, _ = model.predict(obs, deterministic=deterministic)
+        
+        # Convert action to int for Discrete action spaces (HRL/options)
+        # stable-baselines3 returns numpy arrays even for scalar actions
+        if isinstance(action, np.ndarray):
+            action = int(action.item()) if action.size == 1 else action
+        
         obs, reward, terminated, truncated, info = env.step(action)
         
         trajectory["actions"].append(action)
