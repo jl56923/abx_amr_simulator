@@ -1,20 +1,24 @@
 # HRL PPO default experiment configuration
 # Demonstrates required HRL fields for option-based training.
 
+# Folder locations
+# These specify where to find component configs and option libraries.
+# Paths are relative to the umbrella config's directory.
+config_folder_location: ../
+options_folder_location: ../../options
+
 # Component configurations
-environment: ../environment/default.yaml
-reward_calculator: ../reward_calculator/default.yaml
-patient_generator: ../patient_generator/default.yaml
-agent_algorithm: ../agent_algorithm/hrl_ppo.yaml
+# Paths are relative to config_folder_location
+environment: environment/default.yaml
+reward_calculator: reward_calculator/default.yaml
+patient_generator: patient_generator/default.yaml
+agent_algorithm: agent_algorithm/hrl_ppo.yaml
 
 # HRL-specific configuration
-# Note: run setup_options_folders_with_defaults() to create the options folder
+# Note: set up_options_folders_with_defaults() to create the options folder
 # before training, then point option_library to the generated library YAML.
 hrl:
-  option_library: experiments/options/option_libraries/default_deterministic.yaml
-  option_gamma: 0.99
-  front_edge_use_full_vector: false
-
+  option_library: option_libraries/default_deterministic.yaml
 # Training configuration
 training:
   run_name: hrl_ppo_default

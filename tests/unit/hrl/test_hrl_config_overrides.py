@@ -27,7 +27,7 @@ def temp_options_dir():
     """Create temporary directory with bundled default option configurations."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        setup_options_folders_with_defaults(target_path=tmpdir / "options")
+        setup_options_folders_with_defaults(target_path=tmpdir)
         yield tmpdir
 
 

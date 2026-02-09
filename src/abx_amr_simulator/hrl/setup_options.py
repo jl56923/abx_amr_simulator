@@ -11,33 +11,34 @@ from typing import Union
 def setup_options_folders_with_defaults(target_path: Union[str, Path]) -> Path:
     """Create option library scaffold populated with bundled default options.
 
-    Copies bundled default option configs and loaders from package into user's target directory.
-    Creates nested structure:
-        target_path/option_libraries/default_deterministic.yaml
-        target_path/option_types/block/block_option_default_config.yaml
-        target_path/option_types/block/block_option_loader.py
-        target_path/option_types/alternation/alternation_option_default_config.yaml
-        target_path/option_types/alternation/alternation_option_loader.py
+    Creates a top-level 'options' folder with nested structure:
+        target_path/options/option_libraries/default_deterministic.yaml
+        target_path/options/option_types/block/block_option_default_config.yaml
+        target_path/options/option_types/block/block_option_loader.py
+        target_path/options/option_types/alternation/alternation_option_default_config.yaml
+        target_path/options/option_types/alternation/alternation_option_loader.py
 
+    Copies bundled default option configs and loaders from package into user's target directory.
     Useful for initializing new experiment directories with working baseline option libraries.
 
     Args:
-        target_path: Base directory where option_libraries/ and option_types/ are created.
+        target_path: Base directory where the top-level 'options' folder will be created.
 
     Returns:
-        Path to the created option_libraries directory.
+        Path to the created options directory.
 
     Example:
         >>> from abx_amr_simulator.hrl import setup_options_folders_with_defaults
-        >>> library_path = setup_options_folders_with_defaults('experiments/options')
+        >>> options_path = setup_options_folders_with_defaults('experiments')
         >>> # Creates: experiments/options/option_libraries/default_deterministic.yaml, etc.
     """
     if target_path is None:
         raise ValueError("target_path must be provided.")
 
     base = Path(target_path)
-    option_libraries_dir = base / "option_libraries"
-    option_types_dir = base / "option_types"
+    options_dir = base / "options"
+    option_libraries_dir = options_dir / "option_libraries"
+    option_types_dir = options_dir / "option_types"
     block_dir = option_types_dir / "block"
     alternation_dir = option_types_dir / "alternation"
 
@@ -70,7 +71,7 @@ def setup_options_folders_with_defaults(target_path: Union[str, Path]) -> Path:
     alt_loader_dst = alternation_dir / "alternation_option_loader.py"
     alt_loader_dst.write_bytes(alt_loader_src.read_bytes())
 
-    return option_libraries_dir
+    return options_dir
 
 
 def main() -> None:
@@ -87,7 +88,7 @@ def main() -> None:
 
     args = parser.parse_args()
     created_path = setup_options_folders_with_defaults(target_path=args.target_path)
-    print(f"Created option scaffolding at: {created_path.parent}")
+    print(f"Created option scaffolding at: {created_path}")
 
 
 if __name__ == "__main__":

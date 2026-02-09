@@ -51,14 +51,13 @@ def temp_options_dir():
     This tests the actual workflow users will follow.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        options_root = Path(tmpdir) / "options"
-        
-        # Call the real setup function - it copies all bundled defaults to the target
+        # Call the real setup function - it creates tmpdir/options/ with all bundled defaults
         # including YAML configs and Python loaders for block and alternation options,
         # plus the default_deterministic.yaml library config
-        setup_options_folders_with_defaults(target_path=options_root)
+        setup_options_folders_with_defaults(target_path=tmpdir)
         
-        yield options_root
+        # Return the created options directory
+        yield Path(tmpdir) / "options"
 
 
 def test_option_library_loads_from_real_configs(temp_options_dir):

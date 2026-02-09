@@ -232,7 +232,7 @@ def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculat
     return env
 
 
-def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> OptionsWrapper:
+def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "OptionsWrapper":
     """Wrap ABXAMREnv with OptionsWrapper for hierarchical RL.
     
     Creates OptionsWrapper with option library and manager observation configuration.
@@ -241,10 +241,12 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> OptionsW
     Args:
         env (ABXAMREnv): Base environment to wrap.
         config (Dict[str, Any]): Full experiment config. Must contain 'hrl' section with:
-            - option_library: 'default' or path to custom library
+            - option_library: path to option library config (relative to options_folder_location)
             - option_gamma: Discount factor for macro-reward aggregation
             - front_edge_use_full_vector: If True, manager gets full boundary cohort
                 vector. If False, manager gets mean + std for each visible attribute.
+            And should contain 'options_folder_location' (default: '../../options' relative
+            to configs/umbrella_configs).
     
     Returns:
         OptionsWrapper: Hierarchy-aware environment wrapping ABXAMREnv with option selection.
@@ -264,21 +266,39 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> OptionsW
     if not hrl_config:
         raise ValueError("HRL algorithm selected but 'hrl' config section missing")
     
-    # Get option library
-    option_library_spec = hrl_config.get('option_library', 'default')
-    project_root = Path(__file__).resolve().parents[5]
-
-    if option_library_spec == 'default':
-        library_path = project_root / "workspace" / "experiments" / "options" / "option_libraries" / "default_deterministic.yaml"
+    # Get option library path
+    option_library_path = hrl_config.get('option_library')
+    if not option_library_path:
+        raise ValueError("HRL config must specify 'option_library' path")
+    
+    # Determine base directory for option library resolution
+    options_folder_location = config.get('options_folder_location', '../../options')
+    
+    # Get the umbrella config directory for relative path resolution
+    umbrella_config_dir = config.get('_umbrella_config_dir')
+    if umbrella_config_dir:
+        umbrella_dir = Path(umbrella_config_dir)
     else:
-        library_path = Path(option_library_spec)
-        if not library_path.is_absolute():
-            library_path = (project_root / library_path).resolve()
-        else:
-            library_path = library_path.resolve()
-
+        # Fallback if _umbrella_config_dir not available
+        umbrella_dir = Path.cwd()
+    
+    # Resolve options_folder_location
+    if Path(options_folder_location).is_absolute():
+        options_base_dir = Path(options_folder_location).resolve()
+    else:
+        # Relative to umbrella config directory
+        options_base_dir = (umbrella_dir / options_folder_location).resolve()
+    
+    # Construct full library path
+    library_path = (options_base_dir / option_library_path).resolve()
+    
     if not library_path.exists():
-        raise ValueError(f"Option library config not found: {library_path}")
+        raise ValueError(
+            f"Option library config not found: {library_path}\n"
+            f"  umbrella_config_dir: {umbrella_dir}\n"
+            f"  options_folder_location: {options_folder_location}\n"
+            f"  option_library: {option_library_path}"
+        )
 
     option_library, _ = OptionLibraryLoader.load_library(
         library_config_path=str(library_path),
