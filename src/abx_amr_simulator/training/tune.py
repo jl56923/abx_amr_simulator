@@ -174,6 +174,10 @@ def run_training_trial(
     """
     rewards = []
     
+    # Determine working directory: parent of src/abx_amr_simulator (the package root)
+    import abx_amr_simulator
+    package_root = Path(abx_amr_simulator.__file__).parent.parent.parent
+    
     for seed in seeds:
         # Merge suggested params with base overrides and seed
         param_overrides = {**base_param_overrides, **suggested_params}
@@ -195,23 +199,45 @@ def run_training_trial(
         for key, value in param_overrides.items():
             cmd.extend(['-p', f"{key}={value}"])
         
-        # Run training subprocess
+        # Run training subprocess with correct working directory
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=3600  # 1 hour timeout per seed
+                timeout=3600,  # 1 hour timeout per seed
+                cwd=str(package_root)  # Set working directory to package root
             )
             
             if result.returncode != 0:
-                print(f"Warning: Training failed for seed {seed}")
-                print(f"stderr: {result.stderr}")
+                print(f"\n{'='*80}")
+                print(f"WARNING: Training failed for seed {seed}")
+                print(f"Return code: {result.returncode}")
+                print(f"Command: {' '.join(cmd)}")
+                print(f"Working directory: {package_root}")
+                print(f"\nstderr (last 20 lines):")
+                stderr_lines = result.stderr.split('\n')
+                for line in stderr_lines[-20:]:
+                    if line.strip():
+                        print(f"  {line}")
+                print(f"\nstdout (last 30 lines):")
+                stdout_lines = result.stdout.split('\n')
+                for line in stdout_lines[-30:]:
+                    if line.strip():
+                        print(f"  {line}")
+                print(f"{'='*80}\n")
                 rewards.append(float('-inf'))
                 continue
             
             # Parse output to extract final mean reward
             reward = parse_reward_from_output(result.stdout)
+            if reward == float('-inf'):
+                print(f"\nWarning: Could not extract reward from training output for seed {seed}")
+                print(f"stdout (last 20 lines):")
+                stdout_lines = result.stdout.split('\n')
+                for line in stdout_lines[-20:]:
+                    if line.strip():
+                        print(f"  {line}")
             rewards.append(reward)
             
         except subprocess.TimeoutExpired:

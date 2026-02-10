@@ -695,6 +695,18 @@ def main():
                 print(f"  {key} = {value}")
             config = apply_param_overrides(config=config, overrides=param_overrides)
         
+        # Resolve HRL option library path (if applicable)
+        algorithm = config.get('algorithm', 'PPO')
+        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+            hrl_config = config.get('hrl', {})
+            option_library_relative = hrl_config.get('option_library')
+            if option_library_relative and 'option_library_path' not in config:
+                # Resolve relative path to absolute path
+                options_folder = config.get('options_folder_location', '../../options')
+                config_dir = Path(args.umbrella_config).parent
+                resolved_path = (config_dir / options_folder / option_library_relative).resolve()
+                config['option_library_path'] = str(resolved_path)
+        
         # Validate configuration
         validate_training_config(
             config=config,
