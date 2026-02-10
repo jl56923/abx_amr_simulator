@@ -29,6 +29,19 @@ Usage:
         --tuning-config ppo_tuning.yaml \\
         --run-name exp1_tuning \\
         --skip-if-exists
+    
+    # Continue existing study (default behavior)
+    python -m abx_amr_simulator.training.tune \\
+        --umbrella-config base_experiment.yaml \\
+        --tuning-config ppo_tuning.yaml \\
+        --run-name exp1_tuning
+    
+    # Start fresh study (ignore existing trials)
+    python -m abx_amr_simulator.training.tune \\
+        --umbrella-config base_experiment.yaml \\
+        --tuning-config ppo_tuning.yaml \\
+        --run-name exp1_tuning \\
+        --overwrite-existing-study
 
 OPTIMIZATION REGISTRY (.optimization_completed.txt):
     Similar to training registry, tracks completed tuning runs:
@@ -43,8 +56,15 @@ OPTIMIZATION REGISTRY (.optimization_completed.txt):
     
     Workflow:
     1. Before tuning: Check if run_name already in registry (if --skip-if-exists set)
-    2. After tuning: Add run_name + timestamp + best_value + n_trials to registry
-    3. During training: train.py loads best_params.json from most recent run_name timestamp
+    2. During tuning: Optuna study persisted to SQLite database (optuna_study.db)
+    3. After tuning: Add run_name + timestamp + best_value + n_trials to registry
+    4. During training: train.py loads best_params.json from most recent run_name timestamp
+    
+    Study Persistence:
+    - Each optimization run uses folder: <run_name>/optuna_study.db (no timestamp in path)
+    - Default: Continues existing study if database found (resume interrupted runs)
+    - With --overwrite-existing-study: Deletes old database and starts fresh
+    - Registry tracks completion timestamps for train.py lookup (most recent run)
 
 TUNING CONFIG STRUCTURE:
     tuning_config:
@@ -88,7 +108,7 @@ import tempfile
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 import optuna
 import yaml
@@ -98,12 +118,157 @@ from abx_amr_simulator.utils import (
     load_config,
     apply_param_overrides,
     apply_subconfig_overrides,
+    save_training_config,
+    save_option_library_config,
 )
 from abx_amr_simulator.utils.registry import (
     load_registry,
     update_registry,
     validate_and_clean_registry,
 )
+
+
+def load_and_save_hrl_option_library(
+    config: Dict[str, Any],
+    umbrella_config_path: str,
+    optimization_dir: str
+) -> Optional[Dict[str, Any]]:
+    """Load HRL option library YAML and save to optimization directory if HRL algorithm.
+    
+    For validation purposes, we save the raw option library YAML file (not the fully
+    resolved config, which would require creating an environment). This is sufficient
+    to detect if the user changed the option library between runs.
+    
+    Args:
+        config: Resolved umbrella config
+        umbrella_config_path: Path to umbrella config (for resolving relative paths)
+        optimization_dir: Directory to save option library config
+    
+    Returns:
+        Dict with option library config (or None if not HRL)
+    """
+    algorithm = config.get('algorithm', 'PPO')
+    
+    if algorithm not in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        return None
+    
+    # Resolve option library path (same logic as train.py)
+    hrl_config = config.get('hrl', {})
+    option_library_relative = hrl_config.get('option_library')
+    
+    if not option_library_relative:
+        print("Warning: HRL algorithm selected but no option_library specified in hrl config")
+        return None
+    
+    if 'option_library_path' not in config:
+        options_folder = config.get('options_folder_location', '../../options')
+        config_dir = Path(umbrella_config_path).parent
+        resolved_path = (config_dir / options_folder / option_library_relative).resolve()
+        config['option_library_path'] = str(resolved_path)
+    
+    # Load raw option library YAML
+    option_library_path = config['option_library_path']
+    
+    if not os.path.exists(option_library_path):
+        print(f"Warning: Option library file not found: {option_library_path}")
+        return None
+    
+    with open(option_library_path, 'r') as f:
+        option_library_config = yaml.safe_load(f)
+    
+    # Save option library config to optimization directory
+    saved_path = os.path.join(optimization_dir, 'option_library_config.yaml')
+    with open(saved_path, 'w') as f:
+        yaml.dump(option_library_config, f, default_flow_style=False)
+    
+    print(f"✓ Saved option_library_config.yaml")
+    
+    return option_library_config
+
+
+def validate_configs_match_existing(
+    current_umbrella_config: Dict[str, Any],
+    current_tuning_config: Dict[str, Any],
+    current_option_library_config: Optional[Dict[str, Any]],
+    optimization_dir: str,
+    run_name: str
+):
+    """Validate that current configs match existing saved configs.
+    
+    Fails loudly if mismatch detected, instructing user to either change
+    run_name or use --overwrite-existing-study flag.
+    
+    Args:
+        current_umbrella_config: Resolved umbrella config from current run
+        current_tuning_config: Tuning config from current run
+        current_option_library_config: Raw option library config (or None if not HRL)
+        optimization_dir: Directory containing saved configs
+        run_name: Name of the optimization run
+    
+    Raises:
+        SystemExit: If configs don't match
+    """
+    # Check if saved configs exist
+    umbrella_path = os.path.join(optimization_dir, 'full_agent_env_config.yaml')
+    tuning_path = os.path.join(optimization_dir, 'tuning_config.yaml')
+    options_path = os.path.join(optimization_dir, 'option_library_config.yaml')
+    
+    if not os.path.exists(umbrella_path):
+        # No saved config means fresh start (edge case: folder exists but no config)
+        print("⚠️  Warning: optimization folder exists but no saved config found. Proceeding as new study.")
+        return
+    
+    # Load saved configs
+    with open(umbrella_path, 'r') as f:
+        saved_umbrella_config = yaml.safe_load(f)
+    
+    with open(tuning_path, 'r') as f:
+        saved_tuning_config = yaml.safe_load(f)
+    
+    saved_option_library_config = None
+    if os.path.exists(options_path):
+        with open(options_path, 'r') as f:
+            saved_option_library_config = yaml.safe_load(f)
+    
+    # Compare configs
+    configs_match = True
+    mismatches = []
+    
+    if current_umbrella_config != saved_umbrella_config:
+        configs_match = False
+        mismatches.append("full_agent_env_config.yaml")
+    
+    if current_tuning_config != saved_tuning_config:
+        configs_match = False
+        mismatches.append("tuning_config.yaml")
+    
+    # Check option library if applicable
+    if current_option_library_config is not None or saved_option_library_config is not None:
+        if current_option_library_config != saved_option_library_config:
+            configs_match = False
+            mismatches.append("option_library_config.yaml")
+    
+    if not configs_match:
+        print(f"\n{'='*70}")
+        print("❌ ERROR: Configuration Mismatch Detected")
+        print(f"{'='*70}")
+        print(f"\nYou are attempting to resume optimization run '{run_name}',")
+        print(f"but the current configuration does not match the saved configuration.")
+        print(f"\nMismatched files:")
+        for mismatch in mismatches:
+            print(f"  - {mismatch}")
+        print(f"\nSaved configs location: {optimization_dir}")
+        print(f"\nThis likely means you changed values in your umbrella config,")
+        print(f"tuning config, or options library since starting this optimization.")
+        print(f"\nTo proceed, you must either:")
+        print(f"\n  1. Change the run name to create a new optimization study:")
+        print(f"       --run-name {run_name}_v2")
+        print(f"\n  2. Overwrite the existing study (discard old trials):")
+        print(f"       --overwrite-existing-study")
+        print(f"\n{'='*70}\n")
+        sys.exit(1)
+    
+    print("✓ Configuration validation passed: current configs match saved configs")
 
 
 def suggest_hyperparameters(trial: optuna.Trial, search_space: Dict[str, Any]) -> Dict[str, Any]:
@@ -183,6 +348,12 @@ def run_training_trial(
         param_overrides = {**base_param_overrides, **suggested_params}
         param_overrides['training.seed'] = seed
         param_overrides['training.total_num_training_episodes'] = truncated_episodes
+        
+        # Optimize evaluation for tuning: do ONE final evaluation to get reward metric
+        # Set eval_freq to trigger only at the very end (truncated_episodes + 1 ensures one eval at end)
+        param_overrides['training.eval_freq_every_n_episodes'] = truncated_episodes  # Eval at end only
+        param_overrides['training.save_freq_every_n_episodes'] = 999999  # Save only final model
+        param_overrides['training.log_patient_trajectories'] = False  # Disable trajectory logging
         
         # Build command to run training
         cmd = [
@@ -445,6 +616,11 @@ def main():
         help='Skip this tuning run if an optimization with the same run name already exists in the registry'
     )
     parser.add_argument(
+        '--overwrite-existing-study',
+        action='store_true',
+        help='Start a new Optuna study from scratch instead of continuing an existing one. Default: continue existing study if found.'
+    )
+    parser.add_argument(
         '-p',
         '--param-override',
         action='append',
@@ -566,17 +742,20 @@ def main():
             print(f"  3. Edit {completion_registry_path} to remove this entry\n")
             sys.exit(0)
     
-    # Create timestamped optimization directory
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    optimization_dir = os.path.join(optimization_base_dir, f"{run_name}_{timestamp}")
+    # Create optimization directory (no timestamp in folder name for study persistence)
+    # Timestamp only used for registry tracking
+    optimization_dir = os.path.join(optimization_base_dir, run_name)
     Path(optimization_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Generate timestamp for registry only
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
     print(f"\n{'='*70}")
     print("STARTING HYPERPARAMETER OPTIMIZATION")
     print(f"{'='*70}")
     print(f"Run name: {run_name}")
-    print(f"Timestamp: {timestamp}")
     print(f"Optimization directory: {optimization_dir}")
+    print(f"Registry timestamp: {timestamp}")
     print(f"Registry: {completion_registry_path}")
     print(f"{'='*70}\n")
     
@@ -589,9 +768,79 @@ def main():
     
     # Apply overrides to umbrella config
     if subconfig_overrides:
-        umbrella_config = apply_subconfig_overrides(umbrella_config, subconfig_overrides)
+        print(f"\nApplying subconfig overrides...")
+        for key, path in subconfig_overrides.items():
+            # Extract config type from key (e.g., 'environment-subconfig' -> 'environment')
+            config_type = key.replace('-subconfig', '')
+            print(f"  {key}: {path}")
+            
+            # Load the new subconfig
+            try:
+                with open(path, 'r') as f:
+                    subconfig = yaml.safe_load(f)
+            except Exception as e:
+                print(f"Error loading subconfig from {path}: {e}")
+                sys.exit(1)
+            
+            # Place subconfig in the right location
+            if config_type == 'environment':
+                umbrella_config['environment'] = subconfig
+            elif config_type == 'reward_calculator':
+                umbrella_config['reward_calculator'] = subconfig
+            elif config_type == 'patient_generator':
+                umbrella_config['patient_generator'] = subconfig
+            elif config_type == 'agent_algorithm':
+                umbrella_config.update(subconfig)
+            else:
+                print(f"Error: Unknown subconfig type '{config_type}' (expected environment, reward_calculator, patient_generator, or agent_algorithm)")
+                sys.exit(1)
+    
     if param_overrides:
         umbrella_config = apply_param_overrides(umbrella_config, param_overrides)
+    
+    # Validate configs match existing if resuming (unless --overwrite-existing-study)
+    umbrella_path = os.path.join(optimization_dir, 'full_agent_env_config.yaml')
+    if os.path.exists(umbrella_path) and not args.overwrite_existing_study:
+        print(f"\n{'='*70}")
+        print("VALIDATING CONFIGURATION CONSISTENCY")
+        print(f"{'='*70}")
+        print(f"Existing optimization folder detected: {optimization_dir}")
+        print(f"Checking if current configs match saved configs...\\n")
+        
+        # Load HRL option library if applicable (for validation)
+        temp_option_library_config = load_and_save_hrl_option_library(
+            config=umbrella_config,
+            umbrella_config_path=args.umbrella_config,
+            optimization_dir=tempfile.mkdtemp()  # Temp dir for validation only
+        )
+        
+        # Validate configs match
+        validate_configs_match_existing(
+            current_umbrella_config=umbrella_config,
+            current_tuning_config=tuning_config,
+            current_option_library_config=temp_option_library_config,
+            optimization_dir=optimization_dir,
+            run_name=run_name
+        )
+        print(f"{'='*70}\\n")
+    
+    # Save resolved umbrella config immediately (before optimization starts)
+    print(f"Saving resolved configuration to: {optimization_dir}")
+    save_training_config(config=umbrella_config, run_dir=optimization_dir)
+    print(f"✓ Saved full_agent_env_config.yaml")
+    
+    # Save tuning config for reproducibility (before optimization starts)
+    tuning_config_path = os.path.join(optimization_dir, 'tuning_config.yaml')
+    with open(tuning_config_path, 'w') as f:
+        yaml.dump(tuning_config, f, default_flow_style=False)
+    print(f"✓ Saved tuning_config.yaml")
+    
+    # Load and save HRL option library if applicable
+    option_library_config = load_and_save_hrl_option_library(
+        config=umbrella_config,
+        umbrella_config_path=args.umbrella_config,
+        optimization_dir=optimization_dir
+    )
     
     # Extract optimization settings
     optimization_config = tuning_config.get('optimization', {})
@@ -620,12 +869,36 @@ def main():
     # Get base seed from umbrella config
     base_seed = umbrella_config.get('training', {}).get('seed', 42)
     
-    # Create Optuna study
+    # Set up SQLite storage for persistent study
+    storage_path = os.path.join(optimization_dir, 'optuna_study.db')
+    storage_url = f"sqlite:///{storage_path}"
+    
+    # Determine whether to load existing study or start fresh
+    load_if_exists = not args.overwrite_existing_study
+    
+    if args.overwrite_existing_study and os.path.exists(storage_path):
+        print(f"\n⚠️  Overwriting existing study database: {storage_path}")
+        os.remove(storage_path)
+    elif load_if_exists and os.path.exists(storage_path):
+        print(f"\n✓ Found existing study database, will continue: {storage_path}")
+    
+    # Create Optuna study with SQLite storage
     study = optuna.create_study(
         direction=direction,
         sampler=sampler,
-        study_name=run_name
+        study_name=run_name,
+        storage=storage_url,
+        load_if_exists=load_if_exists
     )
+    
+    # Report study status
+    n_existing_trials = len(study.trials)
+    if n_existing_trials > 0:
+        print(f"✓ Loaded existing study with {n_existing_trials} completed trial(s)")
+        print(f"  Best value so far: {study.best_value:.4f}")
+        print(f"  Will run {n_trials} additional trial(s)")
+    else:
+        print(f"✓ Starting new study")
     
     # Create objective function
     objective = create_objective_function(
@@ -652,6 +925,7 @@ def main():
     print(f"{'='*70}")
     print(f"Best value: {study.best_value:.4f}")
     print(f"Best trial: {study.best_trial.number}")
+    print(f"Total trials completed: {len(study.trials)}")
     print(f"Best parameters:")
     for key, value in study.best_params.items():
         print(f"  {key}: {value}")
@@ -664,6 +938,8 @@ def main():
         optimization_dir=optimization_dir
     )
     
+    print(f"✓ Study database saved to: {storage_path}")
+    
     # Update registry
     update_registry(
         registry_path=completion_registry_path,
@@ -673,7 +949,10 @@ def main():
     print(f"\n✓ Recorded successful completion in registry: {completion_registry_path}\n")
     
     print(f"Optimization results saved to: {optimization_dir}")
-    print(f"To use these parameters in training, run:")
+    print(f"  - Study database: {storage_path}")
+    print(f"  - Best params: {os.path.join(optimization_dir, 'best_params.json')}")
+    print(f"  - Study summary: {os.path.join(optimization_dir, 'study_summary.json')}")
+    print(f"\nTo use these parameters in training, run:")
     print(f"  python -m abx_amr_simulator.training.train \\")
     print(f"    --umbrella-config {args.umbrella_config} \\")
     print(f"    --load-best-params-by-experiment-name {run_name}")

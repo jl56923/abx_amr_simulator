@@ -154,11 +154,10 @@ def test_tune_train_integration(test_workspace):
     
     # === STEP 3: Verify optimization outputs ===
     
-    # Find the optimization run directory (should be only one matching pattern)
-    optimization_runs = list(optimization_dir.glob("tune_integration_test_*"))
-    assert len(optimization_runs) == 1, f"Expected 1 optimization run, found {len(optimization_runs)}"
+    # Optimization folder should be optimization/{run_name}/ (no timestamp)
+    optimization_run_dir = optimization_dir / "tune_integration_test"
+    assert optimization_run_dir.exists(), f"Expected optimization folder not found: {optimization_run_dir}"
     
-    optimization_run_dir = optimization_runs[0]
     print(f"[TEST] Found optimization run: {optimization_run_dir}")
     
     # Check best_params.json exists and is valid
@@ -319,9 +318,9 @@ def test_skip_if_exists_prevents_duplicate_optimization(test_workspace):
     result1 = subprocess.run(tune_cmd, capture_output=True, text=True, timeout=60)
     assert result1.returncode == 0, "First tune.py run failed"
     
-    # Count optimization runs after first execution
-    optimization_runs_1 = list(optimization_dir.glob("skip_test_*"))
-    assert len(optimization_runs_1) == 1, f"Expected 1 run after first execution, found {len(optimization_runs_1)}"
+    # Check optimization folder exists after first execution
+    skip_test_dir = optimization_dir / "skip_test"
+    assert skip_test_dir.exists(), f"Expected optimization folder not found: {skip_test_dir}"
     
     # Run tune.py second time with --skip-if-exists
     tune_cmd_skip = tune_cmd + ['--skip-if-exists']
@@ -330,8 +329,7 @@ def test_skip_if_exists_prevents_duplicate_optimization(test_workspace):
     assert result2.returncode == 0, "Second tune.py run should exit successfully (skipped)"
     assert "SKIPPING" in result2.stdout, "Expected SKIPPING message in output"
     
-    # Count optimization runs after second execution (should still be 1)
-    optimization_runs_2 = list(optimization_dir.glob("skip_test_*"))
-    assert len(optimization_runs_2) == 1, f"Expected still 1 run (skipped), found {len(optimization_runs_2)}"
+    # Verify folder still exists (not recreated)
+    assert skip_test_dir.exists(), "Optimization folder should still exist after skip"
     
     print(f"[TEST] --skip-if-exists correctly prevented duplicate optimization")

@@ -9,9 +9,11 @@ from pathlib import Path
 
 def test_runner_entry_help():
     """Test that runner entry script has help."""
-    entry_script = Path("src/abx_amr_simulator/gui/runner_entry.py")
+    # Use Path relative to this test file
+    test_dir = Path(__file__).parent
+    entry_script = test_dir.parent.parent.parent / "src" / "abx_amr_simulator" / "gui" / "runner_entry.py"
     result = subprocess.run(
-        [sys.executable, str(entry_script), "--help"],
+        [sys.executable, str(entry_script),"--help"],
         capture_output=True,
         text=True,
     )
@@ -22,7 +24,9 @@ def test_runner_entry_help():
 
 def test_viewer_entry_help():
     """Test that viewer entry script has help."""
-    entry_script = Path("src/abx_amr_simulator/gui/viewer_entry.py")
+    # Use Path relative to this test file
+    test_dir = Path(__file__).parent
+    entry_script = test_dir.parent.parent.parent / "src" / "abx_amr_simulator" / "gui" / "viewer_entry.py"
     result = subprocess.run(
         [sys.executable, str(entry_script), "--help"],
         capture_output=True,
@@ -36,8 +40,12 @@ def test_viewer_entry_help():
 def test_entry_point_syntax():
     """Test that both entry scripts compile."""
     import py_compile
-    py_compile.compile("src/abx_amr_simulator/gui/runner_entry.py", doraise=True)
-    py_compile.compile("src/abx_amr_simulator/gui/viewer_entry.py", doraise=True)
+    # Use Path relative to this test file
+    test_dir = Path(__file__).parent
+    runner_path = test_dir.parent.parent.parent / "src" / "abx_amr_simulator" / "gui" / "runner_entry.py"
+    viewer_path = test_dir.parent.parent.parent / "src" / "abx_amr_simulator" / "gui" / "viewer_entry.py"
+    py_compile.compile(str(runner_path), doraise=True)
+    py_compile.compile(str(viewer_path), doraise=True)
     print("✅ Entry point scripts compile successfully")
 
 

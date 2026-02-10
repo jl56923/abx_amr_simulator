@@ -1,0 +1,33 @@
+{
+    "overall_total_reward": 1.4484654123291576,
+    "overall_count_clinical_benefits": 9,
+    "overall_count_clinical_failures": 0,
+    "overall_count_adverse_events": 3,
+    "overall_not_infected_no_treatment_count": 0,
+    "overall_not_infected_treated_count": 6,
+    "overall_infected_no_treatment_count": 0,
+    "overall_infected_treated_count": 9,
+    "overall_sensitive_infection_treated_count_per_abx_dict": {
+        "A": 5,
+        "B": 4
+    },
+    "overall_resistant_infection_treated_count_per_abx_dict": {
+        "A": 0,
+        "B": 0
+    },
+    "overall_sensitive_infection_treated_count": 9,
+    "overall_resistant_infection_treated_count": 0,
+    "overall_abx_prescriptions_count_per_abx": {
+        "A": 5,
+        "B": 4
+    },
+    "overall_abx_prescriptions_count": 9,
+    "final_actual_amr_levels": {
+        "A": 0.05989229717170789,
+        "B": 0.11130422047482284
+    },
+    "final_visible_amr_levels": {
+        "A": 0.05989229717170789,
+        "B": 0.11130422047482284
+    }
+}

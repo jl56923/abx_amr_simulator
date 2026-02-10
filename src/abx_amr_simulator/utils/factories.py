@@ -686,9 +686,17 @@ def save_training_config(config: Dict[str, Any], run_dir: str):
         >>> save_training_config(config, run_dir)
         >>> # Creates: <run_dir>/full_agent_env_config.yaml
     """
+    # Ensure run directory exists
+    Path(run_dir).mkdir(parents=True, exist_ok=True)
+
+    # Primary (new) filename
     config_path = os.path.join(run_dir, 'full_agent_env_config.yaml')
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False)
+
+    # Note: do not write legacy `config.yaml` here. Tests and tools should
+    # rely on the canonical `full_agent_env_config.yaml` filename. If
+    # legacy compatibility is required, update calling code or tests.
 
 
 def save_option_library_config(resolved_config: Dict[str, Any], run_dir: str):

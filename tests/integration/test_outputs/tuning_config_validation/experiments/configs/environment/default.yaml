@@ -1,0 +1,29 @@
+# Default environment configuration (ABXAMREnv-only)
+# PatientGenerator parameters now live in experiments/configs/patient_generator/default.yaml
+
+# Antibiotic AMR dictionary (leak, flatness_parameter, permanent_residual_volume, initial_amr_level)
+antibiotics_AMR_dict:
+  A:
+    leak: 0.2
+    flatness_parameter: 50
+    permanent_residual_volume: 0.0
+    initial_amr_level: 0.0
+  B:
+    leak: 0.1
+    flatness_parameter: 25
+    permanent_residual_volume: 0.0
+    initial_amr_level: 0.0
+
+# Crossresistance matrix: defines off-diagonal AMR interactions between antibiotics
+crossresistance_matrix:
+  A:
+    B: 0.3
+  B:
+    A: 0.1
+
+num_patients_per_time_step: 5
+update_visible_AMR_levels_every_n_timesteps: 1
+add_noise_to_visible_AMR_levels: 0.0  # Std dev of Gaussian noise added to observed AMR levels
+add_bias_to_visible_AMR_levels: 0.0   # Constant bias added to observed AMR levels
+max_time_steps: 500
+include_steps_since_amr_update_in_obs: false

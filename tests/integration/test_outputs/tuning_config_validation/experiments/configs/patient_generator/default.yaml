@@ -1,0 +1,80 @@
+# Default PatientGenerator configuration
+# Configures default homogeneous patient population for ABXAMREnv
+
+# Distribution types for patient attributes
+# Each attribute can be: constant or gaussian
+
+# Probability of infection:
+prob_infected:
+  prob_dist:
+    type: constant
+    value: 0.8
+    mu: null
+    sigma: null
+  obs_bias_multiplier: 1.0
+  obs_noise_one_std_dev: 0.0
+  obs_noise_std_dev_fraction: 0.0
+  clipping_bounds: [0.0, 1.0]
+
+# Benefit value multiplier (how much to multiply the clinical benefit reward by)
+benefit_value_multiplier:
+  prob_dist:
+    type: constant
+    value: 1.0
+    mu: null
+    sigma: null
+  obs_bias_multiplier: 1.0
+  obs_noise_one_std_dev: 0.0
+  obs_noise_std_dev_fraction: 0.0
+  clipping_bounds: [0.0, null]
+
+# Failure value multiplier (how much to multiply the clinical failure penalty by)
+failure_value_multiplier:
+  prob_dist:
+    type: constant
+    value: 1.0
+    mu: null
+    sigma: null
+  obs_bias_multiplier: 1.0
+  obs_noise_one_std_dev: 0.0
+  obs_noise_std_dev_fraction: 0.0
+  clipping_bounds: [0.0, null]
+
+# Benefit probability multiplier (how much to multiply the benefit probability by)
+benefit_probability_multiplier:
+  prob_dist:
+    type: constant
+    value: 1.0
+    mu: null
+    sigma: null
+  obs_bias_multiplier: 1.0
+  obs_noise_one_std_dev: 0.0
+  obs_noise_std_dev_fraction: 0.0
+  clipping_bounds: [0.0, null]
+
+# Failure probability multiplier (how much to multiply the clinical failure probability by)
+failure_probability_multiplier:
+  prob_dist:
+    type: constant
+    value: 1.0
+    mu: null
+    sigma: null
+  obs_bias_multiplier: 1.0
+  obs_noise_one_std_dev: 0.0
+  obs_noise_std_dev_fraction: 0.0
+  clipping_bounds: [0.0, null]
+
+# Recovery without treatment probability (probability of recovering without treatment, i.e. pt is infected but recovers anyway without treatment)
+recovery_without_treatment_prob:
+  prob_dist:
+    type: constant
+    value: 0.0  # Recovery without treatment
+    mu: null
+    sigma: null
+  obs_bias_multiplier: 1.0
+  obs_noise_one_std_dev: 0.0
+  obs_noise_std_dev_fraction: 0.0
+  clipping_bounds: [0.0, 1.0]
+
+visible_patient_attributes:
+  - prob_infected

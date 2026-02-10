@@ -141,8 +141,8 @@ class TestSaveTrainingConfig:
             run_dir = Path(tmpdir)
             save_training_config(config=config, run_dir=str(run_dir))
             
-            # Should create config.yaml
-            config_file = run_dir / "config.yaml"
+            # Should create full_agent_env_config.yaml
+            config_file = run_dir / "full_agent_env_config.yaml"
             assert config_file.exists()
     
     def test_saved_config_is_valid_yaml(self):
@@ -156,7 +156,7 @@ class TestSaveTrainingConfig:
             run_dir = Path(tmpdir)
             save_training_config(config=config, run_dir=str(run_dir))
             
-            config_file = run_dir / "config.yaml"
+            config_file = run_dir / "full_agent_env_config.yaml"
             with open(file=config_file, mode='r') as f:
                 loaded_config = yaml.safe_load(stream=f)
             
@@ -186,7 +186,7 @@ class TestSaveTrainingConfig:
             run_dir = Path(tmpdir)
             save_training_config(config=config, run_dir=str(run_dir))
             
-            config_file = run_dir / "config.yaml"
+            config_file = run_dir / "full_agent_env_config.yaml"
             with open(file=config_file, mode='r') as f:
                 loaded_config = yaml.safe_load(stream=f)
             
@@ -212,7 +212,7 @@ class TestSaveTrainingConfig:
             run_dir = Path(tmpdir)
             save_training_config(config=config, run_dir=str(run_dir))
             
-            config_file = run_dir / "config.yaml"
+            config_file = run_dir / "full_agent_env_config.yaml"
             with open(config_file, 'r') as f:
                 loaded_config = yaml.safe_load(stream=f)
             

@@ -1,0 +1,164 @@
+_umbrella_config_dir: /Users/joycelee/Work/Code/abx_amr_capacitor_rl/external/abx_amr_simulator/tests/integration/test_outputs/tuning_config_validation/experiments/configs/umbrella_configs
+abx_name_to_index:
+  A: 0
+  B: 1
+  no_treatment: 2
+algorithm: PPO
+config_folder_location: ../
+environment:
+  add_bias_to_visible_AMR_levels: 0.0
+  add_noise_to_visible_AMR_levels: 0.0
+  antibiotics_AMR_dict:
+    A:
+      flatness_parameter: 50
+      initial_amr_level: 0.0
+      leak: 0.2
+      permanent_residual_volume: 0.0
+    B:
+      flatness_parameter: 25
+      initial_amr_level: 0.0
+      leak: 0.1
+      permanent_residual_volume: 0.0
+  crossresistance_matrix:
+    A:
+      B: 0.3
+    B:
+      A: 0.1
+  include_steps_since_amr_update_in_obs: false
+  max_time_steps: 3
+  num_patients_per_time_step: 5
+  update_visible_AMR_levels_every_n_timesteps: 1
+index_to_abx_name:
+  0: A
+  1: B
+  2: no_treatment
+learning_rate: 0.0005780826461059378
+options_folder_location: ../../options
+patient_generator:
+  benefit_probability_multiplier:
+    clipping_bounds:
+    - 0.0
+    - null
+    obs_bias_multiplier: 1.0
+    obs_noise_one_std_dev: 0.0
+    obs_noise_std_dev_fraction: 0.0
+    prob_dist:
+      mu: null
+      sigma: null
+      type: constant
+      value: 1.0
+  benefit_value_multiplier:
+    clipping_bounds:
+    - 0.0
+    - null
+    obs_bias_multiplier: 1.0
+    obs_noise_one_std_dev: 0.0
+    obs_noise_std_dev_fraction: 0.0
+    prob_dist:
+      mu: null
+      sigma: null
+      type: constant
+      value: 1.0
+  failure_probability_multiplier:
+    clipping_bounds:
+    - 0.0
+    - null
+    obs_bias_multiplier: 1.0
+    obs_noise_one_std_dev: 0.0
+    obs_noise_std_dev_fraction: 0.0
+    prob_dist:
+      mu: null
+      sigma: null
+      type: constant
+      value: 1.0
+  failure_value_multiplier:
+    clipping_bounds:
+    - 0.0
+    - null
+    obs_bias_multiplier: 1.0
+    obs_noise_one_std_dev: 0.0
+    obs_noise_std_dev_fraction: 0.0
+    prob_dist:
+      mu: null
+      sigma: null
+      type: constant
+      value: 1.0
+  prob_infected:
+    clipping_bounds:
+    - 0.0
+    - 1.0
+    obs_bias_multiplier: 1.0
+    obs_noise_one_std_dev: 0.0
+    obs_noise_std_dev_fraction: 0.0
+    prob_dist:
+      mu: null
+      sigma: null
+      type: constant
+      value: 0.8
+  recovery_without_treatment_prob:
+    clipping_bounds:
+    - 0.0
+    - 1.0
+    obs_bias_multiplier: 1.0
+    obs_noise_one_std_dev: 0.0
+    obs_noise_std_dev_fraction: 0.0
+    prob_dist:
+      mu: null
+      sigma: null
+      type: constant
+      value: 0.0
+  seed: 1042
+  visible_patient_attributes:
+  - prob_infected
+policy_kwargs:
+  net_arch:
+  - 128
+  - 128
+ppo:
+  batch_size: 64
+  clip_range: 0.2
+  ent_coef: 0.0
+  gae_lambda: 0.95
+  gamma: 0.99
+  learning_rate: 0.0003
+  max_grad_norm: 0.5
+  n_epochs: 10
+  n_steps: 2048
+  verbose: 0
+  vf_coef: 0.5
+reward_calculator:
+  abx_clinical_reward_penalties_info_dict:
+    abx_adverse_effects_info:
+      A:
+        adverse_effect_penalty: -2.0
+        adverse_effect_probability: 0.1
+        normalized_adverse_effect_penalty: -0.2
+      B:
+        adverse_effect_penalty: -3.0
+        adverse_effect_probability: 0.15
+        normalized_adverse_effect_penalty: -0.3
+    clinical_benefit_probability: 1.0
+    clinical_benefit_reward: 10.0
+    clinical_failure_penalty: -10.0
+    clinical_failure_probability: 1.0
+    normalized_clinical_benefit_reward: 1.0
+    normalized_clinical_failure_penalty: -1.0
+  epsilon: 0.05
+  lambda_weight: 0.1
+  seed: null
+training:
+  _converted_eval_freq: 6
+  _converted_save_freq: 2999997
+  _converted_total_timesteps: 6
+  early_stopping:
+    enabled: false
+    metric_name: eval/mean_reward
+    min_delta: 0.0
+    patience: 5
+  eval_freq_every_n_episodes: 2
+  log_patient_trajectories: false
+  num_eval_episodes: 10
+  run_name: test_reward_extraction
+  save_freq_every_n_episodes: 999999
+  seed: 1042
+  total_num_training_episodes: 2

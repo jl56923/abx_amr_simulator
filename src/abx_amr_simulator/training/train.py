@@ -118,20 +118,29 @@ def load_best_params_from_optimization(
         Tuple of (best_params dict or None, optimization_dir path or None)
         Returns (None, None) if no optimization run found or if loading fails
     """
-    # Find all optimization directories matching the experiment name
-    pattern = os.path.join(optimization_base_dir, f"{experiment_name}_*")
-    matching_dirs = glob.glob(pattern)
+    # New tune.py structure: optimization/{run_name}/ (no timestamp in folder name)
+    # Each run_name can resume/continue, with registry tracking timestamps
+    direct_path = os.path.join(optimization_base_dir, experiment_name)
     
-    if not matching_dirs:
-        print(f"Error: No optimization runs found matching '{experiment_name}' in {optimization_base_dir}")
-        return None, None
+    if os.path.exists(direct_path) and os.path.isdir(direct_path):
+        # Found direct match - use it
+        most_recent_dir = direct_path
+    else:
+        # Legacy support: Also try matching {experiment_name}_* pattern for backwards compatibility
+        # (older code may have used timestamped folder names)
+        pattern = os.path.join(optimization_base_dir, f"{experiment_name}_*")
+        matching_dirs = glob.glob(pattern)
+        
+        if not matching_dirs:
+            print(f"Error: No optimization runs found matching '{experiment_name}' in {optimization_base_dir}")
+            return None, None
+        
+        # Sort by timestamp (embedded in directory name) to get most recent
+        # Directory format: <experiment_name>_<timestamp> where timestamp is YYYYMMDD_HHMMSS
+        matching_dirs.sort(reverse=True)  # Most recent first
+        most_recent_dir = matching_dirs[0]
     
-    # Sort by timestamp (embedded in directory name) to get most recent
-    # Directory format: <experiment_name>_<timestamp> where timestamp is YYYYMMDD_HHMMSS
-    matching_dirs.sort(reverse=True)  # Most recent first
-    most_recent_dir = matching_dirs[0]
-    
-    # Load best_params.json from most recent directory
+    # Load best_params.json from optimization directory
     best_params_path = os.path.join(most_recent_dir, 'best_params.json')
     
     if not os.path.exists(best_params_path):
@@ -564,6 +573,24 @@ def main():
         print(f"\nFinal model (end of continued training) saved to: {final_model_path}.zip")
         print(f"Best model (highest eval reward) saved to: {os.path.join(run_dir, 'checkpoints', 'best_model')}.zip")
         
+        # Print evaluation results for Optuna tuning (tune.py parses this output)
+        if eval_env is not None and len(callbacks) > 1:
+            # Find EvalCallback in callbacks list
+            eval_callback = None
+            for cb in callbacks:
+                if hasattr(cb, 'best_mean_reward'):
+                    eval_callback = cb
+                    break
+            
+            if eval_callback is not None and hasattr(eval_callback, 'last_mean_reward'):
+                # Print in format that tune.py can parse
+                print(f"\n{'='*70}")
+                print(f"EVALUATION RESULTS (for hyperparameter tuning)")
+                print(f"{'='*70}")
+                print(f"Final mean reward: {eval_callback.last_mean_reward:.4f}")
+                print(f"Best mean reward: {eval_callback.best_mean_reward:.4f}")
+                print(f"{'='*70}\n")
+        
         # Save summary
         save_training_summary(config, run_dir, additional_steps, 0)
         print(f"Continued training complete. Results saved to: {run_dir}")
@@ -878,6 +905,24 @@ def main():
         agent.save(final_model_path)
         print(f"\nFinal model (end of training) saved to: {final_model_path}.zip")
         print(f"Best model (highest eval reward) saved to: {os.path.join(run_dir, 'checkpoints', 'best_model')}.zip")
+        
+        # Print evaluation results for Optuna tuning (tune.py parses this output)
+        if eval_env is not None and len(callbacks) > 1:
+            # Find EvalCallback in callbacks list (should be second callback after PatientStatsLoggingCallback)
+            eval_callback = None
+            for cb in callbacks:
+                if hasattr(cb, 'best_mean_reward'):
+                    eval_callback = cb
+                    break
+            
+            if eval_callback is not None and hasattr(eval_callback, 'last_mean_reward'):
+                # Print in format that tune.py can parse
+                print(f"\n{'='*70}")
+                print(f"EVALUATION RESULTS (for hyperparameter tuning)")
+                print(f"{'='*70}")
+                print(f"Final mean reward: {eval_callback.last_mean_reward:.4f}")
+                print(f"Best mean reward: {eval_callback.best_mean_reward:.4f}")
+                print(f"{'='*70}\n")
         
         # Save summary
         save_training_summary(config, run_dir, total_timesteps, 0)
