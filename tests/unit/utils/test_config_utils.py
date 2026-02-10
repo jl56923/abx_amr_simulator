@@ -416,6 +416,7 @@ class TestSetupConfigFoldersWithDefaults:
             assert (tmpdir / "configs" / "reward_calculator" / "default.yaml").exists()
             assert (tmpdir / "configs" / "patient_generator" / "default.yaml").exists()
             assert (tmpdir / "configs" / "agent_algorithm" / "default.yaml").exists()
+            assert (tmpdir / "configs" / "agent_algorithm" / "hrl_rppo.yaml").exists()
             assert (tmpdir / "configs" / "umbrella_configs" / "base_experiment.yaml").exists()
     
     def test_default_configs_are_valid_yaml(self):
@@ -430,6 +431,7 @@ class TestSetupConfigFoldersWithDefaults:
                 tmpdir / "configs" / "reward_calculator" / "default.yaml",
                 tmpdir / "configs" / "patient_generator" / "default.yaml",
                 tmpdir / "configs" / "agent_algorithm" / "default.yaml",
+                tmpdir / "configs" / "agent_algorithm" / "hrl_rppo.yaml",
                 tmpdir / "configs" / "umbrella_configs" / "base_experiment.yaml",
             ]
             

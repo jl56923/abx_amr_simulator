@@ -28,7 +28,9 @@ from pathlib import Path
 
 import pytest
 import numpy as np
+import yaml
 from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 
 from abx_amr_simulator.core import ABXAMREnv
 from abx_amr_simulator.hrl import (
@@ -147,6 +149,40 @@ def test_real_user_workflow_with_default_configs(temp_workspace):
     assert agent.num_timesteps > 0
     
     # Cleanup
+    env.close()
+
+
+def test_hrl_rppo_workflow_with_default_configs(temp_workspace):
+    """Test HRL R-PPO manager training using bundled default configs."""
+    umbrella_config_path = temp_workspace / "configs" / "umbrella_configs" / "hrl_ppo_default.yaml"
+    config = load_config(config_path=str(umbrella_config_path))
+
+    algo_config_path = temp_workspace / "configs" / "agent_algorithm" / "hrl_rppo.yaml"
+    assert algo_config_path.exists(), f"HRL R-PPO config not found: {algo_config_path}"
+    with open(file=algo_config_path, mode='r') as f:
+        algo_config = yaml.safe_load(stream=f)
+
+    config['algorithm'] = algo_config.get('algorithm', 'HRL_RPPO')
+    config['policy_kwargs'] = algo_config.get('policy_kwargs', {})
+    config['recurrent_ppo'] = algo_config.get('recurrent_ppo', {})
+    config['lstm_kwargs'] = algo_config.get('lstm_kwargs', {})
+
+    config['training']['total_num_training_episodes'] = 2
+    config['environment']['max_time_steps'] = 10
+
+    rc = create_reward_calculator(config=config)
+    pg = create_patient_generator(config=config)
+    env = create_environment(config=config, reward_calculator=rc, patient_generator=pg)
+    wrapped_env = wrap_environment_for_hrl(env=env, config=config)
+    wrapped_env.reset(seed=42)
+
+    agent = create_agent(config=config, env=wrapped_env, verbose=0)
+    assert isinstance(agent, RecurrentPPO)
+
+    total_timesteps = config['training']['total_num_training_episodes'] * config['environment']['max_time_steps']
+    agent.learn(total_timesteps=total_timesteps)
+    assert agent.num_timesteps > 0
+
     env.close()
 
 

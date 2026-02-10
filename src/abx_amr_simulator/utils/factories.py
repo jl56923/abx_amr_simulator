@@ -236,7 +236,7 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "Options
     """Wrap ABXAMREnv with OptionsWrapper for hierarchical RL.
     
     Creates OptionsWrapper with option library and manager observation configuration.
-    Only called when algorithm is 'HRL_PPO' or 'HRL_DQN'.
+    Only called when algorithm is 'HRL_PPO', 'HRL_DQN', or 'HRL_RPPO'.
     
     Args:
         env (ABXAMREnv): Base environment to wrap.
@@ -326,7 +326,7 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "Options
 
 
 def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str] = None, verbose: int = 0) -> Any:
-    """Instantiate RL agent (PPO, DQN, A2C, RecurrentPPO, or MBPO) from config.
+    """Instantiate RL agent (PPO, DQN, A2C, RecurrentPPO, HRL_PPO, HRL_RPPO, or MBPO) from config.
     
     Extracts algorithm type and hyperparameters from config, then creates the
     appropriate agent class. For standard agents (PPO/DQN/A2C/RecurrentPPO), uses
@@ -335,7 +335,7 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
     
     Args:
         config (Dict[str, Any]): Full experiment config dictionary. Must contain:
-            - 'algorithm': 'PPO' | 'DQN' | 'A2C' | 'RecurrentPPO' | 'MBPO'
+            - 'algorithm': 'PPO' | 'DQN' | 'A2C' | 'RecurrentPPO' | 'HRL_PPO' | 'HRL_RPPO' | 'MBPO'
             - '{algorithm_lowercase}': Dict with algorithm-specific hyperparameters
               (e.g., 'ppo': {'learning_rate': 3e-4, 'n_steps': 2048, ...})
               (e.g., 'mbpo': {...}, 'dynamics_model': {...} for MBPO)
@@ -495,6 +495,38 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
             max_grad_norm=ppo_config.get('max_grad_norm', 0.5),
             policy_kwargs=policy_kwargs,
             verbose=ppo_config.get('verbose', 1),
+            tensorboard_log=tb_log_path,
+            seed=seed,
+        )
+    elif algorithm == 'HRL_RPPO':
+        # Hierarchical RL with options-based wrapper and recurrent manager
+        # Env is already wrapped with OptionsWrapper before reaching here
+        recurrent_ppo_config = config.get('recurrent_ppo', {})
+        lstm_kwargs_config = config.get('lstm_kwargs', {})
+        learning_rate = recurrent_ppo_config.get('learning_rate', 3.0e-4)
+
+        lstm_policy_kwargs = policy_kwargs.copy()
+        lstm_policy_kwargs.update({
+            'lstm_hidden_size': lstm_kwargs_config.get('lstm_hidden_size', 64),
+            'n_lstm_layers': lstm_kwargs_config.get('n_lstm_layers', 1),
+            'enable_critic_lstm': lstm_kwargs_config.get('enable_critic_lstm', True),
+        })
+
+        agent = RecurrentPPO(
+            policy='MlpLstmPolicy',
+            env=env,
+            learning_rate=learning_rate,
+            n_steps=recurrent_ppo_config.get('n_steps', 256),
+            batch_size=recurrent_ppo_config.get('batch_size', 64),
+            n_epochs=recurrent_ppo_config.get('n_epochs', 10),
+            gamma=recurrent_ppo_config.get('gamma', 0.99),
+            gae_lambda=recurrent_ppo_config.get('gae_lambda', 0.95),
+            clip_range=recurrent_ppo_config.get('clip_range', 0.2),
+            ent_coef=recurrent_ppo_config.get('ent_coef', 0.02),
+            vf_coef=recurrent_ppo_config.get('vf_coef', 0.5),
+            max_grad_norm=recurrent_ppo_config.get('max_grad_norm', 0.5),
+            policy_kwargs=lstm_policy_kwargs,
+            verbose=recurrent_ppo_config.get('verbose', 1),
             tensorboard_log=tb_log_path,
             seed=seed,
         )
