@@ -13,6 +13,7 @@ import pdb
 
 import numpy as np
 import matplotlib.pyplot as plt
+from gymnasium import spaces
 
 from abx_amr_simulator.core import AMR_LeakyBalloon
 
@@ -740,10 +741,20 @@ def run_episode_and_get_trajectory(model, env, deterministic=True):
         obs = np.asarray(obs, dtype=np.float32)
         action, _ = model.predict(obs, deterministic=deterministic)
         
-        # Convert action to int for Discrete action spaces (HRL/options)
-        # stable-baselines3 returns numpy arrays even for scalar actions
-        if isinstance(action, np.ndarray):
-            action = int(action.item()) if action.size == 1 else action
+        # Normalize action shape/type to match env action space expectations
+        # SB3 returns numpy arrays even for scalar actions; MultiDiscrete needs arrays.
+        if isinstance(env.action_space, spaces.MultiDiscrete):
+            if isinstance(action, np.ndarray):
+                action = action.astype(int)
+            else:
+                action = np.array([int(action)], dtype=int)
+        elif isinstance(env.action_space, spaces.Discrete):
+            if isinstance(action, np.ndarray):
+                action = int(action.item()) if action.size == 1 else int(action.squeeze())
+            else:
+                action = int(action)
+        elif isinstance(action, np.ndarray) and action.size == 1:
+            action = action.item()
         
         obs, reward, terminated, truncated, info = env.step(action)
         
