@@ -43,6 +43,14 @@ Usage:
         --run-name exp1_tuning \\
         --overwrite-existing-study
 
+    # Parallel tuning with PostgreSQL storage (shared study)
+    python -m abx_amr_simulator.training.tune \\
+        --umbrella-config /abs/path/to/base_experiment.yaml \\
+        --tuning-config /abs/path/to/ppo_tuning.yaml \\
+        --run-name exp1_tuning \\
+        --use-postgres \\
+        --study-name exp1_tuning
+
 OPTIMIZATION REGISTRY (.optimization_completed.txt):
     Similar to training registry, tracks completed tuning runs:
         <optimization_dir>/.optimization_completed.txt
@@ -269,6 +277,35 @@ def validate_configs_match_existing(
         sys.exit(1)
     
     print("✓ Configuration validation passed: current configs match saved configs")
+
+
+def build_storage_url(
+    use_postgres: bool,
+    run_name: str,
+    optimization_dir: str
+) -> str:
+    """Build Optuna storage URL based on backend choice.
+
+    Args:
+        use_postgres: If True, use PostgreSQL; else use SQLite
+        run_name: Experiment run name (used for SQLite path)
+        optimization_dir: Optimization directory (used for SQLite path)
+
+    Returns:
+        Storage URL string (postgresql://... or sqlite:///...)
+    """
+    if use_postgres:
+        pg_username = os.environ.get("PG_USERNAME", os.environ.get("USER", "postgres"))
+        pg_port = os.environ.get("PG_PORT", "5432")
+        db_name = os.environ.get("DB_NAME", "optuna_tuning")
+        storage_url = f"postgresql://{pg_username}@localhost:{pg_port}/{db_name}"
+        print(f"Using PostgreSQL storage: {storage_url}")
+        return storage_url
+
+    storage_path = os.path.join(optimization_dir, "optuna_study.db")
+    storage_url = f"sqlite:///{storage_path}"
+    print(f"Using SQLite storage: {storage_url}")
+    return storage_url
 
 
 def suggest_hyperparameters(trial: optuna.Trial, search_space: Dict[str, Any]) -> Dict[str, Any]:
@@ -621,6 +658,18 @@ def main():
         help='Start a new Optuna study from scratch instead of continuing an existing one. Default: continue existing study if found.'
     )
     parser.add_argument(
+        '--use-postgres',
+        action='store_true',
+        default=False,
+        help='Use PostgreSQL backend for parallel workers (requires PostgreSQL running locally)'
+    )
+    parser.add_argument(
+        '--study-name',
+        type=str,
+        default=None,
+        help='Shared Optuna study name (recommended for parallel workers)'
+    )
+    parser.add_argument(
         '-p',
         '--param-override',
         action='append',
@@ -658,6 +707,18 @@ def main():
     
     if not os.path.exists(args.tuning_config):
         print(f"Error: Tuning config file not found: {args.tuning_config}")
+        sys.exit(1)
+
+    if args.use_postgres and args.overwrite_existing_study:
+        print(f"\n{'='*70}")
+        print("ERROR: --overwrite-existing-study is unsafe with --use-postgres")
+        print(f"{'='*70}")
+        print("\nParallel workers can race to delete studies, causing data loss.")
+        print("To start a fresh PostgreSQL study:")
+        print("  1) Delete the study in a wrapper script before launching workers")
+        print("  2) Remove --overwrite-existing-study from worker commands")
+        print("\nUse --overwrite-existing-study only for single-worker SQLite runs.")
+        print(f"{'='*70}\n")
         sys.exit(1)
     
     # Parse parameter overrides
@@ -824,23 +885,27 @@ def main():
         )
         print(f"{'='*70}\\n")
     
-    # Save resolved umbrella config immediately (before optimization starts)
-    print(f"Saving resolved configuration to: {optimization_dir}")
-    save_training_config(config=umbrella_config, run_dir=optimization_dir)
-    print(f"✓ Saved full_agent_env_config.yaml")
-    
-    # Save tuning config for reproducibility (before optimization starts)
-    tuning_config_path = os.path.join(optimization_dir, 'tuning_config.yaml')
-    with open(tuning_config_path, 'w') as f:
-        yaml.dump(tuning_config, f, default_flow_style=False)
-    print(f"✓ Saved tuning_config.yaml")
-    
-    # Load and save HRL option library if applicable
-    option_library_config = load_and_save_hrl_option_library(
-        config=umbrella_config,
-        umbrella_config_path=args.umbrella_config,
-        optimization_dir=optimization_dir
-    )
+    # Save resolved configs immediately (before optimization starts)
+    config_already_saved = os.path.exists(umbrella_path)
+    if args.use_postgres and config_already_saved:
+        print("Configs already exist (saved by another worker), skipping save.")
+    else:
+        print(f"Saving resolved configuration to: {optimization_dir}")
+        save_training_config(config=umbrella_config, run_dir=optimization_dir)
+        print(f"✓ Saved full_agent_env_config.yaml")
+
+        # Save tuning config for reproducibility (before optimization starts)
+        tuning_config_path = os.path.join(optimization_dir, 'tuning_config.yaml')
+        with open(tuning_config_path, 'w') as f:
+            yaml.dump(tuning_config, f, default_flow_style=False)
+        print(f"✓ Saved tuning_config.yaml")
+
+        # Load and save HRL option library if applicable
+        load_and_save_hrl_option_library(
+            config=umbrella_config,
+            umbrella_config_path=args.umbrella_config,
+            optimization_dir=optimization_dir
+        )
     
     # Extract optimization settings
     optimization_config = tuning_config.get('optimization', {})
@@ -869,24 +934,28 @@ def main():
     # Get base seed from umbrella config
     base_seed = umbrella_config.get('training', {}).get('seed', 42)
     
-    # Set up SQLite storage for persistent study
-    storage_path = os.path.join(optimization_dir, 'optuna_study.db')
-    storage_url = f"sqlite:///{storage_path}"
-    
+    storage_url = build_storage_url(
+        use_postgres=args.use_postgres,
+        run_name=run_name,
+        optimization_dir=optimization_dir
+    )
+    storage_path = None
+
     # Determine whether to load existing study or start fresh
     load_if_exists = not args.overwrite_existing_study
-    
-    if args.overwrite_existing_study and os.path.exists(storage_path):
-        print(f"\n⚠️  Overwriting existing study database: {storage_path}")
-        os.remove(storage_path)
-    elif load_if_exists and os.path.exists(storage_path):
-        print(f"\n✓ Found existing study database, will continue: {storage_path}")
-    
-    # Create Optuna study with SQLite storage
+
+    if not args.use_postgres:
+        storage_path = os.path.join(optimization_dir, 'optuna_study.db')
+        if args.overwrite_existing_study and os.path.exists(storage_path):
+            print(f"\n⚠️  Overwriting existing study database: {storage_path}")
+            os.remove(storage_path)
+        elif load_if_exists and os.path.exists(storage_path):
+            print(f"\n✓ Found existing study database, will continue: {storage_path}")
+
     study = optuna.create_study(
         direction=direction,
         sampler=sampler,
-        study_name=run_name,
+        study_name=args.study_name or run_name,
         storage=storage_url,
         load_if_exists=load_if_exists
     )
@@ -938,7 +1007,8 @@ def main():
         optimization_dir=optimization_dir
     )
     
-    print(f"✓ Study database saved to: {storage_path}")
+    storage_label = storage_path or storage_url
+    print(f"✓ Study database saved to: {storage_label}")
     
     # Update registry
     update_registry(
@@ -949,7 +1019,7 @@ def main():
     print(f"\n✓ Recorded successful completion in registry: {completion_registry_path}\n")
     
     print(f"Optimization results saved to: {optimization_dir}")
-    print(f"  - Study database: {storage_path}")
+    print(f"  - Study database: {storage_label}")
     print(f"  - Best params: {os.path.join(optimization_dir, 'best_params.json')}")
     print(f"  - Study summary: {os.path.join(optimization_dir, 'study_summary.json')}")
     print(f"\nTo use these parameters in training, run:")
