@@ -228,6 +228,13 @@ class OptionLibrary:
             if option.PROVIDES_TERMINATION_CONDITION:
                 # For future use; just log for now
                 pass
+        
+        # After validation, inject full observable attribute list into options that support it
+        # (e.g., HeuristicWorker needs this for uncertainty scoring)
+        visible_attrs_list = list(patient_generator.visible_patient_attributes)
+        for option_name, option in self.options.items():
+            if hasattr(option, 'set_observable_attributes'):
+                option.set_observable_attributes(visible_attrs_list)
 
     def list_options(self) -> List[str]:
         """Return ordered list of option names."""

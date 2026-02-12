@@ -33,15 +33,9 @@ class HeuristicWorker(OptionBase):
         use_relative_uncertainty: If True, count -1s; if False, count missing from total observable
     """
     
-    # Required by OptionBase protocol: declare dependencies
-    REQUIRES_OBSERVATION_ATTRIBUTES: ClassVar[List[str]] = [
-        'prob_infected',
-        'benefit_value_multiplier',
-        'failure_value_multiplier',
-        'benefit_probability_multiplier',
-        'failure_probability_multiplier',
-        'recovery_without_treatment_prob'
-    ]
+    # Required by OptionBase protocol: declare minimal dependencies
+    # Only prob_infected is truly required; other attributes use defaults if missing
+    REQUIRES_OBSERVATION_ATTRIBUTES: ClassVar[List[str]] = ['prob_infected']
     REQUIRES_AMR_LEVELS: ClassVar[bool] = True  # Needed for accurate expected reward calculation
     REQUIRES_STEP_NUMBER: ClassVar[bool] = False  # Not used for MVP
     PROVIDES_TERMINATION_CONDITION: ClassVar[bool] = False  # Fixed duration
@@ -68,58 +62,112 @@ class HeuristicWorker(OptionBase):
         super().__init__(name=name, k=duration)
         self.action_thresholds = action_thresholds
         self.uncertainty_threshold = uncertainty_threshold
+        # Will be set by OptionsWrapper during initialization
+        self._observable_patient_attributes: List[str] = []
     
     def compute_expected_reward(
         self,
         patient: Dict[str, float],
+        antibiotic_names: List[str],
         current_amr_levels: Dict[str, float],
-        clinical_params: Dict[str, Any],
+        reward_calculator: Any,
     ) -> Dict[str, float]:
-        """Compute expected reward for each action given patient attributes and clinical params.
+        """Compute expected reward for each action using clinical reasoning.
         
-        Expected reward formula (simplified):
-            reward(prescribe_A) = (prob_infected × clinical_benefit × benefit_multiplier × (1 - amr_A))
-                                  - adverse_effect_penalty
-            reward(no_treatment) = baseline (typically 0.0)
+        This is the core clinical decision logic: given observed patient attributes and
+        current AMR levels, calculate the expected utility of each prescribing decision.
+        
+        Expected reward formula (prescribe antibiotic):
+            E[reward] = pI×pS×pB×RB×vB + pI×(1−pS)×pF×RF×vF + pAE×AE
+        
+        Expected reward formula (no treatment):
+            E[reward] = pI×r×RB×vB + pI×(1−r)×pF×RF×vF
+        
+        Where:
+            - pI = prob_infected (observed)
+            - pS = 1 - amr_level (sensitivity probability)
+            - pB = clinical_benefit_probability × benefit_probability_multiplier (clamped)
+            - pF = clinical_failure_probability × failure_probability_multiplier (clamped)
+            - RB = normalized_clinical_benefit_reward
+            - RF = normalized_clinical_failure_penalty
+            - vB = benefit_value_multiplier (observed)
+            - vF = failure_value_multiplier (observed)
+            - pAE = adverse_effect_probability
+            - AE = normalized_adverse_effect_penalty
+            - r = recovery_without_treatment_prob (observed)
+        
+        NOTE: Does NOT include epsilon penalty to avoid leaking counterfactual AMR dynamics.
         
         Args:
             patient: Dict with observed patient attributes
+            antibiotic_names: List of antibiotic names in environment
             current_amr_levels: Dict mapping antibiotic name → current resistance level ∈ [0, 1]
-            clinical_params: Dict from reward_calculator.abx_clinical_reward_penalties_info_dict
+            reward_calculator: RewardCalculator instance (used only to access clinical_params)
         
         Returns:
             Dict mapping action key → expected reward
             Example: {'prescribe_A': 0.85, 'prescribe_B': 0.42, 'no_treatment': 0.0}
         """
+        # Extract observed attributes with defaults
+        pI = float(patient.get('prob_infected', 0.0))
+        vB = float(patient.get('benefit_value_multiplier', 1.0))
+        vF = float(patient.get('failure_value_multiplier', 1.0))
+        benefit_prob_mult = float(patient.get('benefit_probability_multiplier', 1.0))
+        failure_prob_mult = float(patient.get('failure_probability_multiplier', 1.0))
+        r_spont = float(patient.get('recovery_without_treatment_prob', 0.1))
+        
+        # Get clinical parameters from reward_calculator
+        clinical_params = reward_calculator.abx_clinical_reward_penalties_info_dict
+        
+        # Base clinical probabilities
+        base_benefit_prob = clinical_params['clinical_benefit_probability']
+        base_failure_prob = clinical_params['clinical_failure_probability']
+        
+        # Clamp-scaled probabilities
+        pB = min(1.0, max(0.0, base_benefit_prob * benefit_prob_mult))
+        pF = min(1.0, max(0.0, base_failure_prob * failure_prob_mult))
+        
+        # Normalized rewards
+        RB = clinical_params['normalized_clinical_benefit_reward']
+        RF = clinical_params['normalized_clinical_failure_penalty']
+        
         expected_rewards = {}
         
-        # Extract patient attributes (use .get() with defaults for robustness)
-        prob_infected = patient.get('prob_infected', 0.0)
-        benefit_multiplier = patient.get('benefit_value_multiplier', 1.0)
-        
         # Compute expected reward for each antibiotic
-        for abx_name, abx_params in clinical_params.items():
-            if abx_name == 'no_treatment':
-                continue  # Skip no_treatment in this loop
+        for abx_name in antibiotic_names:
+            visible_amr = current_amr_levels.get(abx_name, 0.0)
+            pS = 1.0 - float(visible_amr)
             
-            # Extract clinical parameters
-            clinical_benefit = abx_params.get('clinical_benefit_reward', 0.0)
-            adverse_effect_penalty = abx_params.get('adverse_effect_penalty', 0.0)
+            # Expected benefit and failure terms
+            expected_reward = pI * pS * pB * RB * vB
+            expected_reward += pI * (1.0 - pS) * pF * RF * vF
             
-            # Get current resistance to this antibiotic
-            current_amr = current_amr_levels.get(abx_name, 0.0)
+            # Adverse effects expectation
+            ae_info = clinical_params['abx_adverse_effects_info'][abx_name]
+            ae_penalty = ae_info['normalized_adverse_effect_penalty']
+            pAE = ae_info['adverse_effect_probability']
+            expected_reward += float(pAE) * float(ae_penalty)
             
-            # Compute expected reward: effectiveness × benefit - cost
-            # Key insight: effectiveness is (1 - amr), so high resistance → low expected benefit
-            success_reward = prob_infected * clinical_benefit * benefit_multiplier * (1 - current_amr)
-            expected_reward = success_reward - adverse_effect_penalty
-            
-            expected_rewards[f'prescribe_{abx_name}'] = expected_reward
+            expected_rewards[f'prescribe_{abx_name}'] = float(expected_reward)
         
-        # No-treatment reward (typically neutral/small negative)
-        expected_rewards['no_treatment'] = self.action_thresholds.get('no_treatment', 0.0)
+        # No treatment expected reward
+        expected_reward_no_treatment = pI * r_spont * RB * vB
+        expected_reward_no_treatment += pI * (1.0 - r_spont) * pF * RF * vF
+        expected_rewards['no_treatment'] = float(expected_reward_no_treatment)
         
         return expected_rewards
+    
+    def set_observable_attributes(self, attributes: List[str]) -> None:
+        """Set the list of observable patient attributes (called by OptionsWrapper).
+        
+        This method is called by OptionsWrapper during initialization to inject
+        the actual list of patient attributes that PatientGenerator exposes.
+        Used for uncertainty scoring to check all potentially observable attributes.
+        
+        Args:
+            attributes: List of patient attribute names from PatientGenerator
+        """
+        self._observable_patient_attributes = attributes
     
     def compute_relative_uncertainty_score(
         self,
@@ -141,7 +189,9 @@ class HeuristicWorker(OptionBase):
             - Patient sees {'prob_infected': 0.7} (only 1 attribute visible, no padding) → score = 0
         """
         uncertainty = 0
-        for attr in self.REQUIRES_OBSERVATION_ATTRIBUTES:
+        # Use injected observable attributes list, fall back to minimal requirements if not set
+        check_attrs = self._observable_patient_attributes or self.REQUIRES_OBSERVATION_ATTRIBUTES
+        for attr in check_attrs:
             if attr in patient and patient[attr] == -1.0:
                 uncertainty += 1
         return uncertainty
@@ -169,7 +219,9 @@ class HeuristicWorker(OptionBase):
             - Patient sees all 6 attributes → score = 0
         """
         num_observed = 0
-        for attr in self.REQUIRES_OBSERVATION_ATTRIBUTES:
+        # Use injected observable attributes list, fall back to minimal requirements if not set
+        check_attrs = self._observable_patient_attributes or self.REQUIRES_OBSERVATION_ATTRIBUTES
+        for attr in check_attrs:
             if attr in patient and patient[attr] != -1.0:
                 num_observed += 1
         return total_observable_attrs - num_observed
@@ -203,11 +255,8 @@ class HeuristicWorker(OptionBase):
         use_relative_uncertainty = env_state['use_relative_uncertainty']
         option_library = env_state['option_library']
         
-        # Extract clinical parameters from reward calculator
-        clinical_params = reward_calculator.abx_clinical_reward_penalties_info_dict
+        # Get antibiotic names and total observable attributes
         antibiotic_names = list(option_library.abx_name_to_index.keys())
-        
-        # Get total observable attributes count for absolute uncertainty
         total_observable_attrs = len(patient_generator.KNOWN_ATTRIBUTE_TYPES)
         
         actions = []
@@ -216,7 +265,7 @@ class HeuristicWorker(OptionBase):
                 patient=patient,
                 antibiotic_names=antibiotic_names,
                 current_amr_levels=current_amr_levels,
-                clinical_params=clinical_params,
+                reward_calculator=reward_calculator,
                 use_relative_uncertainty=use_relative_uncertainty,
                 total_observable_attrs=total_observable_attrs,
                 option_library=option_library,
@@ -230,7 +279,7 @@ class HeuristicWorker(OptionBase):
         patient: Dict[str, float],
         antibiotic_names: List[str],
         current_amr_levels: Dict[str, float],
-        clinical_params: Dict[str, Any],
+        reward_calculator: Any,
         use_relative_uncertainty: bool,
         total_observable_attrs: int,
         option_library: Any,
@@ -247,7 +296,7 @@ class HeuristicWorker(OptionBase):
             patient: Single patient dict
             antibiotic_names: Ordered list of antibiotic names
             current_amr_levels: Dict mapping antibiotic name → current resistance level
-            clinical_params: Clinical parameters from reward calculator
+            reward_calculator: RewardCalculator instance from environment
             use_relative_uncertainty: If True, use relative; if False, use absolute
             total_observable_attrs: Total observable attributes (for absolute uncertainty)
             option_library: OptionLibrary reference (for abx_name_to_index)
@@ -258,8 +307,9 @@ class HeuristicWorker(OptionBase):
         # Compute expected rewards
         expected_rewards = self.compute_expected_reward(
             patient=patient,
+            antibiotic_names=antibiotic_names,
             current_amr_levels=current_amr_levels,
-            clinical_params=clinical_params,
+            reward_calculator=reward_calculator,
         )
         
         # Compute uncertainty score
