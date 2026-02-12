@@ -10,7 +10,7 @@ import json
 import copy
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 
 import pdb
 
@@ -29,6 +29,10 @@ from abx_amr_simulator.core import (
     PatientGeneratorMixer,
 )
 from abx_amr_simulator.core.reward_calculator import BalancedReward
+
+# Import for type hints only (avoid circular imports at runtime)
+if TYPE_CHECKING:
+    from abx_amr_simulator.hrl import OptionsWrapper
 
 
 def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
@@ -164,7 +168,7 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
         return PatientGenerator(config=patient_gen_config)
 
 
-def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculator, patient_generator: PatientGenerator, wrap_monitor: bool = False, monitor_dir: Optional[str] = None) -> ABXAMREnv:
+def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculator, patient_generator: PatientGenerator, wrap_monitor: bool = False, monitor_dir: Optional[str] = None) -> gym.Env:
     """Create ABXAMREnv from pre-instantiated RewardCalculator and PatientGenerator.
     
     Follows the clean orchestration pattern: core components (RewardCalculator,
@@ -186,7 +190,7 @@ def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculat
             API compatibility).
     
     Returns:
-        ABXAMREnv: Initialized environment instance, optionally wrapped in Monitor.
+        gym.Env: Initialized environment instance, optionally wrapped in Monitor.
     
     Raises:
         ValueError: If 'patient_generator' or 'visible_patient_attributes' found in
@@ -224,11 +228,105 @@ def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculat
     
     if wrap_monitor:
         env = Monitor(env)
+        
     return env
 
 
+def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "OptionsWrapper":
+    """Wrap ABXAMREnv with OptionsWrapper for hierarchical RL.
+    
+    Creates OptionsWrapper with option library and manager observation configuration.
+    Only called when algorithm is 'HRL_PPO', 'HRL_DQN', or 'HRL_RPPO'.
+    
+    Args:
+        env (ABXAMREnv): Base environment to wrap.
+        config (Dict[str, Any]): Full experiment config. Must contain 'hrl' section with:
+            - option_library: path to option library config (relative to options_folder_location)
+            - option_gamma: Discount factor for macro-reward aggregation
+            - front_edge_use_full_vector: If True, manager gets full boundary cohort
+                vector. If False, manager gets mean + std for each visible attribute.
+            And should contain 'options_folder_location' (default: '../../options' relative
+            to configs/umbrella_configs).
+    
+    Returns:
+        OptionsWrapper: Hierarchy-aware environment wrapping ABXAMREnv with option selection.
+    
+    Raises:
+        ValueError: If HRL config section missing or option library invalid.
+    
+    Example:
+        >>> base_env = create_environment(config, rc, pg)
+        >>> hrl_env = wrap_environment_for_hrl(base_env, config)
+        >>> agent = create_agent(config, hrl_env, tb_log_path=...)
+    """
+    # Import HRL components from abx_amr_simulator.hrl
+    from abx_amr_simulator.hrl import OptionsWrapper, OptionLibraryLoader
+    
+    hrl_config = config.get('hrl', {})
+    if not hrl_config:
+        raise ValueError("HRL algorithm selected but 'hrl' config section missing")
+    
+    # Get option library path
+    option_library_path = hrl_config.get('option_library')
+    if not option_library_path:
+        raise ValueError("HRL config must specify 'option_library' path")
+    
+    # Determine base directory for option library resolution
+    options_folder_location = config.get('options_folder_location', '../../options')
+    
+    # Get the umbrella config directory for relative path resolution
+    umbrella_config_dir = config.get('_umbrella_config_dir')
+    if umbrella_config_dir:
+        umbrella_dir = Path(umbrella_config_dir)
+    else:
+        # Fallback if _umbrella_config_dir not available
+        umbrella_dir = Path.cwd()
+    
+    # Resolve options_folder_location
+    if Path(options_folder_location).is_absolute():
+        options_base_dir = Path(options_folder_location).resolve()
+    else:
+        # Relative to umbrella config directory
+        options_base_dir = (umbrella_dir / options_folder_location).resolve()
+    
+    # Construct full library path
+    library_path = (options_base_dir / option_library_path).resolve()
+    
+    if not library_path.exists():
+        raise ValueError(
+            f"Option library config not found: {library_path}\n"
+            f"  umbrella_config_dir: {umbrella_dir}\n"
+            f"  options_folder_location: {options_folder_location}\n"
+            f"  option_library: {option_library_path}"
+        )
+
+    option_library, resolved_option_library_config = OptionLibraryLoader.load_library(
+        library_config_path=str(library_path),
+        env=env,
+    )
+    
+    # Get HRL wrapper parameters
+    gamma = hrl_config.get('option_gamma', 0.99)
+    front_edge_use_full_vector = hrl_config.get('front_edge_use_full_vector', False)
+    
+    # Wrap environment
+    wrapped_env = OptionsWrapper(
+        env=env,
+        option_library=option_library,
+        gamma=gamma,
+        front_edge_use_full_vector=front_edge_use_full_vector,
+    )
+    
+    # Attach resolved config to wrapped environment for saving
+    # Include the absolute library path for reproducibility
+    resolved_option_library_config['library_config_path'] = str(library_path)
+    wrapped_env.resolved_option_library_config = resolved_option_library_config
+    
+    return wrapped_env
+
+
 def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str] = None, verbose: int = 0) -> Any:
-    """Instantiate RL agent (PPO, DQN, A2C, RecurrentPPO, or MBPO) from config.
+    """Instantiate RL agent (PPO, DQN, A2C, RecurrentPPO, HRL_PPO, HRL_RPPO, or MBPO) from config.
     
     Extracts algorithm type and hyperparameters from config, then creates the
     appropriate agent class. For standard agents (PPO/DQN/A2C/RecurrentPPO), uses
@@ -237,7 +335,7 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
     
     Args:
         config (Dict[str, Any]): Full experiment config dictionary. Must contain:
-            - 'algorithm': 'PPO' | 'DQN' | 'A2C' | 'RecurrentPPO' | 'MBPO'
+            - 'algorithm': 'PPO' | 'DQN' | 'A2C' | 'RecurrentPPO' | 'HRL_PPO' | 'HRL_RPPO' | 'MBPO'
             - '{algorithm_lowercase}': Dict with algorithm-specific hyperparameters
               (e.g., 'ppo': {'learning_rate': 3e-4, 'n_steps': 2048, ...})
               (e.g., 'mbpo': {...}, 'dynamics_model': {...} for MBPO)
@@ -375,6 +473,63 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
         # Instantiate MBPOAgent with full config dict
         # MBPOAgent expects: env, config (containing 'ppo', 'mbpo', 'dynamics_model' sections)
         agent = MBPOAgent(env=env, config=config)
+    elif algorithm == 'HRL_PPO':
+        # Hierarchical RL with options-based wrapper
+        # Env is already wrapped with OptionsWrapper before reaching here
+        # Manager uses PPO to select options
+        ppo_config = config.get('ppo', {})
+        learning_rate = ppo_config.get('learning_rate', 3.0e-4)
+        
+        agent = PPO(
+            policy='MlpPolicy',
+            env=env,
+            learning_rate=learning_rate,
+            n_steps=ppo_config.get('n_steps', 256),
+            batch_size=ppo_config.get('batch_size', 64),
+            n_epochs=ppo_config.get('n_epochs', 10),
+            gamma=ppo_config.get('gamma', 0.99),
+            gae_lambda=ppo_config.get('gae_lambda', 0.95),
+            clip_range=ppo_config.get('clip_range', 0.2),
+            ent_coef=ppo_config.get('ent_coef', 0.02),
+            vf_coef=ppo_config.get('vf_coef', 0.5),
+            max_grad_norm=ppo_config.get('max_grad_norm', 0.5),
+            policy_kwargs=policy_kwargs,
+            verbose=ppo_config.get('verbose', 1),
+            tensorboard_log=tb_log_path,
+            seed=seed,
+        )
+    elif algorithm == 'HRL_RPPO':
+        # Hierarchical RL with options-based wrapper and recurrent manager
+        # Env is already wrapped with OptionsWrapper before reaching here
+        recurrent_ppo_config = config.get('recurrent_ppo', {})
+        lstm_kwargs_config = config.get('lstm_kwargs', {})
+        learning_rate = recurrent_ppo_config.get('learning_rate', 3.0e-4)
+
+        lstm_policy_kwargs = policy_kwargs.copy()
+        lstm_policy_kwargs.update({
+            'lstm_hidden_size': lstm_kwargs_config.get('lstm_hidden_size', 64),
+            'n_lstm_layers': lstm_kwargs_config.get('n_lstm_layers', 1),
+            'enable_critic_lstm': lstm_kwargs_config.get('enable_critic_lstm', True),
+        })
+
+        agent = RecurrentPPO(
+            policy='MlpLstmPolicy',
+            env=env,
+            learning_rate=learning_rate,
+            n_steps=recurrent_ppo_config.get('n_steps', 256),
+            batch_size=recurrent_ppo_config.get('batch_size', 64),
+            n_epochs=recurrent_ppo_config.get('n_epochs', 10),
+            gamma=recurrent_ppo_config.get('gamma', 0.99),
+            gae_lambda=recurrent_ppo_config.get('gae_lambda', 0.95),
+            clip_range=recurrent_ppo_config.get('clip_range', 0.2),
+            ent_coef=recurrent_ppo_config.get('ent_coef', 0.02),
+            vf_coef=recurrent_ppo_config.get('vf_coef', 0.5),
+            max_grad_norm=recurrent_ppo_config.get('max_grad_norm', 0.5),
+            policy_kwargs=lstm_policy_kwargs,
+            verbose=recurrent_ppo_config.get('verbose', 1),
+            tensorboard_log=tb_log_path,
+            seed=seed,
+        )
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}")
     
@@ -517,8 +672,10 @@ def create_run_directory(config: Dict[str, Any], project_root: str) -> tuple:
 def save_training_config(config: Dict[str, Any], run_dir: str):
     """Save full experiment configuration as YAML in run directory.
     
-    Writes config dictionary to <run_dir>/config.yaml for reproducibility and
-    experiment record-keeping. This enables exact replication of training runs.
+    Writes the fully resolved agent and environment configuration to 
+    <run_dir>/full_agent_env_config.yaml for reproducibility and experiment 
+    record-keeping. This is the complete, merged umbrella config (all subconfigs 
+    resolved and all parameter overrides applied).
     
     Args:
         config (Dict[str, Any]): Full experiment configuration dictionary (as loaded
@@ -527,11 +684,41 @@ def save_training_config(config: Dict[str, Any], run_dir: str):
     
     Example:
         >>> save_training_config(config, run_dir)
-        >>> # Creates: <run_dir>/config.yaml
+        >>> # Creates: <run_dir>/full_agent_env_config.yaml
     """
-    config_path = os.path.join(run_dir, 'config.yaml')
+    # Ensure run directory exists
+    Path(run_dir).mkdir(parents=True, exist_ok=True)
+
+    # Primary (new) filename
+    config_path = os.path.join(run_dir, 'full_agent_env_config.yaml')
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False)
+
+    # Note: do not write legacy `config.yaml` here. Tests and tools should
+    # rely on the canonical `full_agent_env_config.yaml` filename. If
+    # legacy compatibility is required, update calling code or tests.
+
+
+def save_option_library_config(resolved_config: Dict[str, Any], run_dir: str):
+    """Save fully resolved option library configuration as YAML in run directory.
+    
+    Writes the resolved option library configuration (with absolute paths and 
+    all option specs merged) to <run_dir>/full_options_library.yaml. Only used 
+    for HRL experiments.
+    
+    Args:
+        resolved_config (Dict[str, Any]): Resolved option library configuration
+            (returned by OptionLibraryLoader.load_library as second return value).
+        run_dir (str): Absolute path to run directory (from create_run_directory).
+    
+    Example:
+        >>> # After wrapping environment for HRL:
+        >>> save_option_library_config(wrapped_env.resolved_option_library_config, run_dir)
+        >>> # Creates: <run_dir>/full_options_library.yaml
+    """
+    config_path = os.path.join(run_dir, 'full_options_library.yaml')
+    with open(config_path, 'w') as f:
+        yaml.dump(resolved_config, f, default_flow_style=False)
 
 
 def save_training_summary(config: Dict[str, Any], run_dir: str, total_timesteps: int, total_episodes: int):

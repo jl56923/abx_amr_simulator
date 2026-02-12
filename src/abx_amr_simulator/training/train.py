@@ -73,10 +73,14 @@ import sys
 import argparse
 from pathlib import Path
 import yaml
+import json
+import glob
+from typing import Dict, Any, Optional, Tuple
 
 import pdb
 
 from stable_baselines3 import PPO, DQN, A2C
+from sb3_contrib import RecurrentPPO
 
 from abx_amr_simulator.utils import (
     load_config,
@@ -98,6 +102,168 @@ from abx_amr_simulator.utils.registry import (
     update_registry,
     validate_and_clean_registry,
 )
+
+
+def load_best_params_from_optimization(
+    experiment_name: str,
+    optimization_base_dir: str = "optimization"
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Find and load best hyperparameters from most recent optimization run.
+    
+    Args:
+        experiment_name: Name of the optimization experiment (without timestamp)
+        optimization_base_dir: Base directory where optimization runs are stored
+    
+    Returns:
+        Tuple of (best_params dict or None, optimization_dir path or None)
+        Returns (None, None) if no optimization run found or if loading fails
+    """
+    # New tune.py structure: optimization/{run_name}/ (no timestamp in folder name)
+    # Each run_name can resume/continue, with registry tracking timestamps
+    direct_path = os.path.join(optimization_base_dir, experiment_name)
+    
+    if os.path.exists(direct_path) and os.path.isdir(direct_path):
+        # Found direct match - use it
+        most_recent_dir = direct_path
+    else:
+        # Legacy support: Also try matching {experiment_name}_* pattern for backwards compatibility
+        # (older code may have used timestamped folder names)
+        pattern = os.path.join(optimization_base_dir, f"{experiment_name}_*")
+        matching_dirs = glob.glob(pattern)
+        
+        if not matching_dirs:
+            print(f"Error: No optimization runs found matching '{experiment_name}' in {optimization_base_dir}")
+            return None, None
+        
+        # Sort by timestamp (embedded in directory name) to get most recent
+        # Directory format: <experiment_name>_<timestamp> where timestamp is YYYYMMDD_HHMMSS
+        matching_dirs.sort(reverse=True)  # Most recent first
+        most_recent_dir = matching_dirs[0]
+    
+    # Load best_params.json from optimization directory
+    best_params_path = os.path.join(most_recent_dir, 'best_params.json')
+    
+    if not os.path.exists(best_params_path):
+        print(f"Error: best_params.json not found in {most_recent_dir}")
+        return None, None
+    
+    try:
+        with open(best_params_path, 'r') as f:
+            best_params = json.load(f)
+        print(f"\n{'='*70}")
+        print("LOADED BEST HYPERPARAMETERS FROM OPTIMIZATION")
+        print(f"{'='*70}")
+        print(f"Optimization run: {os.path.basename(most_recent_dir)}")
+        print(f"Parameters loaded from: {best_params_path}")
+        print(f"Best parameters:")
+        for key, value in best_params.items():
+            print(f"  {key}: {value}")
+        print(f"{'='*70}\n")
+        return best_params, most_recent_dir
+    except Exception as e:
+        print(f"Error loading best_params.json: {e}")
+        return None, None
+
+
+def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Optional[str] = None) -> None:
+    """Validate training configuration for common issues and mismatches.
+    
+    Performs sanity checks on the training configuration:
+    - Verifies required config sections exist
+    - Checks algorithm compatibility with action mode
+    - Validates HRL-specific requirements (option library path)
+    - Warns about potential environment/agent mismatches
+    - Validates best params if loaded from optimization
+    
+    Args:
+        config: Full training configuration dictionary
+        loaded_best_params_from: Path to optimization run if best params were loaded
+    
+    Raises:
+        SystemExit: If critical validation errors are found
+    """
+    errors = []
+    warnings = []
+    
+    # Check required sections
+    required_sections = ['environment', 'training']
+    for section in required_sections:
+        if section not in config:
+            errors.append(f"Missing required config section: '{section}'")
+    
+    # Check algorithm
+    algorithm = config.get('algorithm', 'PPO')
+    supported_algorithms = ['PPO', 'DQN', 'A2C', 'HRL_PPO', 'HRL_DQN', 'HRL_RPPO']
+    if algorithm not in supported_algorithms:
+        errors.append(f"Unsupported algorithm: '{algorithm}'. Supported: {supported_algorithms}")
+    
+    # Check action mode compatibility
+    action_mode = config.get('action_mode', 'multidiscrete')
+    if algorithm == 'DQN' and action_mode != 'discrete':
+        warnings.append(f"DQN typically requires action_mode='discrete', but config has '{action_mode}'")
+    
+    # HRL-specific validation
+    if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        # Check that option library path exists
+        option_library_path = config.get('option_library_path')
+        if not option_library_path:
+            errors.append(f"HRL algorithm '{algorithm}' requires 'option_library_path' in config")
+        elif not os.path.exists(option_library_path):
+            errors.append(f"Option library path does not exist: {option_library_path}")
+        
+        # Check that option_gamma is specified if using HRL
+        option_gamma = config.get('option_gamma')
+        if option_gamma is None:
+            warnings.append("HRL algorithm should specify 'option_gamma' in config (discount factor for OptionsWrapper)")
+    
+    # Validate best params if loaded
+    if loaded_best_params_from:
+        print(f"\n{'='*70}")
+        print("VALIDATING LOADED BEST PARAMETERS")
+        print(f"{'='*70}")
+        
+        # Check that best params are appropriate for algorithm
+        # PPO/HRL_PPO expect: learning_rate, n_steps, gamma, etc.
+        # DQN expects: learning_rate, buffer_size, learning_starts, etc.
+        agent_config = config.get('agent_algorithm', {})
+        
+        if algorithm in ['PPO', 'HRL_PPO', 'A2C', 'HRL_RPPO']:
+            # Check for PPO-specific hyperparams
+            ppo_params = ['learning_rate', 'n_steps', 'gamma']
+            missing_params = [p for p in ppo_params if p not in agent_config]
+            if missing_params:
+                warnings.append(f"Expected PPO hyperparameters not found in agent_algorithm config: {missing_params}")
+        
+        elif algorithm in ['DQN', 'HRL_DQN']:
+            # Check for DQN-specific hyperparams
+            dqn_params = ['learning_rate', 'buffer_size', 'learning_starts']
+            missing_params = [p for p in dqn_params if p not in agent_config]
+            if missing_params:
+                warnings.append(f"Expected DQN hyperparameters not found in agent_algorithm config: {missing_params}")
+        
+        print(f"Loaded best parameters from: {loaded_best_params_from}")
+        print(f"Target algorithm: {algorithm}")
+        print(f"✓ Validation complete")
+        print(f"{'='*70}\n")
+    
+    # Print warnings
+    if warnings:
+        print(f"\n{'='*70}")
+        print("CONFIG VALIDATION WARNINGS")
+        print(f"{'='*70}")
+        for warning in warnings:
+            print(f"⚠️  {warning}")
+        print(f"{'='*70}\n")
+    
+    # Print errors and exit if critical issues found
+    if errors:
+        print(f"\n{'='*70}")
+        print("CONFIG VALIDATION ERRORS")
+        print(f"{'='*70}")
+        for error in errors:
+            print(f"❌ {error}")
+        print(f"{'='*70}\n")
+        sys.exit(1)
 
 
 def main():
@@ -150,6 +316,18 @@ def main():
         '--skip-if-exists',
         action='store_true',
         help='Skip this training run if an experiment with the same run name (ignoring timestamp) already exists in the results directory. Useful for resuming interrupted shell scripts without overwriting completed experiments.'
+    )
+    parser.add_argument(
+        '--load-best-params-by-experiment-name',
+        type=str,
+        default=None,
+        help='Load best hyperparameters from most recent optimization run with this experiment name. Looks in optimization/ directory for <name>_<timestamp>/ folders and loads best_params.json from the most recent one. Example: --load-best-params-by-experiment-name my_tuning_run'
+    )
+    parser.add_argument(
+        '--optimization-dir',
+        type=str,
+        default='optimization',
+        help='Base directory where optimization runs are stored (default: optimization)'
     )
     args = parser.parse_args()
     
@@ -233,9 +411,9 @@ def main():
             sys.exit(1)
         
         # Load config from prior results
-        prior_config_path = os.path.join(prior_results_path, 'config.yaml')
+        prior_config_path = os.path.join(prior_results_path, 'full_agent_env_config.yaml')
         if not os.path.exists(prior_config_path):
-            print(f"Error: config.yaml not found in {prior_results_path}")
+            print(f"Error: full_agent_env_config.yaml not found in {prior_results_path}")
             sys.exit(1)
         
         config = load_config(prior_config_path)
@@ -300,7 +478,14 @@ def main():
             sys.exit(1)
         
         # Map algorithm names to classes
-        algorithm_map = {'PPO': PPO, 'DQN': DQN, 'A2C': A2C}
+        algorithm_map = {
+            'PPO': PPO,
+            'DQN': DQN,
+            'A2C': A2C,
+            'HRL_PPO': PPO,
+            'HRL_DQN': DQN,
+            'HRL_RPPO': RecurrentPPO,
+        }
         if algorithm not in algorithm_map:
             print(f"Error: Unsupported algorithm '{algorithm}'")
             sys.exit(1)
@@ -328,6 +513,15 @@ def main():
         env = create_environment(config=config, reward_calculator=reward_calculator, patient_generator=patient_generator)
         env.reset(seed=seed)
         
+        # Wrap with OptionsWrapper if using HRL
+        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+            from abx_amr_simulator.utils import wrap_environment_for_hrl, save_option_library_config
+            print("Wrapping environment with OptionsWrapper for HRL...")
+            env = wrap_environment_for_hrl(env, config)
+            # Save resolved option library config for reproducibility
+            if hasattr(env, 'resolved_option_library_config'):
+                save_option_library_config(env.resolved_option_library_config, run_dir)
+        
         # Now load the agent with the environment
         agent = AgentClass.load(path=model_path, env=env)
 
@@ -351,8 +545,11 @@ def main():
             wrap_monitor=True,
         )
         eval_env.reset(seed=seed + 1)
-        
-        # Set up callbacks for continued training
+                # Wrap eval env with OptionsWrapper if using HRL
+        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+            from abx_amr_simulator.utils import wrap_environment_for_hrl
+            eval_env = wrap_environment_for_hrl(eval_env, config)
+                # Set up callbacks for continued training
         callbacks = setup_callbacks(config, run_dir, eval_env=eval_env)
         
         print(f"\nContinuing training for {additional_steps} additional timesteps...")
@@ -375,6 +572,24 @@ def main():
         agent.save(final_model_path)
         print(f"\nFinal model (end of continued training) saved to: {final_model_path}.zip")
         print(f"Best model (highest eval reward) saved to: {os.path.join(run_dir, 'checkpoints', 'best_model')}.zip")
+        
+        # Print evaluation results for Optuna tuning (tune.py parses this output)
+        if eval_env is not None and len(callbacks) > 1:
+            # Find EvalCallback in callbacks list
+            eval_callback = None
+            for cb in callbacks:
+                if hasattr(cb, 'best_mean_reward'):
+                    eval_callback = cb
+                    break
+            
+            if eval_callback is not None and hasattr(eval_callback, 'last_mean_reward'):
+                # Print in format that tune.py can parse
+                print(f"\n{'='*70}")
+                print(f"EVALUATION RESULTS (for hyperparameter tuning)")
+                print(f"{'='*70}")
+                print(f"Final mean reward: {eval_callback.last_mean_reward:.4f}")
+                print(f"Best mean reward: {eval_callback.best_mean_reward:.4f}")
+                print(f"{'='*70}\n")
         
         # Save summary
         save_training_summary(config, run_dir, additional_steps, 0)
@@ -445,6 +660,32 @@ def main():
         config = load_config(config_path)
         print(f"Loading config from: {config_path}")
         
+        # Load best hyperparameters from optimization if requested
+        if args.load_best_params_by_experiment_name:
+            best_params, optimization_dir = load_best_params_from_optimization(
+                experiment_name=args.load_best_params_by_experiment_name,
+                optimization_base_dir=args.optimization_dir
+            )
+            
+            if best_params is None:
+                print("Error: Failed to load best parameters from optimization")
+                sys.exit(1)
+            
+            # Convert best_params to param_overrides format (dotted notation)
+            # Best params from Optuna are typically flat keys like 'learning_rate', 'gamma', etc.
+            # We need to prefix them with the appropriate config section (e.g., 'agent_algorithm.')
+            print("\nApplying best hyperparameters as config overrides...")
+            for key, value in best_params.items():
+                # Best params are agent hyperparameters, so prefix with 'agent_algorithm.'
+                dotted_key = f'agent_algorithm.{key}'
+                param_overrides[dotted_key] = value
+                print(f"  {dotted_key} = {value}")
+            
+            # Store reference to optimization run in config for provenance
+            if 'training' not in config:
+                config['training'] = {}
+            config['training']['loaded_best_params_from'] = optimization_dir
+        
         # First, apply subconfig overrides with explicit paths (no path inference)
         if subconfig_overrides:
             print(f"\nApplying subconfig overrides...")
@@ -480,6 +721,24 @@ def main():
             for key, value in param_overrides.items():
                 print(f"  {key} = {value}")
             config = apply_param_overrides(config=config, overrides=param_overrides)
+        
+        # Resolve HRL option library path (if applicable)
+        algorithm = config.get('algorithm', 'PPO')
+        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+            hrl_config = config.get('hrl', {})
+            option_library_relative = hrl_config.get('option_library')
+            if option_library_relative and 'option_library_path' not in config:
+                # Resolve relative path to absolute path
+                options_folder = config.get('options_folder_location', '../../options')
+                config_dir = Path(args.umbrella_config).parent
+                resolved_path = (config_dir / options_folder / option_library_relative).resolve()
+                config['option_library_path'] = str(resolved_path)
+        
+        # Validate configuration
+        validate_training_config(
+            config=config,
+            loaded_best_params_from=config.get('training', {}).get('loaded_best_params_from')
+        )
         
         # Override seed if provided via --seed flag
         if args.seed is not None:
@@ -581,6 +840,18 @@ def main():
         print("Creating environment...")
         env = create_environment(config=config, reward_calculator=reward_calculator, patient_generator=patient_generator)
         env.reset(seed=seed)
+        
+        # Wrap with OptionsWrapper if using HRL
+        algorithm = config.get('algorithm', 'PPO')
+        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+            from abx_amr_simulator.utils import wrap_environment_for_hrl, save_option_library_config
+            print("Wrapping environment with OptionsWrapper for HRL...")
+            env = wrap_environment_for_hrl(env, config)
+            print(f"Manager observation space: {env.observation_space}")
+            print(f"Manager action space (option selection): {env.action_space}")
+            # Save resolved option library config for reproducibility
+            if hasattr(env, 'resolved_option_library_config'):
+                save_option_library_config(env.resolved_option_library_config, run_dir)
 
         # Persist action mapping for analysis (abx -> index and index -> abx)
         try:
@@ -599,6 +870,11 @@ def main():
             wrap_monitor=True,
         )
         eval_env.reset(seed=seed + 1) # Different seed for eval env
+        
+        # Wrap eval env with OptionsWrapper if using HRL
+        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+            from abx_amr_simulator.utils import wrap_environment_for_hrl
+            eval_env = wrap_environment_for_hrl(eval_env, config)
         
         # Create agent
         print("Creating agent...")
@@ -630,13 +906,38 @@ def main():
         print(f"\nFinal model (end of training) saved to: {final_model_path}.zip")
         print(f"Best model (highest eval reward) saved to: {os.path.join(run_dir, 'checkpoints', 'best_model')}.zip")
         
+        # Print evaluation results for Optuna tuning (tune.py parses this output)
+        if eval_env is not None and len(callbacks) > 1:
+            # Find EvalCallback in callbacks list (should be second callback after PatientStatsLoggingCallback)
+            eval_callback = None
+            for cb in callbacks:
+                if hasattr(cb, 'best_mean_reward'):
+                    eval_callback = cb
+                    break
+            
+            if eval_callback is not None and hasattr(eval_callback, 'last_mean_reward'):
+                # Print in format that tune.py can parse
+                print(f"\n{'='*70}")
+                print(f"EVALUATION RESULTS (for hyperparameter tuning)")
+                print(f"{'='*70}")
+                print(f"Final mean reward: {eval_callback.last_mean_reward:.4f}")
+                print(f"Best mean reward: {eval_callback.best_mean_reward:.4f}")
+                print(f"{'='*70}\n")
+        
         # Save summary
         save_training_summary(config, run_dir, total_timesteps, 0)
         print(f"Training complete. Results saved to: {run_dir}")
         
         # Map algorithm names to classes for loading best model
         algorithm = config.get('algorithm', 'PPO')
-        algorithm_map = {'PPO': PPO, 'DQN': DQN, 'A2C': A2C}
+        algorithm_map = {
+            'PPO': PPO,
+            'DQN': DQN,
+            'A2C': A2C,
+            'HRL_PPO': PPO,
+            'HRL_DQN': DQN,
+            'HRL_RPPO': RecurrentPPO,
+        }
         AgentClass = algorithm_map.get(algorithm, PPO)
         
         # Plot metrics for final agent (agent in memory after training)

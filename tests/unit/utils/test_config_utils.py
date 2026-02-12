@@ -26,8 +26,8 @@ from abx_amr_simulator.utils import (
 class TestLoadConfig:
     """Tests for load_config() function."""
     
-    def test_load_nested_config(self):
-        """Test loading a nested YAML config with subconfig references."""
+    def test_load_nested_config_legacy(self):
+        """Test loading a legacy nested YAML config with relative path references."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             configs_dir = tmpdir / "configs"
@@ -40,21 +40,60 @@ class TestLoadConfig:
             reward_config = {"lambda_weight": 0.5}
             (configs_dir / "reward_calculator.yaml").write_text(yaml.dump(data=reward_config))
             
-            # Create umbrella config that references subconfigs
+            # Create umbrella config with legacy relative path format
             umbrella_config = {
-                "environment_subconfig": "environment.yaml",
-                "reward_calculator_subconfig": "reward_calculator.yaml",
+                "environment": "environment.yaml",
+                "reward_calculator": "reward_calculator.yaml",
                 "run_name": "test_exp",
             }
-            config_path = tmpdir / "config.yaml"
+            config_path = configs_dir / "config.yaml"
             config_path.write_text(yaml.dump(data=umbrella_config))
             
             # Load it
             config = load_config(config_path=str(config_path))
             
-            # Should load umbrella config
+            # Should load umbrella config and merge subconfigs
             assert config["run_name"] == "test_exp"
-            assert "environment_subconfig" in config
+            assert config["environment"]["max_time_steps"] == 1000
+            assert config["reward_calculator"]["lambda_weight"] == 0.5
+    
+    def test_load_nested_config_modern(self):
+        """Test loading a modern nested YAML config with explicit config_folder_location."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            configs_dir = tmpdir / "configs"
+            umbrella_dir = configs_dir / "umbrella_configs"
+            component_dir = configs_dir / "components"
+            
+            umbrella_dir.mkdir(parents=True)
+            component_dir.mkdir(parents=True)
+            
+            # Create subconfig files
+            env_config = {"max_time_steps": 1000, "num_patients": 10}
+            (component_dir / "environment.yaml").write_text(yaml.dump(data=env_config))
+            
+            reward_config = {"lambda_weight": 0.5}
+            (component_dir / "reward_calculator.yaml").write_text(yaml.dump(data=reward_config))
+            
+            # Create umbrella config with modern format
+            umbrella_config = {
+                "config_folder_location": "../components",  # Relative to umbrella config
+                "environment": "environment.yaml",
+                "reward_calculator": "reward_calculator.yaml",
+                "run_name": "test_exp_modern",
+            }
+            config_path = umbrella_dir / "config.yaml"
+            config_path.write_text(yaml.dump(data=umbrella_config))
+            
+            # Load it
+            config = load_config(config_path=str(config_path))
+            
+            # Should load umbrella config and merge subconfigs
+            assert config["run_name"] == "test_exp_modern"
+            assert config["environment"]["max_time_steps"] == 1000
+            assert config["reward_calculator"]["lambda_weight"] == 0.5
+            assert config["config_folder_location"] == "../components"
+
     
     def test_load_flat_config(self):
         """Test loading a flat YAML config without subconfig references."""
@@ -377,6 +416,7 @@ class TestSetupConfigFoldersWithDefaults:
             assert (tmpdir / "configs" / "reward_calculator" / "default.yaml").exists()
             assert (tmpdir / "configs" / "patient_generator" / "default.yaml").exists()
             assert (tmpdir / "configs" / "agent_algorithm" / "default.yaml").exists()
+            assert (tmpdir / "configs" / "agent_algorithm" / "hrl_rppo.yaml").exists()
             assert (tmpdir / "configs" / "umbrella_configs" / "base_experiment.yaml").exists()
     
     def test_default_configs_are_valid_yaml(self):
@@ -391,6 +431,7 @@ class TestSetupConfigFoldersWithDefaults:
                 tmpdir / "configs" / "reward_calculator" / "default.yaml",
                 tmpdir / "configs" / "patient_generator" / "default.yaml",
                 tmpdir / "configs" / "agent_algorithm" / "default.yaml",
+                tmpdir / "configs" / "agent_algorithm" / "hrl_rppo.yaml",
                 tmpdir / "configs" / "umbrella_configs" / "base_experiment.yaml",
             ]
             

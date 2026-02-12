@@ -24,10 +24,12 @@ from .factories import (
     create_reward_calculator,
     create_patient_generator,
     create_environment,
+    wrap_environment_for_hrl,
     create_agent,
     setup_callbacks,
     create_run_directory,
     save_training_config,
+    save_option_library_config,
     save_training_summary,
 )
 

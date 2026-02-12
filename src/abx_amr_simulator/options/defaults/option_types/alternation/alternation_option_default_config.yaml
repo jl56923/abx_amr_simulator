@@ -1,0 +1,6 @@
+# Default config for alternation option
+# sequence: list of antibiotic names or 'no_treatment' entries
+sequence:
+  - "A"
+  - "B"
+  - "A"

@@ -13,6 +13,7 @@ import pdb
 
 import numpy as np
 import matplotlib.pyplot as plt
+from gymnasium import spaces
 
 from abx_amr_simulator.core import AMR_LeakyBalloon
 
@@ -29,6 +30,185 @@ def convert_to_native_types(obj):
         return float(obj)
     else:
         return obj
+
+
+# ====================== HRL Diagnostic Helpers ======================
+
+def _extract_option_sequences_from_trajectories(trajectories: list) -> list:
+    """Extract sequence of option names from trajectory infos.
+    
+    Args:
+        trajectories: List of trajectory dicts with 'infos' key
+    
+    Returns:
+        List of option name sequences (one per trajectory)
+    """
+    option_sequences = []
+    for traj in trajectories:
+        option_seq = []
+        for info in traj.get('infos', [])[:-1]:  # Exclude final info
+            if isinstance(info, dict) and 'option_name' in info:
+                option_seq.append(info['option_name'])
+        if option_seq:
+            option_sequences.append(option_seq)
+    return option_sequences
+
+
+def _compute_inter_decision_times(trajectories: list) -> list:
+    """Compute distribution of steps between macro-decisions.
+    
+    Args:
+        trajectories: List of trajectory dicts with 'infos' key
+    
+    Returns:
+        List of inter-decision times (spans across all trajectories)
+    """
+    inter_times = []
+    for traj in trajectories:
+        option_seq = []
+        durations = []
+        for info in traj.get('infos', [])[:-1]:  # Exclude final info
+            if isinstance(info, dict) and 'option_name' in info:
+                opt_name = info.get('option_name')
+                opt_duration = info.get('option_duration', 1)
+                option_seq.append(opt_name)
+                durations.append(opt_duration)
+        
+        # Each duration is the inter-decision time
+        inter_times.extend(durations)
+    
+    return inter_times if inter_times else [0]
+
+
+def _compute_macro_rewards_per_option(trajectories: list) -> dict:
+    """Compute distribution of macro-rewards per option.
+    
+    Args:
+        trajectories: List of trajectory dicts with 'rewards' and 'infos' keys
+    
+    Returns:
+        Dict mapping option_name -> list of macro-rewards
+    """
+    macro_rewards_per_option = {}
+    
+    for traj in trajectories:
+        rewards = traj.get('rewards', [])
+        infos = traj.get('infos', [])[:-1]  # Exclude final info
+        
+        for reward, info in zip(rewards, infos):
+            if isinstance(info, dict) and 'option_name' in info:
+                opt_name = info['option_name']
+                if opt_name not in macro_rewards_per_option:
+                    macro_rewards_per_option[opt_name] = []
+                macro_rewards_per_option[opt_name].append(float(reward))
+    
+    return macro_rewards_per_option
+
+
+def _bin_amr_states(amr_levels_list: list, num_bins: int = 4) -> list:
+    """Bin continuous AMR levels into discrete bins.
+    
+    Args:
+        amr_levels_list: List of (amr_a, amr_b) tuples or AMR dicts
+        num_bins: Number of bins (default 4 for quartiles)
+    
+    Returns:
+        List of bin indices
+    """
+    bin_indices = []
+    for amr in amr_levels_list:
+        if isinstance(amr, dict):
+            # Assume dict with antibiotic names as keys
+            values = list(amr.values())
+            amr_mean = np.mean(values) if values else 0.5
+        else:
+            # Tuple or list
+            amr_mean = np.mean(amr) if amr else 0.5
+        
+        bin_idx = min(int(amr_mean * num_bins), num_bins - 1)
+        bin_indices.append(bin_idx)
+    
+    return bin_indices
+
+
+def _compute_option_amr_contingency(trajectories: list, amr_extractor, num_amr_bins: int = 4) -> dict:
+    """Build contingency table: (amr_bin, option) -> frequency.
+    
+    Args:
+        trajectories: List of trajectory dicts
+        amr_extractor: Function to extract AMR from trajectory at step i
+        num_amr_bins: Number of AMR bins
+    
+    Returns:
+        Dict: {amr_bin: {option_name: count}}
+    """
+    contingency = {i: {} for i in range(num_amr_bins)}
+    
+    for traj in trajectories:
+        infos = traj.get('infos', [])[:-1]  # Exclude final
+        
+        for step_idx, info in enumerate(infos):
+            if isinstance(info, dict) and 'option_name' in info:
+                opt_name = info['option_name']
+                
+                # Extract AMR at this step
+                try:
+                    amr_at_step = amr_extractor(traj, step_idx)
+                    amr_bin = _bin_amr_states([amr_at_step], num_amr_bins)[0]
+                except:
+                    amr_bin = 0  # Default bin on error
+                
+                # Increment contingency count
+                if opt_name not in contingency[amr_bin]:
+                    contingency[amr_bin][opt_name] = 0
+                contingency[amr_bin][opt_name] += 1
+    
+    return contingency
+
+
+def _compute_option_transitions(trajectories: list) -> tuple:
+    """Compute option transition statistics (bigrams and trigrams).
+    
+    Args:
+        trajectories: List of trajectory dicts with option sequences
+    
+    Returns:
+        Tuple of (bigram_freq_matrix, top_trigrams)
+        - bigram_freq_matrix: Dict[option_from][option_to] -> count
+        - top_trigrams: List of (trigram, count) sorted by count descending
+    """
+    # Collect all option names
+    all_options = set()
+    all_bigrams = {}
+    all_trigrams = {}
+    
+    for traj in trajectories:
+        option_seq = []
+        for info in traj.get('infos', [])[:-1]:  # Exclude final
+            if isinstance(info, dict) and 'option_name' in info:
+                option_seq.append(info['option_name'])
+                all_options.add(info['option_name'])
+        
+        # Collect bigrams
+        for i in range(len(option_seq) - 1):
+            bigram = (option_seq[i], option_seq[i + 1])
+            all_bigrams[bigram] = all_bigrams.get(bigram, 0) + 1
+        
+        # Collect trigrams
+        for i in range(len(option_seq) - 2):
+            trigram = (option_seq[i], option_seq[i + 1], option_seq[i + 2])
+            all_trigrams[trigram] = all_trigrams.get(trigram, 0) + 1
+    
+    # Build bigram matrix
+    all_options_list = sorted(all_options)
+    bigram_matrix = {opt: {opt2: 0 for opt2 in all_options_list} for opt in all_options_list}
+    for (from_opt, to_opt), count in all_bigrams.items():
+        bigram_matrix[from_opt][to_opt] = count
+    
+    # Sort trigrams by frequency
+    top_trigrams = sorted(all_trigrams.items(), key=lambda x: x[1], reverse=True)[:10]
+    
+    return bigram_matrix, top_trigrams
 
 
 def create_overall_outcomes_summary_dict(
@@ -142,6 +322,379 @@ def create_overall_outcomes_summary_dict(
     return convert_to_native_types(overall_outcomes_summary_dict)
 
 
+# ====================== HRL Diagnostic Plots ======================
+
+def plot_hrl_option_selection_histogram(trajectories: list, option_names: list, output_path: str):
+    """Plot [1.1] Option Selection Histogram - frequency of options over trajectories.
+    
+    Args:
+        trajectories: List of trajectory dicts from evaluation episodes
+        option_names: Sorted list of option names
+        output_path: Path to save PNG
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(f"  [WARN] matplotlib not available, skipping option selection histogram")
+        return
+    
+    # Count option frequencies
+    option_counts = {opt: 0 for opt in option_names}
+    for traj in trajectories:
+        for info in traj.get('infos', [])[:-1]:
+            if isinstance(info, dict) and 'option_name' in info:
+                opt_name = info['option_name']
+                if opt_name in option_counts:
+                    option_counts[opt_name] += 1
+    
+    # Compute frequencies (as fractions)
+    total_steps = sum(option_counts.values())
+    if total_steps == 0:
+        print(f"  [WARN] No option data found in trajectories")
+        return
+    
+    frequencies = {opt: count / total_steps for opt, count in option_counts.items()}
+    
+    # Create bar plot
+    fig, ax = plt.subplots(figsize=(12, 6))
+    opts = list(frequencies.keys())
+    freqs = list(frequencies.values())
+    
+    colors = plt.cm.tab20(np.linspace(0, 1, len(opts)))
+    ax.bar(opts, freqs, color=colors, alpha=0.7, edgecolor='black', linewidth=1.5)
+    
+    ax.set_xlabel('Option Name', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Frequency (fraction of steps)', fontsize=12, fontweight='bold')
+    ax.set_title('Option Selection Histogram', fontsize=14, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    
+    # Rotate x labels for readability
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✓ Saved option selection histogram to {output_path}")
+
+
+def plot_hrl_macro_decision_frequency(trajectories: list, output_path: str):
+    """Plot [1.2] Macro-Decision Frequency - distribution of inter-decision times.
+    
+    Args:
+        trajectories: List of trajectory dicts from evaluation episodes
+        output_path: Path to save PNG
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(f"  [WARN] matplotlib not available, skipping macro decision frequency")
+        return
+    
+    inter_times = _compute_inter_decision_times(trajectories)
+    
+    if not inter_times:
+        print(f"  [WARN] No inter-decision time data found")
+        return
+    
+    # Create histogram
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    ax.hist(inter_times, bins=max(10, len(set(inter_times))), 
+            alpha=0.7, edgecolor='black', color='steelblue')
+    
+    ax.set_xlabel('Inter-Decision Time (steps)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Frequency', fontsize=12, fontweight='bold')
+    ax.set_title('Distribution of Macro-Decision Frequencies', fontsize=14, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    
+    # Add statistics text
+    mean_time = np.mean(inter_times)
+    std_time = np.std(inter_times)
+    ax.text(0.98, 0.97, f'Mean: {mean_time:.2f}\nStd: {std_time:.2f}',
+            transform=ax.transAxes, fontsize=10, verticalalignment='top',
+            horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✓ Saved macro decision frequency plot to {output_path}")
+
+
+def plot_hrl_option_effectiveness(trajectories: list, option_names: list, output_path: str):
+    """Plot [1.3] Option Effectiveness Over Training - macro-reward per option.
+    
+    Args:
+        trajectories: List of trajectory dicts from evaluation episodes
+        option_names: Sorted list of option names
+        output_path: Path to save PNG
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(f"  [WARN] matplotlib not available, skipping option effectiveness")
+        return
+    
+    macro_rewards = _compute_macro_rewards_per_option(trajectories)
+    
+    if not macro_rewards:
+        print(f"  [WARN] No reward data found")
+        return
+    
+    # Prepare data for box plot (only options that appeared)
+    opts_with_data = [opt for opt in option_names if opt in macro_rewards]
+    reward_data = [macro_rewards[opt] for opt in opts_with_data]
+    
+    # Create box plot
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    bp = ax.boxplot(reward_data, labels=opts_with_data, patch_artist=True)
+    
+    # Color the boxes
+    colors = plt.cm.tab20(np.linspace(0, 1, len(opts_with_data)))
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    
+    ax.set_xlabel('Option Name', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Macro-Reward', fontsize=12, fontweight='bold')
+    ax.set_title('Option Effectiveness (Macro-Reward Distribution)', fontsize=14, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    
+    # Rotate x labels
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✓ Saved option effectiveness plot to {output_path}")
+
+
+def plot_hrl_option_amr_strategy(trajectories: list, option_names: list, output_path: str):
+    """Plot [2.1] Option Selection by AMR State - conditional strategy.
+    
+    Args:
+        trajectories: List of trajectory dicts from evaluation episodes
+        option_names: Sorted list of option names
+        output_path: Path to save PNG
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(f"  [WARN] matplotlib not available, skipping option-AMR strategy")
+        return
+    
+    # Need to extract AMR levels from trajectory infos
+    # This is a simplified version - assumes info contains 'amr_levels' or we compute from patient data
+    def extract_amr(traj, idx):
+        """Extract AMR at trajectory step idx."""
+        try:
+            # Try to get from info dict first
+            if idx < len(traj.get('infos', [])):
+                info = traj['infos'][idx]
+                if isinstance(info, dict):
+                    # Look for patient trajectories (if available)
+                    if 'patient_trajectories' in info:
+                        # Average across patients if available
+                        pts = info['patient_trajectories']
+                        if pts:
+                            return {k: np.mean([p.get(k, 0.5) for p in pts]) 
+                                    for k in ['amr_a', 'amr_b']}
+            return {'amr_a': 0.5, 'amr_b': 0.5}  # Default fallback
+        except:
+            return {'amr_a': 0.5, 'amr_b': 0.5}
+    
+    contingency = _compute_option_amr_contingency(trajectories, extract_amr, num_amr_bins=4)
+    
+    # Convert contingency to conditional probabilities
+    amr_bins = ['Low\n[0-0.25)', 'Med-Low\n[0.25-0.5)', 'Med-High\n[0.5-0.75)', 'High\n[0.75-1.0]']
+    
+    # Build matrix: rows=AMR bins, cols=options
+    matrix = np.zeros((4, len(option_names)))
+    for bin_idx in range(4):
+        bin_counts = contingency.get(bin_idx, {})
+        total = sum(bin_counts.values())
+        if total > 0:
+            for opt_idx, opt_name in enumerate(option_names):
+                matrix[bin_idx, opt_idx] = bin_counts.get(opt_name, 0) / total
+    
+    # Create heatmap
+    fig, ax = plt.subplots(figsize=(14, 6))
+    
+    im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto', vmin=0, vmax=1)
+    
+    ax.set_xticks(np.arange(len(option_names)))
+    ax.set_yticks(np.arange(4))
+    ax.set_xticklabels(option_names, rotation=45, ha='right')
+    ax.set_yticklabels(amr_bins)
+    
+    ax.set_xlabel('Option Name', fontsize=12, fontweight='bold')
+    ax.set_ylabel('AMR State', fontsize=12, fontweight='bold')
+    ax.set_title('Option Selection by AMR State (Conditional Probability)', fontsize=14, fontweight='bold')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('P(Option | AMR)', fontsize=11, fontweight='bold')
+    
+    # Add text annotations
+    for i in range(4):
+        for j in range(len(option_names)):
+            text = ax.text(j, i, f'{matrix[i, j]:.2f}',
+                          ha="center", va="center", color="black", fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✓ Saved option-AMR strategy plot to {output_path}")
+
+
+def plot_hrl_option_transitions(trajectories: list, option_names: list, output_path_heatmap: str, 
+                               output_path_csv: str):
+    """Plot [3.1] Option Transition Frequency - Markov analysis.
+    
+    Creates:
+    - Heatmap of bigram transitions
+    - CSV of top-10 trigrams
+    
+    Args:
+        trajectories: List of trajectory dicts from evaluation episodes
+        option_names: Sorted list of option names
+        output_path_heatmap: Path to save heatmap PNG
+        output_path_csv: Path to save trigrams CSV
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(f"  [WARN] matplotlib not available, skipping option transitions")
+        return
+    
+    bigram_matrix, top_trigrams = _compute_option_transitions(trajectories)
+    
+    # Create bigram heatmap
+    matrix = np.zeros((len(option_names), len(option_names)))
+    for i, from_opt in enumerate(option_names):
+        for j, to_opt in enumerate(option_names):
+            matrix[i, j] = bigram_matrix.get(from_opt, {}).get(to_opt, 0)
+    
+    fig, ax = plt.subplots(figsize=(12, 10))
+    
+    im = ax.imshow(matrix, cmap='Blues', aspect='auto')
+    
+    ax.set_xticks(np.arange(len(option_names)))
+    ax.set_yticks(np.arange(len(option_names)))
+    ax.set_xticklabels(option_names, rotation=45, ha='right')
+    ax.set_yticklabels(option_names)
+    
+    ax.set_xlabel('Next Option', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Current Option', fontsize=12, fontweight='bold')
+    ax.set_title('Option Transition Frequency (Bigrams)', fontsize=14, fontweight='bold')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Transition Count', fontsize=11, fontweight='bold')
+    
+    # Add text annotations
+    for i in range(len(option_names)):
+        for j in range(len(option_names)):
+            count = int(matrix[i, j])
+            if count > 0:
+                text = ax.text(j, i, str(count), ha="center", va="center", 
+                             color="white" if count > matrix.max()/2 else "black", fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig(output_path_heatmap, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✓ Saved option transition heatmap to {output_path_heatmap}")
+    
+    # Save top trigrams to CSV
+    try:
+        import csv
+        with open(output_path_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Rank', 'Trigram', 'Count'])
+            for rank, (trigram, count) in enumerate(top_trigrams, 1):
+                trigram_str = ' → '.join(trigram)
+                writer.writerow([rank, trigram_str, int(count)])
+        print(f"  ✓ Saved top trigrams to {output_path_csv}")
+    except Exception as e:
+        print(f"  [WARN] Failed to save trigrams CSV: {e}")
+
+
+def plot_hrl_diagnostics_single_run(model, env, experiment_folder: str, option_library, 
+                                    num_eval_episodes: int = 5, figures_folder_name: str = "figures_hrl"):
+    """Main wrapper for HRL diagnostic plots - single trained agent.
+    
+    Orchestrates all 5 HRL diagnostic plots for a single run.
+    
+    Args:
+        model: Trained agent with predict() method
+        env: Wrapped environment (OptionsWrapper)
+        experiment_folder: Path to experiment results folder
+        option_library: OptionLibrary instance
+        num_eval_episodes: Number of evaluation episodes to run
+        figures_folder_name: Subfolder for figures
+    """
+    import os
+    
+    # Create figures folder
+    figures_folder = os.path.join(experiment_folder, figures_folder_name)
+    os.makedirs(figures_folder, exist_ok=True)
+    
+    print(f"\n  Running HRL diagnostics ({num_eval_episodes} episodes)...")
+    
+    # Collect trajectories
+    trajectories = []
+    for ep in range(num_eval_episodes):
+        try:
+            traj = run_episode_and_get_trajectory(model=model, env=env, deterministic=True)
+            trajectories.append(traj)
+        except Exception as e:
+            print(f"    [WARN] Episode {ep} failed: {e}")
+            continue
+    
+    if not trajectories:
+        print(f"  [ERROR] No successful trajectories collected")
+        return
+    
+    # Get option names
+    option_names = sorted(list(option_library.list_options()))
+    
+    # Generate all plots
+    print(f"  Generating plots...")
+    
+    # Tier 1: Critical
+    plot_hrl_option_selection_histogram(
+        trajectories, option_names,
+        os.path.join(figures_folder, '1_1_option_selection_histogram.png')
+    )
+    
+    plot_hrl_macro_decision_frequency(
+        trajectories,
+        os.path.join(figures_folder, '1_2_macro_decision_frequency.png')
+    )
+    
+    plot_hrl_option_effectiveness(
+        trajectories, option_names,
+        os.path.join(figures_folder, '1_3_option_effectiveness.png')
+    )
+    
+    # Tier 2: Important
+    plot_hrl_option_amr_strategy(
+        trajectories, option_names,
+        os.path.join(figures_folder, '2_1_option_amr_strategy.png')
+    )
+    
+    plot_hrl_option_transitions(
+        trajectories, option_names,
+        os.path.join(figures_folder, '3_1_option_transitions.png'),
+        os.path.join(figures_folder, '3_1_option_trigrams.csv')
+    )
+    
+    print(f"\n  ✓ All HRL diagnostics complete! Results saved to {figures_folder}")
+
+
 def run_episode_and_get_trajectory(model, env, deterministic=True):
     """Run a single episode with a trained agent and collect full trajectory.
     
@@ -187,6 +740,22 @@ def run_episode_and_get_trajectory(model, env, deterministic=True):
         # Ensure obs is a proper numpy array with explicit dtype for PyTorch compatibility
         obs = np.asarray(obs, dtype=np.float32)
         action, _ = model.predict(obs, deterministic=deterministic)
+        
+        # Normalize action shape/type to match env action space expectations
+        # SB3 returns numpy arrays even for scalar actions; MultiDiscrete needs arrays.
+        if isinstance(env.action_space, spaces.MultiDiscrete):
+            if isinstance(action, np.ndarray):
+                action = action.astype(int)
+            else:
+                action = np.array([int(action)], dtype=int)
+        elif isinstance(env.action_space, spaces.Discrete):
+            if isinstance(action, np.ndarray):
+                action = int(action.item()) if action.size == 1 else int(action.squeeze())
+            else:
+                action = int(action)
+        elif isinstance(action, np.ndarray) and action.size == 1:
+            action = action.item()
+        
         obs, reward, terminated, truncated, info = env.step(action)
         
         trajectory["actions"].append(action)

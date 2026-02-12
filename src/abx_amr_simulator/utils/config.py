@@ -19,16 +19,19 @@ from typing import Dict, Any
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load experiment configuration from YAML file.
     
-    Supports two config formats:
-    1. **Legacy format**: Single YAML file containing all config sections (environment,
+    Supports three config formats:
+    1. **Flat format**: Single YAML file containing all config sections (environment,
        reward_calculator, patient_generator, training, etc.) as nested dictionaries.
-    2. **Nested format**: Base YAML that references component config files (e.g.,
-       'environment: environment/default.yaml'). Component configs are loaded and
-       merged into a single dictionary.
+    2. **Nested format (legacy)**: Base YAML that references component config files with
+       relative paths (e.g., 'environment: ../environment/default.yaml'). Component 
+       configs are loaded and merged into a single dictionary.
+    3. **Nested format (modern)**: Base YAML that explicitly specifies folder locations:
+       - `config_folder_location`: Path to folder containing component config folders
+       - `options_folder_location`: Path to folder containing option libraries
+       Component paths are then relative to these folders (no `../` needed).
     
-    Nested format enables config reusability: swap out component configs
-    (e.g., environment/high_amr.yaml vs. environment/low_amr.yaml) without
-    duplicating hyperparameters across files.
+    Modern nested format enables better path management: all paths are relative to
+    explicitly declared locations rather than implicit relative navigation.
     
     Args:
         config_path (str): Absolute or relative path to YAML config file.
@@ -36,7 +39,8 @@ def load_config(config_path: str) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Merged configuration dictionary with all component configs
             resolved and loaded. Contains keys: 'environment', 'reward_calculator',
-            'patient_generator', 'training', 'algorithm', algorithm-specific hyperparams.
+            'patient_generator', 'training', 'algorithm', algorithm-specific hyperparams,
+            and optionally 'config_folder_location', 'options_folder_location'.
     
     Example:
         >>> config = load_config('experiments/configs/umbrella_configs/base_experiment.yaml')
@@ -55,30 +59,47 @@ def load_config(config_path: str) -> Dict[str, Any]:
     )
     
     if not is_nested:
-        # Legacy format - return as-is
+        # Flat format - return as-is
         return config
     
     # Nested format - load and merge component configs
-    config_dir = Path(config_path).parent
+    umbrella_dir = Path(config_path).parent
+    
+    # Determine base directory for config resolution
+    if 'config_folder_location' in config:
+        # Modern format: use explicit config folder location
+        config_folder_location = config['config_folder_location']
+        if not Path(config_folder_location).is_absolute():
+            # Resolve relative to umbrella config location
+            config_base_dir = (umbrella_dir / config_folder_location).resolve()
+        else:
+            config_base_dir = Path(config_folder_location).resolve()
+    else:
+        # Legacy format: use umbrella config's parent directory
+        config_base_dir = umbrella_dir
+    
     merged_config = {}
+    
+    # Store the umbrella config path for later use (e.g., by HRL wrapper)
+    merged_config['_umbrella_config_dir'] = str(umbrella_dir.resolve())
     
     # Load environment config
     if 'environment' in config and isinstance(config['environment'], str):
-        env_path = config_dir / config['environment']
+        env_path = config_base_dir / config['environment']
         with open(env_path, 'r') as f:
             env_config = yaml.safe_load(f)
         merged_config['environment'] = env_config
     
     # Load reward_calculator config
     if 'reward_calculator' in config and isinstance(config['reward_calculator'], str):
-        reward_path = config_dir / config['reward_calculator']
+        reward_path = config_base_dir / config['reward_calculator']
         with open(reward_path, 'r') as f:
             reward_config = yaml.safe_load(f)
         merged_config['reward_calculator'] = reward_config
     
     # Load patient_generator config
     if 'patient_generator' in config and isinstance(config['patient_generator'], str):
-        patient_gen_path = config_dir / config['patient_generator']
+        patient_gen_path = config_base_dir / config['patient_generator']
         with open(patient_gen_path, 'r') as f:
             patient_gen_config = yaml.safe_load(f)
             
@@ -87,15 +108,18 @@ def load_config(config_path: str) -> Dict[str, Any]:
     
     # Load agent_algorithm config
     if 'agent_algorithm' in config and isinstance(config['agent_algorithm'], str):
-        algo_path = config_dir / config['agent_algorithm']
+        algo_path = config_base_dir / config['agent_algorithm']
         with open(algo_path, 'r') as f:
             algo_config = yaml.safe_load(f)
         # Merge algorithm config at top level
         merged_config.update(algo_config)
     
     # Copy metadata and training from base config when provided directly
-    for key in ['seed', 'output_dir', 'run_name']:
+    for key in ['seed', 'output_dir', 'run_name', 'config_folder_location', 'options_folder_location', 'hrl']:
         if key in config and not isinstance(config[key], str):
+            merged_config[key] = config[key]
+        elif key in config and isinstance(config[key], str):
+            # For string keys like config_folder_location, preserve them for later use
             merged_config[key] = config[key]
 
     # Training block (non-string) should be merged through
@@ -229,7 +253,7 @@ def get_example_config(name: str) -> Path:
 
     examples_dir = files("abx_amr_simulator").joinpath("configs/examples")
     candidate = examples_dir / f"{name}.yaml"
-    return Path(candidate)
+    return Path(str(candidate))
 
 
 def setup_config_folders_with_defaults(target_path: Path) -> None:
@@ -238,8 +262,8 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
     Copies bundled default component configs from package into user's target directory.
     Creates nested structure:
         target_path/configs/
-            umbrella_configs/base_experiment.yaml
-            agent_algorithm/default.yaml, ppo.yaml, a2c.yaml
+            umbrella_configs/base_experiment.yaml, hrl_ppo_default.yaml
+            agent_algorithm/default.yaml, ppo.yaml, a2c.yaml, hrl_ppo.yaml, hrl_rppo.yaml
             environment/default.yaml
             patient_generator/default.yaml, patient_generator/default_mixer.yaml
             reward_calculator/default.yaml
@@ -275,9 +299,12 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
     copy_map = {
         # Umbrella config that stitches together the component defaults
         defaults_root.joinpath("umbrella/base_experiment.yaml"): umbrella_dir / "base_experiment.yaml",
+        defaults_root.joinpath("umbrella/hrl_ppo_default.yaml"): umbrella_dir / "hrl_ppo_default.yaml",
         # Agent algorithm extras (not matched by 'default*' copy below)
         defaults_root.joinpath("agent_algorithm/ppo.yaml"): agent_dir / "ppo.yaml",
         defaults_root.joinpath("agent_algorithm/a2c.yaml"): agent_dir / "a2c.yaml",
+        defaults_root.joinpath("agent_algorithm/hrl_ppo.yaml"): agent_dir / "hrl_ppo.yaml",
+        defaults_root.joinpath("agent_algorithm/hrl_rppo.yaml"): agent_dir / "hrl_rppo.yaml",
         # Explicit core defaults (will also be covered by recursive copy below)
         defaults_root.joinpath("agent_algorithm/default.yaml"): agent_dir / "default.yaml",
         defaults_root.joinpath("environment/default.yaml"): env_dir / "default.yaml",

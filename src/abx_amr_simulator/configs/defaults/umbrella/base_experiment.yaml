@@ -1,5 +1,5 @@
 # Base experiment configuration
-# References component configs with minimal setup
+# References component configs with explicit folder locations
 # Override parameters via command-line flags
 
 # REPRODUCIBILITY NOTE:
@@ -11,11 +11,18 @@
 # - Agent (policy initialization, exploration)
 # Setting seed: <value> ensures fully reproducible training runs.
 
+# Folder locations
+# These specify where to find component configs and option libraries.
+# Paths are relative to the umbrella config's directory.
+config_folder_location: ../
+options_folder_location: ../../options
+
 # Component configurations
-environment: ../environment/default.yaml
-reward_calculator: ../reward_calculator/default.yaml
-patient_generator: ../patient_generator/default.yaml
-agent_algorithm: ../agent_algorithm/default.yaml
+# Paths are relative to config_folder_location
+environment: environment/default.yaml
+reward_calculator: reward_calculator/default.yaml
+patient_generator: patient_generator/default.yaml
+agent_algorithm: agent_algorithm/default.yaml
 
 # Training configuration
 # Note: All frequencies are specified in episodes, not timesteps

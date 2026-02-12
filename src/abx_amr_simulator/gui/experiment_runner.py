@@ -142,12 +142,12 @@ def main():
                     step=10,
                     help="Number of additional episodes to train"
                 )
-                prior_config_path = results_dir / prior_experiment / "config.yaml"
+                prior_config_path = results_dir / prior_experiment / "full_agent_env_config.yaml"
                 if prior_config_path.exists():
                     config = load_config(str(prior_config_path))
                     st.sidebar.success(f"✅ Loaded config from {prior_experiment}")
                 else:
-                    st.sidebar.error("⚠️ No config.yaml found in prior experiment")
+                    st.sidebar.error("⚠️ No full_agent_env_config.yaml found in prior experiment")
                     continue_training = False
             else:
                 st.sidebar.warning("No previous experiments found in results/")

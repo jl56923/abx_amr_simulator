@@ -3,12 +3,12 @@
 
 # Antibiotic AMR dictionary (leak, flatness_parameter, permanent_residual_volume, initial_amr_level)
 antibiotics_AMR_dict:
-  Antibiotic_A:
+  A:
     leak: 0.2
     flatness_parameter: 50
     permanent_residual_volume: 0.0
     initial_amr_level: 0.0
-  Antibiotic_B:
+  B:
     leak: 0.1
     flatness_parameter: 25
     permanent_residual_volume: 0.0
@@ -16,10 +16,10 @@ antibiotics_AMR_dict:
 
 # Crossresistance matrix: defines off-diagonal AMR interactions between antibiotics
 crossresistance_matrix:
-  Antibiotic_A:
-    Antibiotic_B: 0.3
-  Antibiotic_B:
-    Antibiotic_A: 0.1
+  A:
+    B: 0.3
+  B:
+    A: 0.1
 
 num_patients_per_time_step: 5
 update_visible_AMR_levels_every_n_timesteps: 1

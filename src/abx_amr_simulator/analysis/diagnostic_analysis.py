@@ -787,6 +787,155 @@ def analyze_single_run(run_dir: Path, eval_logs_subdir: str = "eval_logs") -> Di
     }
 
 
+# ====================== HRL-Specific Analysis ======================
+
+def is_hrl_run(run_dir: Path) -> bool:
+    """Check if a run is HRL by examining config.
+    
+    Checks for HRL algorithm in both flat and nested config structures:
+    - config["algorithm"] (flat structure after load_config())
+    - config["agent_algorithm"]["algorithm"] (nested structure)
+    """
+    config_path = run_dir / "full_agent_env_config.yaml"
+    if not config_path.exists():
+        return False
+    
+    try:
+        import yaml
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        # Check flat structure first (most common after load_config())
+        if "algorithm" in config:
+            algo = config.get("algorithm", "")
+            if "HRL" in str(algo).upper():
+                return True
+        
+        # Check nested structure
+        agent_algo = config.get("agent_algorithm", {})
+        if isinstance(agent_algo, dict):
+            algo = agent_algo.get("algorithm", "")
+            if "HRL" in str(algo).upper():
+                return True
+        
+        return False
+    except Exception:
+        return False
+
+
+def analyze_hrl_single_run(run_dir: Path, max_eval_episodes: int = 5) -> Dict[str, Any]:
+    """Run HRL-specific diagnostics for a single seed run.
+    
+    Generates diagnostic plots for manager behavior analysis.
+    
+    Returns dict with:
+        - error: if analysis failed
+        - hrl_diagnostics_dir: path where plots were saved
+    """
+    try:
+        from abx_amr_simulator.utils import (
+            create_reward_calculator,
+            create_patient_generator,
+            create_environment,
+            load_config,
+        )
+        from abx_amr_simulator.hrl import OptionLibraryLoader
+        from abx_amr_simulator.utils.metrics import plot_hrl_diagnostics_single_run
+        from stable_baselines3 import PPO, DQN, A2C
+    except ImportError as e:
+        return {"error": f"Failed to import required modules: {e}"}
+    
+    # Load config
+    config_path = run_dir / "full_agent_env_config.yaml"
+    if not config_path.exists():
+        return {"error": f"full_agent_env_config.yaml not found in {run_dir}"}
+    
+    try:
+        config = load_config(str(config_path))
+    except Exception as e:
+        return {"error": f"Failed to load config: {e}"}
+    
+    # Create base environment FIRST (needed for option library loading)
+    try:
+        rc = create_reward_calculator(config=config)
+        pg = create_patient_generator(config=config)
+        base_env = create_environment(config=config, reward_calculator=rc, patient_generator=pg)
+    except Exception as e:
+        return {"error": f"Failed to create environment: {e}"}
+    
+    # Load option library (requires env for validation)
+    try:
+        # Try to use resolved option library config first (contains absolute paths)
+        resolved_lib_config_path = run_dir / "full_options_library.yaml"
+        if resolved_lib_config_path.exists():
+            # Use the resolved config with absolute paths
+            import yaml
+            with open(resolved_lib_config_path, 'r') as f:
+                resolved_config = yaml.safe_load(f)
+            # Extract the library path from resolved config
+            option_lib_path = resolved_config.get("library_config_path")
+        else:
+            # Fall back to regular config
+            option_lib_path = config.get("hrl", {}).get("option_library", None)
+        
+        if not option_lib_path:
+            return {"error": f"No HRL option_library specified in config"}
+        
+        loader = OptionLibraryLoader()
+        option_library, _ = loader.load_library(library_config_path=option_lib_path, env=base_env)
+    except Exception as e:
+        return {"error": f"Failed to load option library: {e}"}
+    
+    # Wrap environment with options
+    try:
+        from abx_amr_simulator.hrl import OptionsWrapper
+        env = OptionsWrapper(env=base_env, option_library=option_library)
+    except Exception as e:
+        return {"error": f"Failed to wrap environment: {e}"}
+    
+    # Load best model
+    model_path = run_dir / "best_model.zip"
+    if not model_path.exists():
+        # Try checkpoints folder
+        model_path = run_dir / "checkpoints" / "best_model.zip"
+    
+    if not model_path.exists():
+        return {"error": f"best_model.zip not found in {run_dir} or {run_dir}/checkpoints"}
+    
+    try:
+        # Infer model class from config (check flat structure first)
+        algo_name = config.get("algorithm", "")
+        if not algo_name:
+            # Fall back to nested structure
+            algo_name = config.get("agent_algorithm", {}).get("algorithm", "PPO")
+        
+        if "HRL_PPO" in algo_name:
+            model_class = PPO
+        elif "HRL_DQN" in algo_name:
+            model_class = DQN
+        else:
+            model_class = PPO  # Default
+        
+        model = model_class.load(str(model_path), env=env)
+    except Exception as e:
+        return {"error": f"Failed to load model: {e}"}
+    
+    # Generate HRL diagnostics
+    try:
+        print(f"      Generating HRL diagnostics ({max_eval_episodes} episodes)...")
+        plot_hrl_diagnostics_single_run(
+            model=model,
+            env=env,
+            experiment_folder=str(run_dir),
+            option_library=option_library,
+            num_eval_episodes=max_eval_episodes,
+            figures_folder_name="figures_hrl"
+        )
+        return {"hrl_diagnostics_dir": str(run_dir / "figures_hrl")}
+    except Exception as e:
+        return {"error": f"Failed to generate HRL diagnostics: {e}"}
+
+
 def analyze_experiment(
     prefix: str,
     results_dir: str = "results",
@@ -840,6 +989,16 @@ def analyze_experiment(
             representative_timestamp = extract_timestamp_from_run_folder(run_dir.name)
         
         print(f"    Analyzing {'seed ' + str(seed) if seed >= 0 else 'run'}...")
+        
+        # Check if this is an HRL run
+        is_hrl = is_hrl_run(run_dir)
+        if is_hrl:
+            print(f"      [INFO] Detected HRL agent - running HRL-specific diagnostics...")
+            hrl_result = analyze_hrl_single_run(run_dir, max_eval_episodes=5)
+            if "error" in hrl_result:
+                print(f"      [WARN] HRL diagnostics failed: {hrl_result['error']}")
+            else:
+                print(f"      ✓ HRL diagnostics saved to {hrl_result['hrl_diagnostics_dir']}")
         
         # Check if training is complete: prefer per-run sentinel, fallback to root registry
         training_completed_file = run_dir / ".training_completed.txt"
