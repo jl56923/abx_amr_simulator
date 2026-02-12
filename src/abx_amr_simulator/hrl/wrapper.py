@@ -287,6 +287,9 @@ class OptionsWrapper(gym.Wrapper):
                 - 'current_step': Current episode timestep (from env.current_time_step)
                 - 'max_steps': Episode length limit
                 - 'option_library': Reference to OptionLibrary for accessing abx_name_to_index
+                - 'reward_calculator': Reference to RewardCalculator (for heuristic workers to access clinical params)
+                - 'patient_generator': Reference to PatientGenerator (for heuristic workers to access attribute count)
+                - 'use_relative_uncertainty': Boolean flag indicating uncertainty metric type (from option library config)
         """
         # Extract patient data using patient generator
         num_patients = self._base_env.num_patients_per_time_step
@@ -301,6 +304,11 @@ class OptionsWrapper(gym.Wrapper):
         except AttributeError:
             current_step = 0
 
+        # Get use_relative_uncertainty flag from option library config (defaults to True)
+        use_relative_uncertainty = getattr(
+            self.option_library, 'use_relative_uncertainty', True
+        )
+
         env_state = {
             'patients': patients,
             'num_patients': num_patients,
@@ -308,6 +316,9 @@ class OptionsWrapper(gym.Wrapper):
             'current_step': current_step,
             'max_steps': self.max_steps,
             'option_library': self.option_library,  # Reference for options to access abx_name_to_index
+            'reward_calculator': self._base_env.reward_calculator,  # For heuristic workers to access clinical params
+            'patient_generator': self.patient_generator,  # For heuristic workers to access attribute metadata
+            'use_relative_uncertainty': use_relative_uncertainty,  # Uncertainty metric configuration
         }
 
         return env_state
