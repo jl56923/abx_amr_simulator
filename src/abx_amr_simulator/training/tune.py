@@ -114,6 +114,7 @@ import os
 import sys
 import tempfile
 import subprocess
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
@@ -358,7 +359,8 @@ def run_training_trial(
     seeds: List[int],
     subconfig_overrides: Dict[str, str],
     base_param_overrides: Dict[str, Any],
-    results_dir: str
+    results_dir: str,
+    trial_run_prefix: str
 ) -> List[float]:
     """Run training for multiple seeds with suggested hyperparameters.
     
@@ -385,6 +387,7 @@ def run_training_trial(
         param_overrides = {**base_param_overrides, **suggested_params}
         param_overrides['training.seed'] = seed
         param_overrides['training.total_num_training_episodes'] = truncated_episodes
+        param_overrides['training.run_name'] = f"{trial_run_prefix}_seed{seed}"
         
         # Optimize evaluation for tuning: do ONE final evaluation to get reward metric
         # Set eval_freq to trigger only at the very end (truncated_episodes + 1 ensures one eval at end)
@@ -500,7 +503,8 @@ def create_objective_function(
     subconfig_overrides: Dict[str, str],
     base_param_overrides: Dict[str, Any],
     results_dir: str,
-    base_seed: int
+    base_seed: int,
+    tuning_run_name: str
 ):
     """Create Optuna objective function closure.
     
@@ -543,6 +547,7 @@ def create_objective_function(
         trial_seeds = [base_seed + trial.number * 1000 + i for i in range(n_seeds_per_trial)]
         
         # Run training for all seeds
+        trial_run_prefix = f"{tuning_run_name}_trial{trial.number}"
         rewards = run_training_trial(
             umbrella_config_path=umbrella_config_path,
             suggested_params=suggested_params,
@@ -550,7 +555,8 @@ def create_objective_function(
             seeds=trial_seeds,
             subconfig_overrides=subconfig_overrides,
             base_param_overrides=base_param_overrides,
-            results_dir=results_dir
+            results_dir=results_dir,
+            trial_run_prefix=trial_run_prefix
         )
         
         # Filter out failed trials (-inf)
@@ -688,6 +694,11 @@ def main():
         type=str,
         default=None,
         help='Directory where training results should be created during tuning trials (temporary). If not specified, uses system temp directory.'
+    )
+    parser.add_argument(
+        '--discard-trial-results',
+        action='store_true',
+        help='Run Optuna trial training in a temporary directory and delete outputs after tuning'
     )
     
     args = parser.parse_args()
@@ -925,11 +936,15 @@ def main():
         sampler = optuna.samplers.TPESampler()
     
     # Determine results directory for training trials
-    if args.results_dir:
+    trial_results_dir_to_cleanup = None
+    if args.discard_trial_results:
+        results_dir = tempfile.mkdtemp(prefix='optuna_trials_')
+        trial_results_dir_to_cleanup = results_dir
+    elif args.results_dir:
         results_dir = args.results_dir
     else:
-        # Create temporary directory for trial results
-        results_dir = tempfile.mkdtemp(prefix='optuna_trials_')
+        results_dir = os.path.join(optimization_dir, 'trial_runs')
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
     
     # Get base seed from umbrella config
     base_seed = umbrella_config.get('training', {}).get('seed', 42)
@@ -976,7 +991,8 @@ def main():
         subconfig_overrides=subconfig_overrides,
         base_param_overrides=param_overrides,
         results_dir=results_dir,
-        base_seed=base_seed
+        base_seed=base_seed,
+        tuning_run_name=run_name
     )
     
     # Run optimization
@@ -1006,6 +1022,9 @@ def main():
         tuning_config=tuning_config,
         optimization_dir=optimization_dir
     )
+
+    if trial_results_dir_to_cleanup:
+        shutil.rmtree(trial_results_dir_to_cleanup, ignore_errors=True)
     
     storage_label = storage_path or storage_url
     print(f"✓ Study database saved to: {storage_label}")

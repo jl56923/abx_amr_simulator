@@ -46,6 +46,7 @@ class HeuristicWorker(OptionBase):
         duration: int,
         action_thresholds: Dict[str, float],
         uncertainty_threshold: float = 2.0,
+        default_recovery_without_treatment_prob: float = 0.1,
     ):
         """Initialize heuristic worker.
         
@@ -58,12 +59,69 @@ class HeuristicWorker(OptionBase):
                 Example: {'prescribe_A': 0.7, 'prescribe_B': 0.5, 'no_treatment': 0.0}
             uncertainty_threshold: Threshold for refusing to prescribe due to missing data
                 Interpretation depends on logic (e.g., refuse if uncertainty > threshold)
+            default_recovery_without_treatment_prob: Default value for spontaneous recovery probability
+                when recovery_without_treatment_prob is not visible in patient observation (default: 0.1)
         """
         super().__init__(name=name, k=duration)
         self.action_thresholds = action_thresholds
         self.uncertainty_threshold = uncertainty_threshold
+        self.default_recovery_prob = default_recovery_without_treatment_prob
         # Will be set by OptionsWrapper during initialization
         self._observable_patient_attributes: List[str] = []
+    
+    def _estimate_unobserved_attribute_values_from_observed(
+        self,
+        patient: Dict[str, float],
+    ) -> Dict[str, float]:
+        """Extension point: estimate missing attributes from observed values.
+        
+        Override this method in a subclass to implement custom clinical reasoning
+        for estimating unobserved patient attributes based on observed ones.
+        
+        This enables modeling realistic clinical decision-making where clinicians
+        use available information to form educated guesses about missing data.
+        
+        Called at the start of compute_expected_reward() BEFORE extracting attribute values.
+        Default implementation: returns patient unchanged (uses fallback defaults).
+        
+        Example override in custom subclass:
+            class CustomHeuristicWorker(HeuristicWorker):
+                def _estimate_unobserved_attribute_values_from_observed(
+                    self, patient: Dict[str, float]
+                ) -> Dict[str, float]:
+                    # Make a copy to avoid mutating original
+                    patient = patient.copy()
+                    
+                    # Estimate recovery_prob from infection risk
+                    # (sicker patients less likely to recover spontaneously)
+                    if ('recovery_without_treatment_prob' not in patient 
+                        or patient['recovery_without_treatment_prob'] == -1):
+                        pI = patient.get('prob_infected', 0.5)
+                        # Linear model: high infection risk → low recovery probability
+                        patient['recovery_without_treatment_prob'] = max(0.05, 0.2 - 0.15 * pI)
+                    
+                    # Estimate benefit multiplier from age/frailty proxy
+                    if ('benefit_value_multiplier' not in patient
+                        or patient['benefit_value_multiplier'] == -1):
+                        # Assume healthier patients benefit more from treatment
+                        patient['benefit_value_multiplier'] = 1.0 + (1.0 - pI) * 0.3
+                    
+                    return patient
+        
+        Args:
+            patient: Dict with observed attributes (may have -1 for missing/padded attributes)
+        
+        Returns:
+            Dict with estimates filled in. Should NOT overwrite non-missing observed values.
+            Default: returns input unchanged.
+        
+        Note:
+            - Only fill in attributes that are missing (not in dict OR value == -1)
+            - Don't overwrite valid observed values
+            - Always return a dict (copy if modified, original if unchanged)
+            - See docs/tutorials/custom_heuristic_attribute_estimation.md for full guide
+        """
+        return patient
     
     def compute_expected_reward(
         self,
@@ -107,14 +165,28 @@ class HeuristicWorker(OptionBase):
         Returns:
             Dict mapping action key → expected reward
             Example: {'prescribe_A': 0.85, 'prescribe_B': 0.42, 'no_treatment': 0.0}
+        
+        Raises:
+            ValueError: If prob_infected is not present in patient observation
         """
-        # Extract observed attributes with defaults
-        pI = float(patient.get('prob_infected', 0.0))
+        # Apply custom attribute estimation if overridden in subclass
+        patient = self._estimate_unobserved_attribute_values_from_observed(patient=patient)
+        
+        # Extract REQUIRED attribute (fail loudly if missing)
+        if 'prob_infected' not in patient:
+            raise ValueError(
+                f"HeuristicWorker '{self.name}' requires 'prob_infected' in patient observation. "
+                "This attribute must be in visible_patient_attributes. "
+                f"Got patient keys: {list(patient.keys())}"
+            )
+        pI = float(patient['prob_infected'])
+        
+        # Extract optional attributes with defaults
         vB = float(patient.get('benefit_value_multiplier', 1.0))
         vF = float(patient.get('failure_value_multiplier', 1.0))
         benefit_prob_mult = float(patient.get('benefit_probability_multiplier', 1.0))
         failure_prob_mult = float(patient.get('failure_probability_multiplier', 1.0))
-        r_spont = float(patient.get('recovery_without_treatment_prob', 0.1))
+        r_spont = float(patient.get('recovery_without_treatment_prob', self.default_recovery_prob))
         
         # Get clinical parameters from reward_calculator
         clinical_params = reward_calculator.abx_clinical_reward_penalties_info_dict
@@ -367,6 +439,7 @@ def load_heuristic_option(name: str, config: Dict[str, Any]) -> OptionBase:
         - action_thresholds (dict): Mapping action keys → reward thresholds (required)
             Example: {'prescribe_A': 0.7, 'prescribe_B': 0.5, 'no_treatment': 0.0}
         - uncertainty_threshold (float): Threshold for refusing to prescribe (default 2.0)
+        - default_recovery_without_treatment_prob (float): Default spontaneous recovery probability (default 0.1)
     
     Args:
         name: Unique identifier for this option instance
@@ -391,6 +464,7 @@ def load_heuristic_option(name: str, config: Dict[str, Any]) -> OptionBase:
     duration = config['duration']
     action_thresholds = config['action_thresholds']
     uncertainty_threshold = config.get('uncertainty_threshold', 2.0)
+    default_recovery_prob = config.get('default_recovery_without_treatment_prob', 0.1)
     
     # Validate duration
     if not isinstance(duration, int) or duration < 1:
@@ -425,10 +499,23 @@ def load_heuristic_option(name: str, config: Dict[str, Any]) -> OptionBase:
             f"got {type(uncertainty_threshold).__name__}"
         )
     
+    # Validate default_recovery_prob
+    if not isinstance(default_recovery_prob, (int, float)):
+        raise ValueError(
+            f"HeuristicWorker '{name}': 'default_recovery_without_treatment_prob' must be numeric, "
+            f"got {type(default_recovery_prob).__name__}"
+        )
+    if not (0.0 <= default_recovery_prob <= 1.0):
+        raise ValueError(
+            f"HeuristicWorker '{name}': 'default_recovery_without_treatment_prob' must be in [0, 1], "
+            f"got {default_recovery_prob}"
+        )
+    
     # Instantiate HeuristicWorker
     return HeuristicWorker(
         name=name,
         duration=duration,
         action_thresholds=action_thresholds,
         uncertainty_threshold=uncertainty_threshold,
+        default_recovery_without_treatment_prob=default_recovery_prob,
     )

@@ -15,6 +15,27 @@ from abx_amr_simulator.core.reward_calculator import RewardCalculator
 from abx_amr_simulator.core.patient_generator import PatientGenerator
 
 
+def _create_reward_calculator_for_expected_reward_tests() -> RewardCalculator:
+    config = {
+        'abx_clinical_reward_penalties_info_dict': {
+            'clinical_benefit_reward': 10.0,
+            'clinical_benefit_probability': 1.0,
+            'clinical_failure_penalty': -10.0,
+            'clinical_failure_probability': 0.0,
+            'abx_adverse_effects_info': {
+                'A': {
+                    'adverse_effect_penalty': -1.0,
+                    'adverse_effect_probability': 0.0,
+                },
+            },
+        },
+        'lambda_weight': 0.0,
+        'epsilon': 0.05,
+        'seed': 123,
+    }
+    return RewardCalculator(config=config)
+
+
 class TestHeuristicWorkerInstantiation:
     """Test HeuristicWorker instantiation and validation."""
     
@@ -172,6 +193,59 @@ class TestUncertaintyScoring:
         )
         
         assert uncertainty == 0  # All 6 attributes observed
+
+
+class TestExpectedRewardBehavior:
+    """Test expected reward edge cases for HeuristicWorker."""
+
+    def test_missing_prob_infected_fails_loudly(self):
+        """Missing prob_infected should raise ValueError."""
+        worker = HeuristicWorker(
+            name='test',
+            duration=10,
+            action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
+            uncertainty_threshold=2.0,
+        )
+        reward_calculator = _create_reward_calculator_for_expected_reward_tests()
+        patient = {
+            'benefit_value_multiplier': 1.0,
+        }
+
+        with pytest.raises(ValueError, match="requires 'prob_infected'"):
+            worker.compute_expected_reward(
+                patient=patient,
+                antibiotic_names=['A'],
+                current_amr_levels={'A': 0.0},
+                reward_calculator=reward_calculator,
+            )
+
+    def test_uses_configured_recovery_fallback(self):
+        """Fallback recovery prob should use configured default value."""
+        worker = HeuristicWorker(
+            name='test',
+            duration=10,
+            action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
+            uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.25,
+        )
+        reward_calculator = _create_reward_calculator_for_expected_reward_tests()
+        patient = {
+            'prob_infected': 0.8,
+            'benefit_value_multiplier': 1.0,
+            'failure_value_multiplier': 1.0,
+            'benefit_probability_multiplier': 1.0,
+            'failure_probability_multiplier': 1.0,
+        }
+
+        rewards = worker.compute_expected_reward(
+            patient=patient,
+            antibiotic_names=['A'],
+            current_amr_levels={'A': 0.0},
+            reward_calculator=reward_calculator,
+        )
+
+        expected_no_treatment = 0.8 * 0.25 * 1.0 * 1.0
+        assert rewards['no_treatment'] == pytest.approx(expected_no_treatment)
 
 
 class TestActionSelection:
