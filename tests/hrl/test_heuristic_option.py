@@ -421,8 +421,9 @@ class TestActionSelection:
         
         actions = worker.decide(env_state=env_state)
         
-        # Should default to no_treatment (index 2) due to high uncertainty
-        assert actions[0] == 2
+        # Should default to no_treatment due to high uncertainty
+        no_treatment_index = env_state['reward_calculator'].abx_name_to_index['no_treatment']
+        assert actions[0] == no_treatment_index
     
     def test_select_best_action_among_multiple(self):
         """Test that worker selects highest expected reward among valid actions."""

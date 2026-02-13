@@ -396,10 +396,11 @@ class HeuristicWorker(OptionBase):
         # Check uncertainty threshold (refuse to prescribe if too uncertain)
         if uncertainty > self.uncertainty_threshold:
             # Too much missing data—default to no treatment
-            return len(antibiotic_names)  # no treatment action index
+            return reward_calculator.abx_name_to_index['no_treatment']
         
         # Find best action exceeding its threshold
-        best_action = len(antibiotic_names)  # default to no_treatment
+        no_treatment_index = reward_calculator.abx_name_to_index['no_treatment']
+        best_action = no_treatment_index  # default to no_treatment
         best_value = expected_rewards.get('no_treatment', -np.inf)
         
         for abx_idx, abx in enumerate(antibiotic_names):
