@@ -236,7 +236,7 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "Options
     """Wrap ABXAMREnv with OptionsWrapper for hierarchical RL.
     
     Creates OptionsWrapper with option library and manager observation configuration.
-    Only called when algorithm is 'HRL_PPO', 'HRL_DQN', or 'HRL_RPPO'.
+    Only called when algorithm is 'HRL_PPO' or 'HRL_RPPO'.
     
     Args:
         env (ABXAMREnv): Base environment to wrap.

@@ -158,7 +158,7 @@ def load_and_save_hrl_option_library(
     """
     algorithm = config.get('algorithm', 'PPO')
     
-    if algorithm not in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+    if algorithm not in ['HRL_PPO', 'HRL_RPPO']:
         return None
     
     # Resolve option library path (same logic as train.py)

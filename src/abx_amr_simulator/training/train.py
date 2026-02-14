@@ -193,7 +193,7 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
     
     # Check algorithm
     algorithm = config.get('algorithm', 'PPO')
-    supported_algorithms = ['PPO', 'DQN', 'A2C', 'HRL_PPO', 'HRL_DQN', 'HRL_RPPO']
+    supported_algorithms = ['PPO', 'RecurrentPPO', 'DQN', 'A2C', 'HRL_PPO', 'HRL_RPPO']
     if algorithm not in supported_algorithms:
         errors.append(f"Unsupported algorithm: '{algorithm}'. Supported: {supported_algorithms}")
     
@@ -203,7 +203,7 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
         warnings.append(f"DQN typically requires action_mode='discrete', but config has '{action_mode}'")
     
     # HRL-specific validation
-    if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+    if algorithm in ['HRL_PPO', 'HRL_RPPO']:
         # Check that option library path exists
         option_library_path = config.get('option_library_path')
         if not option_library_path:
@@ -234,7 +234,7 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
             if missing_params:
                 warnings.append(f"Expected PPO hyperparameters not found in agent_algorithm config: {missing_params}")
         
-        elif algorithm in ['DQN', 'HRL_DQN']:
+        elif algorithm in ['DQN']:
             # Check for DQN-specific hyperparams
             dqn_params = ['learning_rate', 'buffer_size', 'learning_starts']
             missing_params = [p for p in dqn_params if p not in agent_config]
@@ -483,7 +483,6 @@ def main():
             'DQN': DQN,
             'A2C': A2C,
             'HRL_PPO': PPO,
-            'HRL_DQN': DQN,
             'HRL_RPPO': RecurrentPPO,
         }
         if algorithm not in algorithm_map:
@@ -514,7 +513,7 @@ def main():
         env.reset(seed=seed)
         
         # Wrap with OptionsWrapper if using HRL
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             from abx_amr_simulator.utils import wrap_environment_for_hrl, save_option_library_config
             print("Wrapping environment with OptionsWrapper for HRL...")
             env = wrap_environment_for_hrl(env, config)
@@ -546,7 +545,7 @@ def main():
         )
         eval_env.reset(seed=seed + 1)
                 # Wrap eval env with OptionsWrapper if using HRL
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             from abx_amr_simulator.utils import wrap_environment_for_hrl
             eval_env = wrap_environment_for_hrl(eval_env, config)
                 # Set up callbacks for continued training
@@ -724,7 +723,7 @@ def main():
         
         # Resolve HRL option library path (if applicable)
         algorithm = config.get('algorithm', 'PPO')
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             hrl_config = config.get('hrl', {})
             option_library_relative = hrl_config.get('option_library')
             if option_library_relative and 'option_library_path' not in config:
@@ -843,7 +842,7 @@ def main():
         
         # Wrap with OptionsWrapper if using HRL
         algorithm = config.get('algorithm', 'PPO')
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             from abx_amr_simulator.utils import wrap_environment_for_hrl, save_option_library_config
             print("Wrapping environment with OptionsWrapper for HRL...")
             env = wrap_environment_for_hrl(env, config)
@@ -872,7 +871,7 @@ def main():
         eval_env.reset(seed=seed + 1) # Different seed for eval env
         
         # Wrap eval env with OptionsWrapper if using HRL
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             from abx_amr_simulator.utils import wrap_environment_for_hrl
             eval_env = wrap_environment_for_hrl(eval_env, config)
         
@@ -935,7 +934,6 @@ def main():
             'DQN': DQN,
             'A2C': A2C,
             'HRL_PPO': PPO,
-            'HRL_DQN': DQN,
             'HRL_RPPO': RecurrentPPO,
         }
         AgentClass = algorithm_map.get(algorithm, PPO)

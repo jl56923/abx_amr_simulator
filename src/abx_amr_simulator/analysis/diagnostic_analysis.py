@@ -911,8 +911,6 @@ def analyze_hrl_single_run(run_dir: Path, max_eval_episodes: int = 5) -> Dict[st
         
         if "HRL_PPO" in algo_name:
             model_class = PPO
-        elif "HRL_DQN" in algo_name:
-            model_class = DQN
         else:
             model_class = PPO  # Default
         
