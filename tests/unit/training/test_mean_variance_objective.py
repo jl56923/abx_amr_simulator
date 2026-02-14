@@ -41,7 +41,8 @@ class TestMeanVarianceObjective:
                 subconfig_overrides={},
                 base_param_overrides={},
                 results_dir=tmpdir,
-                base_seed=42
+                base_seed=42,
+                tuning_run_name='test_run'
             )
             
             # Mock trial and run_training_trial
@@ -92,7 +93,8 @@ class TestMeanVarianceObjective:
                 subconfig_overrides={},
                 base_param_overrides={},
                 results_dir=tmpdir,
-                base_seed=42
+                base_seed=42,
+                tuning_run_name='test_run'
             )
             
             mock_trial = Mock()
@@ -127,7 +129,8 @@ class TestMeanVarianceObjective:
                 subconfig_overrides={},
                 base_param_overrides={},
                 results_dir=tmpdir,
-                base_seed=42
+                base_seed=42,
+                tuning_run_name='test_run'
             )
             
             mock_trial = Mock()
@@ -167,7 +170,8 @@ class TestMeanVarianceObjective:
                 subconfig_overrides={},
                 base_param_overrides={},
                 results_dir=tmpdir,
-                base_seed=42
+                base_seed=42,
+                tuning_run_name='test_run'
             )
             
             # Scenario 1: Low variance, slightly lower mean
@@ -215,7 +219,8 @@ class TestMeanVarianceObjective:
                 subconfig_overrides={},
                 base_param_overrides={},
                 results_dir=tmpdir,
-                base_seed=42
+                base_seed=42,
+                tuning_run_name='test_run'
             )
             
             mock_trial = Mock()
@@ -254,7 +259,8 @@ class TestMeanVarianceObjective:
                 subconfig_overrides={},
                 base_param_overrides={},
                 results_dir=tmpdir,
-                base_seed=42
+                base_seed=42,
+                tuning_run_name='test_run'
             )
             
             mock_trial = Mock()
@@ -291,7 +297,8 @@ class TestMeanVarianceObjective:
                 subconfig_overrides={},
                 base_param_overrides={},
                 results_dir=tmpdir,
-                base_seed=42
+                base_seed=42,
+                tuning_run_name='test_run'
             )
             
             mock_trial = Mock()

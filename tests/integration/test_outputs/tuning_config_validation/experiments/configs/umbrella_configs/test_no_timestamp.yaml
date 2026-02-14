@@ -141,7 +141,7 @@ training:
   eval_freq_every_n_episodes: 2
   log_patient_trajectories: true
   num_eval_episodes: 10
-  run_name: test_resume
+  run_name: test_no_timestamp
   save_freq_every_n_episodes: 2
   seed: 42
   total_num_training_episodes: 2

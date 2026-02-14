@@ -118,6 +118,42 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
                 "Mixer patient_generator requires 'generators' list with config files and proportions"
             )
         
+        # Determine base directory for child generator config resolution
+        # Following the same pattern as umbrella configs use config_folder_location
+        if 'patient_generator_config_folder_location' in patient_gen_config:
+            # Modern format: use explicit folder location (relative to umbrella config dir)
+            pg_config_folder_location = patient_gen_config['patient_generator_config_folder_location']
+            
+            # Get umbrella config directory from config (injected by load_config)
+            umbrella_config_dir = config.get('_umbrella_config_dir')
+            if umbrella_config_dir is None:
+                raise ValueError(
+                    "Mixer config specifies 'patient_generator_config_folder_location' but "
+                    "'_umbrella_config_dir' not found in config. This should be set by load_config()."
+                )
+            
+            umbrella_dir = Path(umbrella_config_dir)
+            if not Path(pg_config_folder_location).is_absolute():
+                # Resolve relative to umbrella config location
+                # First resolve config_folder_location to get patient_generator config dir
+                config_folder_location = config.get('config_folder_location', '../')
+                if not Path(config_folder_location).is_absolute():
+                    config_base_dir = (umbrella_dir / config_folder_location).resolve()
+                else:
+                    config_base_dir = Path(config_folder_location).resolve()
+                
+                # Then resolve patient_generator subfolder
+                pg_base_dir = (config_base_dir / 'patient_generator').resolve()
+                
+                # Finally resolve the mixer's child generator folder
+                child_gen_base_dir = (pg_base_dir / pg_config_folder_location).resolve()
+            else:
+                child_gen_base_dir = Path(pg_config_folder_location).resolve()
+        else:
+            # Legacy fallback: resolve from project root (package location)
+            project_root = Path(__file__).parent.parent
+            child_gen_base_dir = project_root
+        
         for i, gen_spec in enumerate(generators_config):
             if 'config_file' not in gen_spec:
                 raise ValueError(f"generators[{i}] missing 'config_file'")
@@ -127,10 +163,9 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
             # Load child config file
             config_file = gen_spec['config_file']
             
-            # Resolve relative paths from project root
-            project_root = Path(__file__).parent.parent
+            # Resolve relative paths from determined base directory
             if not os.path.isabs(config_file):
-                config_file = os.path.join(str(project_root), config_file)
+                config_file = str(child_gen_base_dir / config_file)
             
             if not os.path.exists(config_file):
                 raise ValueError(f"generators[{i}] config_file not found: {config_file}")

@@ -1,8 +1,4 @@
 _umbrella_config_dir: /Users/joycelee/Work/Code/abx_amr_capacitor_rl/external/abx_amr_simulator/tests/integration/test_outputs/tuning_config_validation/experiments/configs/umbrella_configs
-abx_name_to_index:
-  A: 0
-  B: 1
-  no_treatment: 2
 algorithm: PPO
 config_folder_location: ../
 environment:
@@ -28,11 +24,6 @@ environment:
   max_time_steps: 3
   num_patients_per_time_step: 5
   update_visible_AMR_levels_every_n_timesteps: 1
-index_to_abx_name:
-  0: A
-  1: B
-  2: no_treatment
-learning_rate: 0.00017033147375879263
 options_folder_location: ../../options
 patient_generator:
   benefit_probability_multiplier:
@@ -107,7 +98,6 @@ patient_generator:
       sigma: null
       type: constant
       value: 0.0
-  seed: 1042
   visible_patient_attributes:
   - prob_infected
 policy_kwargs:
@@ -132,33 +122,26 @@ reward_calculator:
       A:
         adverse_effect_penalty: -2.0
         adverse_effect_probability: 0.1
-        normalized_adverse_effect_penalty: -0.2
       B:
         adverse_effect_penalty: -3.0
         adverse_effect_probability: 0.15
-        normalized_adverse_effect_penalty: -0.3
     clinical_benefit_probability: 1.0
     clinical_benefit_reward: 10.0
     clinical_failure_penalty: -10.0
     clinical_failure_probability: 1.0
-    normalized_clinical_benefit_reward: 1.0
-    normalized_clinical_failure_penalty: -1.0
   epsilon: 0.05
   lambda_weight: 0.1
   seed: null
 training:
-  _converted_eval_freq: 6
-  _converted_save_freq: 2999997
-  _converted_total_timesteps: 6
   early_stopping:
     enabled: false
     metric_name: eval/mean_reward
     min_delta: 0.0
     patience: 5
   eval_freq_every_n_episodes: 2
-  log_patient_trajectories: false
+  log_patient_trajectories: true
   num_eval_episodes: 10
-  run_name: test_resume_trial1_seed1042
-  save_freq_every_n_episodes: 999999
-  seed: 1042
+  run_name: test_no_timestamp
+  save_freq_every_n_episodes: 2
+  seed: 42
   total_num_training_episodes: 2
