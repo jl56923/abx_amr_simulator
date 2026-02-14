@@ -161,6 +161,12 @@ class OptionLibrary:
                 f"Got error: {e}"
             )
 
+        if "prob_infected" not in provided_patient_attrs:
+            raise ValueError(
+                "PatientGenerator must include 'prob_infected' in visible_patient_attributes. "
+                "All options require this attribute."
+            )
+
         # Validate each option
         for option_name, option in self.options.items():
             # Check 1: Patient observation attributes

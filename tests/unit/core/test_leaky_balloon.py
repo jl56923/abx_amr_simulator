@@ -279,3 +279,385 @@ def test_copy_with_reset_counterfactual():
     
     # Verify copy's pressure is different from original (it was reset)
     assert balloon_copy.pressure != original.pressure
+
+
+# ============================================================================
+# ADDITIONAL TESTS FOR IMPROVED COVERAGE
+# ============================================================================
+
+class TestParameterValidation:
+    """Comprehensive parameter validation tests."""
+    
+    def test_invalid_leak_boundaries(self):
+        """Test leak parameter at all invalid boundaries."""
+        # Below lower bound
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(leak=-0.001)
+        
+        # At lower bound
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(leak=0.0)
+        
+        # At upper bound
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(leak=1.0)
+        
+        # Above upper bound
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(leak=1.001)
+    
+    def test_invalid_flatness_parameter_boundaries(self):
+        """Test flatness_parameter at boundaries."""
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(flatness_parameter=0.0)
+        
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(flatness_parameter=-0.5)
+    
+    def test_invalid_residual_boundaries(self):
+        """Test permanent_residual_volume at boundaries."""
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(permanent_residual_volume=-0.001)
+        
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(permanent_residual_volume=1.0)
+        
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(permanent_residual_volume=1.001)
+    
+    def test_invalid_initial_amr_boundaries(self):
+        """Test initial_amr_level at boundaries."""
+        # With residual=0.2
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(permanent_residual_volume=0.2, initial_amr_level=0.19)
+        
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(initial_amr_level=1.001)
+        
+        with pytest.raises(ValueError):
+            AMR_LeakyBalloon(initial_amr_level=-0.001)
+    
+    def test_valid_boundary_combinations(self):
+        """Test valid combinations at parameter boundaries."""
+        # Valid: initial_amr_level equals residual
+        balloon = AMR_LeakyBalloon(permanent_residual_volume=0.3, initial_amr_level=0.3)
+        assert balloon.pressure == pytest.approx(0.0, abs=1e-6)
+        
+        # Valid: initial_amr_level = 1.0
+        balloon = AMR_LeakyBalloon(initial_amr_level=1.0)
+        assert balloon.pressure > 0.0
+        
+        # Valid: leak at upper bound (0.999)
+        balloon = AMR_LeakyBalloon(leak=0.999)
+        assert balloon.leak == 0.999
+        
+        # Valid: very small leak
+        balloon = AMR_LeakyBalloon(leak=0.001)
+        assert balloon.leak == 0.001
+
+
+class TestVolumeMappingComprehensive:
+    """Comprehensive tests for sigmoid pressure-to-volume mapping."""
+    
+    def test_volume_at_zero_pressure_with_various_residuals(self):
+        """Test volume at zero pressure is always equal to residual."""
+        residuals = [0.0, 0.05, 0.1, 0.2, 0.5]
+        for res in residuals:
+            balloon = AMR_LeakyBalloon(
+                permanent_residual_volume=res,
+                initial_amr_level=res  # Start at residual level
+            )
+            assert balloon.get_volume(pressure=0.0) == pytest.approx(res, abs=1e-6)
+    
+    def test_volume_monotonic_increasing_comprehensive(self):
+        """Test volume strictly increases with pressure across range."""
+        balloon = AMR_LeakyBalloon()
+        
+        pressures = [0.0, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 100.0]
+        volumes = [balloon.get_volume(pressure=p) for p in pressures]
+        
+        # Verify strictly increasing
+        for i in range(len(volumes) - 1):
+            assert volumes[i] < volumes[i + 1], \
+                f"Not strictly increasing: {volumes[i]} >= {volumes[i+1]}"
+    
+    def test_high_pressure_asymptote_near_one(self):
+        """Test that volume asymptotes at 1.0 as pressure increases."""
+        residual = 0.05
+        balloon = AMR_LeakyBalloon(
+            permanent_residual_volume=residual,
+            initial_amr_level=residual,
+            flatness_parameter=1.0
+        )
+        
+        # With rescaled sigmoid, pressure reaches 1.0 volume relatively quickly
+        pressures = [10.0, 20.0, 50.0]
+        volumes = [balloon.get_volume(pressure=p) for p in pressures]
+        
+        # All should be very close to 1.0 and strictly bounded by it
+        for v in volumes:
+            assert v > 0.95
+            assert v <= 1.0
+        
+        # Verify monotonic increase
+        assert volumes[0] < volumes[1] < volumes[2]
+        
+        # Closer to 1.0 for higher pressures
+        assert volumes[-1] > volumes[-2] > volumes[-3]
+    
+    def test_flatness_parameter_slope_effect(self):
+        """Test flatness parameter controls sigmoid steepness."""
+        # Three balloons with different flatness parameters
+        steep = AMR_LeakyBalloon(flatness_parameter=0.5)
+        medium = AMR_LeakyBalloon(flatness_parameter=1.0)
+        flat = AMR_LeakyBalloon(flatness_parameter=2.0)
+        
+        # At same pressure, slopes should differ
+        pressure = 1.0
+        v_steep = steep.get_volume(pressure=pressure)
+        v_medium = medium.get_volume(pressure=pressure)
+        v_flat = flat.get_volume(pressure=pressure)
+        
+        # Steeper should give higher volume (further along sigmoid)
+        assert v_steep > v_medium > v_flat
+
+
+class TestDynamicsComprehensive:
+    """Comprehensive tests for puff and leak dynamics."""
+    
+    def test_puff_accumulation_without_leak(self):
+        """Test puffs accumulate linearly when leak=0 is simulated with very small leak."""
+        # Use very small leak to approximate no leak
+        balloon = AMR_LeakyBalloon(leak=0.0001, flatness_parameter=1.0)
+        pressures = []
+        
+        for i in range(5):
+            balloon.step(puffs=1.0)
+            pressures.append(balloon.pressure)
+        
+        # Pressure should increase but not exactly linearly (leak gradually removes)
+        for i in range(len(pressures) - 1):
+            assert pressures[i] < pressures[i + 1]
+    
+    def test_linear_decay_with_no_puffs(self):
+        """Test pressure decays linearly with leak amount."""
+        leak_rate = 0.5
+        balloon = AMR_LeakyBalloon(leak=leak_rate)
+        
+        # Build up pressure
+        balloon.step(puffs=10.0)
+        initial_pressure = balloon.pressure
+        
+        # Record pressure after each step - should decrease by leak amount each step
+        pressures = [initial_pressure]
+        for _ in range(10):
+            balloon.step(puffs=0.0)
+            pressures.append(balloon.pressure)
+        
+        # Check linear decay: p_n = p_{n-1} - leak (until pressure hits zero)
+        for i in range(1, len(pressures)):
+            if pressures[i] > 0:
+                # Should decrease by exactly leak amount
+                expected_pressure = pressures[i - 1] - leak_rate
+                assert pressures[i] == pytest.approx(max(0.0, expected_pressure), abs=1e-6)
+    
+    def test_long_term_evolution_to_residual(self):
+        """Test that without puffs, volume converges to residual."""
+        residual = 0.15
+        balloon = AMR_LeakyBalloon(
+            leak=0.3,
+            permanent_residual_volume=residual,
+            initial_amr_level=0.9
+        )
+        
+        # Run for many steps
+        for _ in range(200):
+            balloon.step(puffs=0.0)
+        
+        final_volume = balloon.get_volume()
+        assert final_volume == pytest.approx(residual, abs=1e-5)
+    
+    def test_puffs_with_leak_equilibrium(self):
+        """Test system behavior with constant puffs and leak."""
+        leak_rate = 0.1
+        balloon = AMR_LeakyBalloon(leak=leak_rate)
+        
+        # Constant puff rate
+        constant_puffs = 0.2
+        
+        # Run until equilibrium
+        volumes = []
+        for _ in range(100):
+            v = balloon.step(puffs=constant_puffs)
+            volumes.append(v)
+        
+        # Last 10 steps should be nearly constant (equilibrium reached)
+        last_volumes = volumes[-10:]
+        avg_last = sum(last_volumes) / len(last_volumes)
+        
+        for v in last_volumes:
+            assert abs(v - avg_last) < 0.01  # Within 1% of average
+    
+    def test_fractional_puffs(self):
+        """Test that fractional puff values work correctly."""
+        balloon = AMR_LeakyBalloon(leak=0.001, initial_amr_level=0.1)
+        
+        v1 = balloon.step(puffs=0.5)
+        v2 = balloon.step(puffs=0.3)
+        v3 = balloon.step(puffs=0.2)
+        
+        # All should be valid volumes bounded in [0, 1]
+        assert 0.0 <= v1 <= 1.0
+        assert 0.0 <= v2 <= 1.0
+        assert 0.0 <= v3 <= 1.0
+        
+        # With small leak (0.001) and positive puffs, volumes should generally trend upward
+        # (accumulation > leak for these puff values)
+        assert v1 > 0.1  # Should have accumulated from initial state
+        """Test that zero puffs still applies leak (doesn't maintain pressure)."""
+        balloon = AMR_LeakyBalloon(leak=0.2)
+        
+        # Build pressure
+        balloon.step(puffs=3.0)
+        p_after_puff = balloon.pressure
+        
+        # Zero puffs, leak applies
+        balloon.step(puffs=0.0)
+        p_after_leak = balloon.pressure
+        
+        # Pressure should decrease by leak amount
+        expected = p_after_puff - 0.2
+        assert p_after_leak == pytest.approx(max(0.0, expected), abs=1e-6)
+
+
+class TestEdgeCasesComprehensive:
+    """Comprehensive edge case testing."""
+    
+    def test_very_high_initial_amr(self):
+        """Test balloon initialized at very high AMR initial state."""
+        balloon = AMR_LeakyBalloon(initial_amr_level=0.99)
+        
+        # Volume should be at the set level (0.99)
+        assert abs(balloon.get_volume() - 0.99) < 0.01
+        
+        # After one step with small puff, should still be bounded at 1.0
+        v = balloon.step(puffs=1.0)
+        assert v <= 1.0
+    
+    def test_high_residual_floor(self):
+        """Test balloon with high residual floor (80%)."""
+        residual = 0.8
+        balloon = AMR_LeakyBalloon(
+            permanent_residual_volume=residual,
+            initial_amr_level=residual
+        )
+        
+        # Even with no puffs, should stay above 80%
+        for _ in range(100):
+            balloon.step(puffs=0.0)
+        
+        final_volume = balloon.get_volume()
+        assert final_volume >= residual - 1e-5
+    
+    def test_very_slow_decay(self):
+        """Test balloon with minimal leak (very slow decay)."""
+        balloon = AMR_LeakyBalloon(leak=0.001, initial_amr_level=0.5)
+        balloon.step(puffs=1.0)
+        initial_pressure = balloon.pressure
+        
+        # After 100 steps with no puffs, still should have>90% pressure
+        for _ in range(100):
+            balloon.step(puffs=0.0)
+        
+        remaining_fraction = balloon.pressure / initial_pressure
+        assert remaining_fraction > 0.9
+    
+    def test_very_fast_decay(self):
+        """Test balloon with high leak (very fast decay)."""
+        balloon = AMR_LeakyBalloon(leak=0.95)
+        balloon.step(puffs=5.0)
+        
+        # After a few steps, pressure should be nearly zero
+        for _ in range(10):
+            balloon.step(puffs=0.0)
+        
+        # Should be very close to residual (which is 0.0 by default)
+        assert balloon.get_volume() < 0.01
+    
+    def test_step_with_very_large_puffs(self):
+        """Test step with extremely large puff values."""
+        balloon = AMR_LeakyBalloon()
+        
+        # Very large puff
+        volume = balloon.step(puffs=10000.0)
+        
+        # Should saturate near 1.0
+        assert volume > 0.9999
+        assert volume <= 1.0
+
+
+class TestInverseSigmoidComprehensive:
+    """Comprehensive tests for inverse sigmoid calculation."""
+    
+    def test_inverse_sigmoid_round_trip_multiple_volumes(self):
+        """Test inverse sigmoid round-trip for many volumes."""
+        balloon = AMR_LeakyBalloon(
+            flatness_parameter=1.5,
+            permanent_residual_volume=0.1,
+            initial_amr_level=0.1
+        )
+        
+        test_volumes = [
+            0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9
+        ]
+        
+        for target_vol in test_volumes:
+            pressure = balloon._inverse_sigmoid(target_vol)
+            recovered_vol = balloon.get_volume(pressure=pressure)
+            assert recovered_vol == pytest.approx(target_vol, abs=1e-5)
+    
+    def test_inverse_sigmoid_at_extremes(self):
+        """Test inverse sigmoid at extreme volume values."""
+        balloon = AMR_LeakyBalloon()
+        
+        # At residual (should give ~zero pressure)
+        pressure_at_residual = balloon._inverse_sigmoid(0.0)
+        assert pressure_at_residual >= 0.0
+        assert pressure_at_residual < 0.01
+        
+        # Very close to 1.0 (should give high pressure)
+        # With rescaled sigmoid, the required pressure is lower than with original sigmoid
+        pressure_high = balloon._inverse_sigmoid(0.9999)
+        assert pressure_high > 1.0
+        
+        # Pressure should strictly increase with volume
+        pressure_mid = balloon._inverse_sigmoid(0.5)
+        assert pressure_at_residual < pressure_mid < pressure_high
+
+
+class TestStepNoStateChange:
+    """Tests for the _step_no_internal_state_change method."""
+    
+    def test_no_state_change_preserves_pressure(self):
+        """Test that _step_no_internal_state_change doesn't modify pressure."""
+        balloon = AMR_LeakyBalloon()
+        balloon.step(puffs=2.0)
+        
+        saved_pressure = balloon.pressure
+        balloon._step_no_internal_state_change(puffs=1.0)
+        
+        assert balloon.pressure == saved_pressure
+    
+    def test_no_state_change_returns_correct_volume(self):
+        """Test that _step_no_internal_state_change returns correct hypothetical volume."""
+        balloon = AMR_LeakyBalloon(leak=0.1)
+        balloon.step(puffs=2.0)
+        
+        # Compute hypothetical
+        hypothetical_volume = balloon._step_no_internal_state_change(puffs=1.0)
+        
+        # Now actually step
+        actual_volume = balloon.step(puffs=1.0)
+        
+        # Should match
+        assert hypothetical_volume == pytest.approx(actual_volume, abs=1e-10)

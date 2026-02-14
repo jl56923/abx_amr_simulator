@@ -1,0 +1,11 @@
+# Default mixer patient generator config; both generators point to default patient generator file in this folder, but replace with pathways to other patient generator configs as needed.
+# Uses PatientGeneratorMixer via factories.py (type: mixer)
+
+type: mixer
+
+# List of subgenerator configs and proportions (must sum to 1.0)
+generators:
+  - config_file: default.yaml
+    proportion: 0.5
+  - config_file: default.yaml
+    proportion: 0.5

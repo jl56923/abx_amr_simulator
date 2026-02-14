@@ -82,8 +82,10 @@ class AMR_LeakyBalloon:
         Computes the latent pressure needed to produce a given volume.
         
         Inverts the sigmoid mapping: volume → pressure.
-        Since normalized_vol = (sigmoid(p) - 0.5) * 2, we solve for p.
-        volume = permanent_residual_volume + (sigmoid(p) - 0.5) * 2
+        The sigmoid is rescaled to fit in [permanent_residual_volume, 1.0].
+        normalized_vol = (volume - residual) / (1 - residual)
+        sigmoid_val = (normalized_vol / 2) + 0.5
+        pressure = -flatness_parameter * log((1 - sigmoid_val) / sigmoid_val)
         
         Args:
             volume (float): Desired visible volume in [permanent_residual_volume, 1.0]
@@ -91,10 +93,13 @@ class AMR_LeakyBalloon:
         Returns:
             float: The latent pressure needed to produce this volume
         """
-        # Remove the permanent residual component
-        normalized_vol = volume - self.permanent_residual_volume
+        # Calculate the available range for rescaling
+        available_range = 1.0 - self.permanent_residual_volume
         
-        # Invert the normalization: sigmoid(p) = normalized_vol / 2 + 0.5
+        # Remove the permanent residual component and rescale to [0, 1]
+        normalized_vol = (volume - self.permanent_residual_volume) / available_range
+        
+        # Invert the rescaled normalization: sigmoid(p) = normalized_vol / 2 + 0.5
         sigmoid_val = normalized_vol / 2.0 + 0.5
         
         # Clamp sigmoid_val to (0, 1) to avoid numerical issues with log
@@ -108,11 +113,11 @@ class AMR_LeakyBalloon:
     def get_volume(self, pressure=None):
         """
         Maps current pressure to volume using a sigmoid function.
-        To ensure Volume = residual when Pressure = 0, we shift the 
-        standard sigmoid result.
+        The sigmoid curve is rescaled to fit within [permanent_residual_volume, 1.0].
+        This ensures a smooth sigmoid shape across the full valid range, not clamped.
         """
         # Standard sigmoid: 1 / (1 + exp(-x/v))
-        # When x=0, sigmoid=0.5. To make the volume start at 0 (before residual),
+        # When x=0, sigmoid=0.5. To make the normalized volume start at 0,
         # we subtract 0.5 and multiply by 2 to keep the range [0, 1].
         if pressure is None:
             pressure = self.pressure
@@ -121,9 +126,16 @@ class AMR_LeakyBalloon:
         sigmoid_val = 1 / (1 + math.exp(exponent))
         
         # Normalized sigmoid that is 0.0 when pressure is 0.0
-        normalized_vol = (sigmoid_val - 0.5) * 2
+        normalized_vol = (sigmoid_val - 0.5) * 2  # ranges [0, 1]
         
-        return self.permanent_residual_volume + normalized_vol
+        # Rescale normalized_vol to fit within the available range [0, 1 - residual]
+        available_range = 1.0 - self.permanent_residual_volume
+        scaled_vol = normalized_vol * available_range
+        
+        # Add residual to get final volume in [residual, 1.0]
+        volume = self.permanent_residual_volume + scaled_vol
+        
+        return volume
 
     def step(self, puffs):
         """Update pressure based on puffs and leak, then return new volume.

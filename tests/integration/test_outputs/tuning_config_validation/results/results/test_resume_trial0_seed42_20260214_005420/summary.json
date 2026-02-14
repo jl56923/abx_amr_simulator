@@ -1,0 +1,8 @@
+{
+  "run_name": "experiment",
+  "algorithm": "PPO",
+  "total_timesteps": 6,
+  "total_episodes": 0,
+  "timestamp": "2026-02-14T00:54:50.042857",
+  "action_mode": "multidiscrete"
+}
