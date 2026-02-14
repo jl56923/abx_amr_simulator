@@ -23,7 +23,7 @@ from functools import partial
 import pdb # for debugging purposes
 
 import numpy as np
-from stable_baselines3 import PPO, DQN, A2C
+from stable_baselines3 import PPO, A2C
 
 from abx_amr_simulator.utils import (
     load_config,
@@ -280,7 +280,7 @@ def main():
     
     # Generate final diagnostics comparing best vs final agent
     algorithm = config.get('algorithm', 'PPO')
-    algorithm_map = {'PPO': PPO, 'DQN': DQN, 'A2C': A2C}
+    algorithm_map = {'PPO': PPO, 'A2C': A2C}
     AgentClass = algorithm_map.get(algorithm, PPO)
     
     # Determine which env to use for diagnostics

@@ -48,7 +48,7 @@ try:
 except ImportError:
     plt = None
 
-from stable_baselines3 import PPO, DQN, A2C
+from stable_baselines3 import PPO, A2C
 
 from abx_amr_simulator.utils import (
     load_config,
@@ -86,7 +86,7 @@ def load_best_model_from_run(run_folder: Path) -> Optional[Any]:
             with open(cfg_path, 'r') as f:
                 cfg = yaml.safe_load(f)
             algo = cfg.get("agent_algorithm", {}).get("algorithm", "PPO")
-            agent_class = {"PPO": PPO, "A2C": A2C, "DQN": DQN}.get(algo, PPO)
+            agent_class = {"PPO": PPO, "A2C": A2C}.get(algo, PPO)
         except Exception:
             agent_class = PPO
     

@@ -79,7 +79,7 @@ from typing import Dict, Any, Optional, Tuple
 
 import pdb
 
-from stable_baselines3 import PPO, DQN, A2C
+from stable_baselines3 import PPO, A2C
 from sb3_contrib import RecurrentPPO
 
 from abx_amr_simulator.utils import (
@@ -193,14 +193,9 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
     
     # Check algorithm
     algorithm = config.get('algorithm', 'PPO')
-    supported_algorithms = ['PPO', 'RecurrentPPO', 'DQN', 'A2C', 'HRL_PPO', 'HRL_RPPO']
+    supported_algorithms = ['PPO', 'RecurrentPPO', 'A2C', 'HRL_PPO', 'HRL_RPPO']
     if algorithm not in supported_algorithms:
         errors.append(f"Unsupported algorithm: '{algorithm}'. Supported: {supported_algorithms}")
-    
-    # Check action mode compatibility
-    action_mode = config.get('action_mode', 'multidiscrete')
-    if algorithm == 'DQN' and action_mode != 'discrete':
-        warnings.append(f"DQN typically requires action_mode='discrete', but config has '{action_mode}'")
     
     # HRL-specific validation
     if algorithm in ['HRL_PPO', 'HRL_RPPO']:
@@ -233,13 +228,6 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
             missing_params = [p for p in ppo_params if p not in agent_config]
             if missing_params:
                 warnings.append(f"Expected PPO hyperparameters not found in agent_algorithm config: {missing_params}")
-        
-        elif algorithm in ['DQN']:
-            # Check for DQN-specific hyperparams
-            dqn_params = ['learning_rate', 'buffer_size', 'learning_starts']
-            missing_params = [p for p in dqn_params if p not in agent_config]
-            if missing_params:
-                warnings.append(f"Expected DQN hyperparameters not found in agent_algorithm config: {missing_params}")
         
         print(f"Loaded best parameters from: {loaded_best_params_from}")
         print(f"Target algorithm: {algorithm}")
@@ -480,7 +468,6 @@ def main():
         # Map algorithm names to classes
         algorithm_map = {
             'PPO': PPO,
-            'DQN': DQN,
             'A2C': A2C,
             'HRL_PPO': PPO,
             'HRL_RPPO': RecurrentPPO,
@@ -931,7 +918,6 @@ def main():
         algorithm = config.get('algorithm', 'PPO')
         algorithm_map = {
             'PPO': PPO,
-            'DQN': DQN,
             'A2C': A2C,
             'HRL_PPO': PPO,
             'HRL_RPPO': RecurrentPPO,

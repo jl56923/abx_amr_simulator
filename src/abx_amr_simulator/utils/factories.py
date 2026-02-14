@@ -16,7 +16,7 @@ import pdb
 
 import yaml
 import gymnasium as gym
-from stable_baselines3 import PPO, DQN, A2C
+from stable_baselines3 import PPO, A2C
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -100,22 +100,17 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
             "PatientGenerator must be configured with required parameters including 'visible_patient_attributes'."
         )
     
-    # Validate that visibility is configured in patient_generator section (not environment)
-    if 'visible_patient_attributes' not in patient_gen_config:
-        raise ValueError(
-            "'visible_patient_attributes' must be specified in patient_generator config, not environment config. "
-            "PatientGenerator owns visibility configuration."
-        )
-    
     # Get seed from training config if available
     training_config = config.get('training', {})
     seed = training_config.get('seed', None)
     
     # Check if this is a mixer configuration
     if patient_gen_config.get('type') == 'mixer':
+        # For mixers, we'll derive visible_patient_attributes from sub-generators
         # Load and instantiate child generators from config files
         child_generators = []
         proportions = []
+        all_visible_attrs = []  # Collect all visible attributes from sub-generators
         
         generators_config = patient_gen_config.get('generators', [])
         if not generators_config:
@@ -144,6 +139,13 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
             with open(config_file, 'r') as f:
                 child_config = yaml.safe_load(f)
             
+            # Collect visible attributes from this child config
+            if 'visible_patient_attributes' not in child_config:
+                raise ValueError(
+                    f"generators[{i}] config file missing 'visible_patient_attributes': {config_file}"
+                )
+            all_visible_attrs.extend(child_config['visible_patient_attributes'])
+            
             # Set seed for child generator
             child_config['seed'] = seed
             
@@ -152,18 +154,31 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
             child_generators.append(child_gen)
             proportions.append(gen_spec['proportion'])
         
+        # Create union of all visible attributes (preserves order, removes duplicates)
+        visible_attrs_union = []
+        seen = set()
+        for attr in all_visible_attrs:
+            if attr not in seen:
+                visible_attrs_union.append(attr)
+                seen.add(attr)
+        
         # Create mixer config for PatientGeneratorMixer
         mixer_config = {
             'generators': child_generators,
             'proportions': proportions,
-            'visible_patient_attributes': patient_gen_config['visible_patient_attributes'],
+            'visible_patient_attributes': visible_attrs_union,
             'seed': seed,
         }
         
         return PatientGeneratorMixer(config=mixer_config)
     
     else:
-        # Regular PatientGenerator
+        # Regular PatientGenerator - validate visibility config
+        if 'visible_patient_attributes' not in patient_gen_config:
+            raise ValueError(
+                "'visible_patient_attributes' must be specified in patient_generator config, not environment config. "
+                "PatientGenerator owns visibility configuration."
+            )
         patient_gen_config['seed'] = seed
         return PatientGenerator(config=patient_gen_config)
 
@@ -326,16 +341,16 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "Options
 
 
 def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str] = None, verbose: int = 0) -> Any:
-    """Instantiate RL agent (PPO, DQN, A2C, RecurrentPPO, HRL_PPO, HRL_RPPO, or MBPO) from config.
+    """Instantiate RL agent (PPO, A2C, RecurrentPPO, HRL_PPO, HRL_RPPO, or MBPO) from config.
     
     Extracts algorithm type and hyperparameters from config, then creates the
-    appropriate agent class. For standard agents (PPO/DQN/A2C/RecurrentPPO), uses
+    appropriate agent class. For standard agents (PPO/A2C/RecurrentPPO), uses
     'MlpPolicy' (or 'MlpLstmPolicy' for RecurrentPPO). For MBPO, returns an MBPOAgent
     instance that orchestrates model-based policy optimization.
     
     Args:
         config (Dict[str, Any]): Full experiment config dictionary. Must contain:
-            - 'algorithm': 'PPO' | 'DQN' | 'A2C' | 'RecurrentPPO' | 'HRL_PPO' | 'HRL_RPPO' | 'MBPO'
+            - 'algorithm': 'PPO' | 'A2C' | 'RecurrentPPO' | 'HRL_PPO' | 'HRL_RPPO' | 'MBPO'
             - '{algorithm_lowercase}': Dict with algorithm-specific hyperparameters
               (e.g., 'ppo': {'learning_rate': 3e-4, 'n_steps': 2048, ...})
               (e.g., 'mbpo': {...}, 'dynamics_model': {...} for MBPO)
@@ -344,7 +359,7 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
         verbose (int): Verbosity level for stable-baselines3 output. Default: 0 (silent).
     
     Returns:
-        PPO | DQN | A2C | RecurrentPPO | MBPOAgent: Initialized agent ready for training.
+        PPO | A2C | RecurrentPPO | MBPOAgent: Initialized agent ready for training.
         For standard agents, use via .learn(total_timesteps).
         For MBPO, use via .train(total_episodes).
     
@@ -389,29 +404,6 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
             max_grad_norm=ppo_config.get('max_grad_norm', 0.5),
             policy_kwargs=policy_kwargs,
             verbose=ppo_config.get('verbose', 1),
-            tensorboard_log=tb_log_path,
-            seed=seed,
-        )
-    elif algorithm == 'DQN':
-        dqn_config = config.get('dqn', {})
-        learning_rate = dqn_config.get('learning_rate', 1.0e-4)
-        
-        agent = DQN(
-            policy='MlpPolicy',
-            env=env,
-            learning_rate=learning_rate,
-            buffer_size=dqn_config.get('buffer_size', 100000),
-            learning_starts=dqn_config.get('learning_starts', 1000),
-            batch_size=dqn_config.get('batch_size', 32),
-            tau=dqn_config.get('tau', 1.0),
-            gamma=dqn_config.get('gamma', 0.99),
-            train_freq=dqn_config.get('train_freq', 4),
-            target_update_interval=dqn_config.get('target_update_interval', 10000),
-            exploration_fraction=dqn_config.get('exploration_fraction', 0.1),
-            exploration_initial_eps=dqn_config.get('exploration_initial_eps', 1.0),
-            exploration_final_eps=dqn_config.get('exploration_final_eps', 0.05),
-            policy_kwargs=policy_kwargs,
-            verbose=dqn_config.get('verbose', 1),
             tensorboard_log=tb_log_path,
             seed=seed,
         )
