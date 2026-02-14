@@ -60,7 +60,10 @@ class ABXAMREnv(gym.Env):
             num_patients_per_time_step: Number of patients per time step
             update_visible_AMR_levels_every_n_timesteps: Frequency of visible AMR level updates
             add_noise_to_visible_AMR_levels: Standard deviation of Gaussian noise added to visible AMR levels
-            add_bias_to_visible_AMR_levels: Constant bias added to visible AMR levels
+            add_bias_to_visible_AMR_levels: Constant bias added to visible AMR levels (range: [-1.0, 1.0]).
+                Negative values underestimate true AMR (agent sees lower AMR than true value).
+                Positive values overestimate true AMR (agent sees higher AMR than true value).
+                Resulting visible levels are clipped to [0.0, 1.0] range.
             max_time_steps: Maximum number of steps per episode
             crossresistance_matrix: Optional dict of dicts defining off-diagonal crossresistance ratios. Only non-self entries.
                 Diagonal auto-set to 1.0. Example: {"A": {"B": 0.5}, "B": {"A": 0.01}}
@@ -110,8 +113,10 @@ class ABXAMREnv(gym.Env):
         if add_noise_to_visible_AMR_levels < 0.0:
             raise ValueError("add_noise_to_visible_AMR_levels must be greater than or equal to 0.0.")
         
-        if not (0.0 <= add_bias_to_visible_AMR_levels <= 1.0):
-            raise ValueError("add_bias_to_visible_AMR_levels must be between 0.0 and 1.0.")
+        if not (-1.0 <= add_bias_to_visible_AMR_levels <= 1.0):
+            raise ValueError("add_bias_to_visible_AMR_levels must be between -1.0 and 1.0 (inclusive). "
+                           "Negative values underestimate AMR, positive values overestimate. "
+                           "Resulting visible AMR levels are clipped to [0.0, 1.0].")
 
         # Check that the keys for antibiotics_AMR_dict and reward_calculator match:
         if set(antibiotics_AMR_dict.keys()) != set(reward_calculator.antibiotic_names):
