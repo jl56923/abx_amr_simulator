@@ -977,12 +977,64 @@ def main():
     
     # Report study status
     n_existing_trials = len(study.trials)
+    n_completed_trials_with_results = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    
+    # Check if we've already reached the target number of completed trials
+    if n_completed_trials_with_results >= n_trials:
+        print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
+        print(f"  Completed trials with results: {n_completed_trials_with_results}")
+        print(f"  Target n_trials: {n_trials}")
+        print(f"\n✓ Study has already reached the target! Skipping additional trials.\n")
+        
+        # Print results
+        print(f"{'='*70}")
+        print("OPTIMIZATION ALREADY COMPLETE")
+        print(f"{'='*70}")
+        print(f"Best value: {study.best_value:.4f}")
+        print(f"Best trial: {study.best_trial.number}")
+        print(f"Total trials completed: {n_completed_trials_with_results}")
+        print(f"Best parameters:")
+        for key, value in study.best_params.items():
+            print(f"  {key}: {value}")
+        print(f"{'='*70}\n")
+        
+        # Save results
+        save_best_params(
+            study=study,
+            tuning_config=tuning_config,
+            optimization_dir=optimization_dir
+        )
+
+        if trial_results_dir_to_cleanup:
+            shutil.rmtree(trial_results_dir_to_cleanup, ignore_errors=True)
+        
+        storage_label = storage_path or storage_url
+        print(f"✓ Study database at: {storage_label}")
+        
+        # Update registry
+        update_registry(
+            registry_path=completion_registry_path,
+            run_name=run_name,
+            timestamp=timestamp
+        )
+        print(f"\n✓ Recorded successful completion in registry: {completion_registry_path}\n")
+        
+        print(f"Optimization results saved to: {optimization_dir}")
+        print(f"  - Study database: {storage_label}")
+        print(f"  - Best params: {os.path.join(optimization_dir, 'best_params.json')}")
+        print(f"  - Study summary: {os.path.join(optimization_dir, 'study_summary.json')}")
+        sys.exit(0)
+    
+    # Not yet complete, continue or start optimization
     if n_existing_trials > 0:
-        print(f"✓ Loaded existing study with {n_existing_trials} completed trial(s)")
+        print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
+        print(f"  Completed trials with results: {n_completed_trials_with_results}")
         print(f"  Best value so far: {study.best_value:.4f}")
-        print(f"  Will run {n_trials} additional trial(s)")
+        remaining_trials = n_trials - n_completed_trials_with_results
+        print(f"  Will run {remaining_trials} additional trial(s) (target: {n_trials} total)")
     else:
         print(f"✓ Starting new study")
+        remaining_trials = n_trials
     
     # Create objective function
     objective = create_objective_function(
@@ -996,13 +1048,13 @@ def main():
     )
     
     # Run optimization
-    print(f"\nStarting optimization with {n_trials} trials...")
+    print(f"\nStarting optimization with {remaining_trials} trials...")
     print(f"Direction: {direction}")
     print(f"Sampler: {sampler_name}")
     print(f"Seeds per trial: {optimization_config.get('n_seeds_per_trial', 3)}")
     print(f"Truncated episodes: {optimization_config.get('truncated_episodes', 50)}\n")
     
-    study.optimize(objective, n_trials=n_trials)
+    study.optimize(objective, n_trials=remaining_trials)
     
     # Print results
     print(f"\n{'='*70}")
