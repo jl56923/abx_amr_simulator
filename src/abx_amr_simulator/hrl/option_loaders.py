@@ -10,6 +10,7 @@ The OptionLibraryLoader handles the orchestration of:
 
 import os
 import sys
+import importlib
 import importlib.util
 from typing import Dict, Any, Tuple, List
 from pathlib import Path
@@ -45,9 +46,11 @@ class OptionLibraryLoader:
             library_name: Optional override for library name (from config if not provided).
 
         Path handling:
-            - Relative paths inside the library config (option_subconfig_file, loader_module)
-              are resolved relative to the directory containing the library config file.
-            - Absolute paths are used as-is.
+                        - Relative paths inside the library config (option_subconfig_file, loader_module)
+                            are resolved relative to the directory containing the library config file.
+                        - Absolute paths are used as-is.
+                        - loader_module can also be a Python module path (e.g.,
+                            "abx_amr_simulator.options.heuristic_loader").
         
         Returns:
             Tuple of:
@@ -176,16 +179,15 @@ class OptionLibraryLoader:
         else:
             subconfig_path = subconfig_path.resolve()
 
-        loader_module_path = Path(loader_module)
-        if not loader_module_path.is_absolute():
-            loader_module_path = (base_dir / loader_module_path).resolve()
-        else:
-            loader_module_path = loader_module_path.resolve()
-
         if not subconfig_path.exists():
             raise FileNotFoundError(f"Option subconfig not found: {subconfig_path}")
-        if not loader_module_path.exists():
-            raise FileNotFoundError(f"Loader module not found: {loader_module_path}")
+
+        loader_module_mode, loader_module_path = OptionLibraryLoader._resolve_loader_module(
+            loader_module=loader_module,
+            base_dir=base_dir,
+        )
+        if loader_module_mode == "file" and loader_module_path is None:
+            raise FileNotFoundError(f"Loader module not found: {loader_module}")
 
         # Load default config
         with open(subconfig_path, 'r') as f:
@@ -195,10 +197,18 @@ class OptionLibraryLoader:
         merged_config = {**default_config, **config_override}
 
         # Import loader module dynamically
-        loader_func = OptionLibraryLoader._import_loader_function(
-            option_type=option_type,
-            loader_module_path=loader_module_path,
-        )
+        if loader_module_mode == "module":
+            loader_func = OptionLibraryLoader._import_loader_function_from_module(
+                option_type=option_type,
+                loader_module=loader_module,
+            )
+        else:
+            if loader_module_path is None:
+                raise FileNotFoundError(f"Loader module not found: {loader_module}")
+            loader_func = OptionLibraryLoader._import_loader_function(
+                option_type=option_type,
+                loader_module_path=loader_module_path,
+            )
 
         # Call loader function
         try:
@@ -290,3 +300,75 @@ class OptionLibraryLoader:
             )
 
         return loader_func
+
+    @staticmethod
+    def _import_loader_function_from_module(
+        option_type: str,
+        loader_module: str,
+    ):
+        """Import loader function from a Python module path.
+
+        Args:
+            option_type: Option type name (e.g., 'block').
+            loader_module: Python module path (e.g., 'abx_amr_simulator.options.heuristic_loader').
+
+        Returns:
+            The loader function (e.g., load_block_option).
+
+        Raises:
+            RuntimeError: If loader function not found or import fails.
+        """
+        try:
+            module = importlib.import_module(loader_module)
+        except Exception as e:
+            raise RuntimeError(
+                f"Error importing module {loader_module}: {e}"
+            )
+
+        expected_func_name = f'load_{option_type}_option'
+        if not hasattr(module, expected_func_name):
+            available_funcs = [
+                name for name in dir(module)
+                if not name.startswith('_') and callable(getattr(module, name))
+            ]
+            raise RuntimeError(
+                f"Loader module {loader_module} missing '{expected_func_name}'. "
+                f"Available functions: {available_funcs}"
+            )
+
+        loader_func = getattr(module, expected_func_name)
+        if not callable(loader_func):
+            raise RuntimeError(
+                f"'{expected_func_name}' in {loader_module} is not callable"
+            )
+
+        return loader_func
+
+    @staticmethod
+    def _resolve_loader_module(
+        loader_module: str,
+        base_dir: Path,
+    ) -> Tuple[str, Path | None]:
+        """Resolve loader module as file path or module path.
+
+        Returns:
+            Tuple[str, Path | None]: ("file" | "module", resolved_path_if_file)
+        """
+        has_path_separator = "/" in loader_module or "\\" in loader_module
+        is_py_file = loader_module.endswith(".py")
+
+        if os.path.isabs(loader_module) or is_py_file or has_path_separator:
+            loader_path = Path(loader_module)
+            if not loader_path.is_absolute():
+                loader_path = (base_dir / loader_path).resolve()
+            else:
+                loader_path = loader_path.resolve()
+            if not loader_path.exists():
+                raise FileNotFoundError(f"Loader module not found: {loader_path}")
+            return "file", loader_path
+
+        relative_candidate = (base_dir / loader_module).resolve()
+        if relative_candidate.exists():
+            return "file", relative_candidate
+
+        return "module", None

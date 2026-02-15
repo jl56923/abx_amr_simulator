@@ -186,6 +186,56 @@ def test_import_loader_function_syntax_error_raises(tmp_path: Path) -> None:
         )
 
 
+def test_load_single_option_with_module_loader(tmp_path: Path) -> None:
+    subconfig_path = tmp_path / "heuristic.yaml"
+    _write_yaml(
+        path=subconfig_path,
+        data={
+            "duration": 2,
+            "action_thresholds": {"prescribe_A": 0.5, "no_treatment": 0.0},
+        },
+    )
+
+    option_spec = {
+        "option_name": "HEURISTIC_test",
+        "option_type": "heuristic",
+        "option_subconfig_file": str(subconfig_path),
+        "loader_module": "abx_amr_simulator.options.heuristic_loader",
+    }
+    config_path = tmp_path / "library.yaml"
+    _write_yaml(path=config_path, data=_build_library_config(option_specs=[option_spec]))
+
+    env = create_mock_environment(antibiotic_names=["A"])
+    library, resolved_config = OptionLibraryLoader.load_library(
+        library_config_path=str(config_path),
+        env=env,
+    )
+
+    assert len(library) == 1
+    assert resolved_config["num_options"] == 1
+
+
+def test_module_loader_missing_expected_function_raises(tmp_path: Path) -> None:
+    subconfig_path = tmp_path / "block.yaml"
+    _write_yaml(path=subconfig_path, data={"duration": 2})
+
+    option_spec = {
+        "option_name": "A_2",
+        "option_type": "block",
+        "option_subconfig_file": str(subconfig_path),
+        "loader_module": "abx_amr_simulator.options",
+    }
+    config_path = tmp_path / "library.yaml"
+    _write_yaml(path=config_path, data=_build_library_config(option_specs=[option_spec]))
+
+    env = create_mock_environment(antibiotic_names=["A"])
+    with pytest.raises(RuntimeError, match="missing 'load_block_option'"):
+        OptionLibraryLoader.load_library(
+            library_config_path=str(config_path),
+            env=env,
+        )
+
+
 def test_load_single_option_loader_returns_wrong_type(tmp_path: Path) -> None:
     subconfig_path = tmp_path / "block.yaml"
     _write_yaml(path=subconfig_path, data={"duration": 2})
