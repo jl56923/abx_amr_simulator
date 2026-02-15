@@ -317,6 +317,11 @@ def main():
         default='optimization',
         help='Base directory where optimization runs are stored (default: optimization)'
     )
+    parser.add_argument(
+        '--skip-registry-validation',
+        action='store_true',
+        help='Skip registry validation (do not check if experiment folders still exist). Useful when moving completed experiments to different storage. Still checks if run completed, just does not validate folder existence.'
+    )
     args = parser.parse_args()
     
     # Use current working directory as the base for configs (define early for subconfig path resolution)
@@ -781,16 +786,21 @@ def main():
         if args.skip_if_exists:
             # Validate and clean completion registry ONLY when checking skip-if-exists
             # Don't clean the current run_name - it might legitimately not have a folder yet
-            stale_entries = validate_and_clean_registry(
-                completion_registry_path,
-                results_folder,
-                exclude_prefix=run_name  # Don't remove current run from registry
-            )
-            if stale_entries:
-                print(f"\n⚠️  Registry cleanup: Removed {len(stale_entries)} stale entry/entries for deleted experiments:")
-                for entry in stale_entries:
-                    print(f"    - {entry[0]} (timestamp {entry[1]})")
-                print()
+            if not args.skip_registry_validation:
+                stale_entries = validate_and_clean_registry(
+                    completion_registry_path,
+                    results_folder,
+                    exclude_prefix=run_name  # Don't remove current run from registry
+                )
+                if stale_entries:
+                    print(f"\n⚠️  Registry cleanup: Removed {len(stale_entries)} stale entry/entries for deleted experiments:")
+                    for entry in stale_entries:
+                        print(f"    - {entry[0]} (timestamp {entry[1]})")
+                    print()
+            else:
+                stale_entries = []
+                print(f"\n⚠️  Registry validation skipped (--skip-registry-validation flag set)")
+                print(f"Registry will NOT check if experiment folders exist.\n")
             
             completed_prefixes = load_registry(completion_registry_path)
 
