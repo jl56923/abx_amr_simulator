@@ -82,3 +82,12 @@ tensorboard/
 
 # Documentation builds
 docs/_build/
+
+# Ignore COPILOT_TODO.md file
+COPILOT_TODO.md
+
+# Ignore .github/ directory
+.github/
+
+# Ignore 'private_docs/' directory
+private_docs/

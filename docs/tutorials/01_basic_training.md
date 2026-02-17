@@ -13,7 +13,7 @@ The `abx_amr_simulator` package is built in Python, but the primary way you'll i
 
 This design prioritizes **reproducibility and modularity**: you can swap out and modify the parameters of different components of your experiment (i.e. changing the environment, reward function, patient population) by pointing to different config files, without touching any of the Python code.
 
-*When do I write Python code?* See Tutorial 4.
+*When do I write Python code?* See Tutorial 12 for advanced component subclassing.
 
 ---
 
@@ -24,7 +24,7 @@ Install the `abx_amr_simulator` package in editable mode (for development) or st
 ### Development Installation (if modifying code)
 
 ```bash
-git clone https://github.com/your-repo/abx_amr_simulator.git
+git clone https://github.com/jl56923/abx_amr_simulator.git
 cd abx_amr_simulator
 pip install -e .
 ```
@@ -52,6 +52,8 @@ Set up a working directory for your experiments:
 ```bash
 mkdir my_first_project
 cd my_first_project
+mkdir experiments
+cd experiments
 ```
 
 Copy the default configuration files using Python:
@@ -83,10 +85,18 @@ You should see something like:
 
 ```yaml
 # Base experiment configuration
-environment: ../environment/default.yaml
-reward_calculator: ../reward_calculator/default.yaml
-patient_generator: ../patient_generator/default.yaml
-agent_algorithm: ../agent_algorithm/default.yaml
+# Folder locations
+# These specify where to find component configs and option libraries.
+# Paths are relative to the umbrella config's directory.
+config_folder_location: ../
+options_folder_location: ../../options
+
+# Component configurations
+# Paths are relative to config_folder_location
+environment: environment/default.yaml
+reward_calculator: reward_calculator/default.yaml
+patient_generator: patient_generator/default.yaml
+agent_algorithm: agent_algorithm/default.yaml
 
 training:
   run_name: example_run
@@ -96,10 +106,18 @@ training:
   num_eval_episodes: 10
   seed: 42
   log_patient_trajectories: true
+  
+  early_stopping:
+    enabled: false
+    patience: 5
+    min_delta: 0.0
+    metric_name: "eval/mean_reward"
 ```
 
 **Key concepts**:
-- The first four lines point to **subconfigs** (component configs) stored in sister folders (`../environment/`, `../reward_calculator/`, etc.)
+- **`config_folder_location: ../`** — Tells the config loader where component config folders live (relative to the umbrella config's directory). In this case, `../` resolves from `experiments/configs/umbrella_configs/` up to `experiments/configs/`.
+- **`options_folder_location: ../../options`** — Similarly points to the options folder (used by HRL). Resolves to `experiments/options/`.
+- **Component paths** (e.g., `environment: environment/default.yaml`) — These are relative to `config_folder_location`, NOT the umbrella config. So `environment/default.yaml` resolves to `experiments/configs/environment/default.yaml`.
 - All training parameters are **episode-based**, not timestep-based
 - `total_num_training_episodes: 25` means 25 complete training episodes (each episode has a fixed length determined by `max_time_steps` in the environment config)
 - `eval_freq_every_n_episodes: 5` means evaluate the agent every 5 training episodes
@@ -114,12 +132,19 @@ training:
 
 ## Step 4: Run Training
 
-Train a PPO agent on the default environment:
+From the `my_first_project/` directory, train a PPO agent on the default environment:
 
 ```bash
+cd ..
+
+# Verify you're in the correct directory
+pwd  # Should show: .../my_first_project
+
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml
 ```
+
+**Note**: The `--umbrella-config` flag requires an absolute path. Using `$(pwd)` ensures the path is absolute regardless of your current directory. If you get "file not found" errors, run `pwd` to verify you're in `my_first_project/`, not `my_first_project/experiments/`.
 
 **What happens**:
 1. Config is loaded and component configs are merged
@@ -158,17 +183,17 @@ The package provides specialized analysis tools that are more informative than T
 
 ```bash
 # Run diagnostic analysis on your completed experiment
-python -m abx_amr_simulator.analysis.diagnostic_analysis --prefix example_run_20250115_143614
+python -m abx_amr_simulator.analysis.diagnostic_analysis --experiment-name example_run_20250115_143614
 
 # Generate evaluative plots (reward decomposition, action analysis)
-python -m abx_amr_simulator.analysis.evaluative_plots --prefix example_run_20250115_143614
+python -m abx_amr_simulator.analysis.evaluative_plots --experiment-name example_run_20250115_143614
 ```
 
-**Note on prefixes**: By default, both tools find the exact run you specify. If you ran multiple seeds and want to aggregate results across them (create ensemble plots with statistics), use the `--aggregate-by-seed` flag:
+**Note on experiment names**: By default, both tools find the exact run you specify. If you ran multiple seeds and want to aggregate results across them (create ensemble plots with statistics), use the `--aggregate-by-seed` flag:
 
 ```bash
 # Aggregate results from multiple seeds: example_run_seed1_*, example_run_seed2_*, etc.
-python -m abx_amr_simulator.analysis.evaluative_plots --prefix example_run --aggregate-by-seed
+python -m abx_amr_simulator.analysis.evaluative_plots --experiment-name example_run --aggregate-by-seed
 ```
 
 These tools will generate:
@@ -177,18 +202,18 @@ These tools will generate:
 
 Results are saved to `analysis_output/` with organized subfolders.
 
-**Note on experiment naming**: For analyzing single runs, use the full run name (including timestamp) as the `--prefix` argument:
+**Note on experiment naming**: For analyzing single runs, use the full run name (including timestamp) as the `--experiment-name` argument:
 ```bash
-python -m abx_amr_simulator.analysis.evaluative_plots --prefix example_run_20250115_143614
+python -m abx_amr_simulator.analysis.evaluative_plots --experiment-name example_run_20250115_143614
 ```
 
 If you ran **multiple training seeds** and want to aggregate them together, use the naming pattern `<run_name>_seed1`, `<run_name>_seed2`, etc. Then use the base name with the `--aggregate-by-seed` flag:
 ```bash
 # Find and aggregate all: example_run_seed1_<timestamp>, example_run_seed2_<timestamp>, etc.
-python -m abx_amr_simulator.analysis.evaluative_plots --prefix example_run --aggregate-by-seed
+python -m abx_amr_simulator.analysis.evaluative_plots --experiment-name example_run --aggregate-by-seed
 ```
 
-Without the `--aggregate-by-seed` flag set, the tools find single runs matching your prefix exactly.
+Without the `--aggregate-by-seed` flag set, the tools find single runs matching your experiment name exactly.
 
 ### Option B: Monitor with TensorBoard (Optional)
 
@@ -228,7 +253,7 @@ The `figures_best_agent/` and `figures_final_agent/` folders contain diagnostic 
 
 ### Load and Evaluate Your Trained Agent (Optional, Python API)
 
-If you want to programmatically load and evaluate your trained agent using Python, you can write a script. **Most users won't need this—the CLI analysis tools (Step 7) provide everything you need.** If you're curious about the Python API, see Tutorial 4 for complete examples.
+If you want to programmatically load and evaluate your trained agent using Python, you can write a script. **Most users won't need this—the CLI analysis tools (Step 7) provide everything you need.** If you're curious about the Python API, see Tutorial 12 for advanced component customization examples.
 
 For now, proceed to Step 7 to use the recommended CLI analysis tools.
 
@@ -240,10 +265,10 @@ The results folder already contains diagnostic plots in `figures_best_agent/` an
 
 ```bash
 # Generate diagnostic analysis (observation error metrics, correlations)
-python -m abx_amr_simulator.analysis.diagnostic_analysis --experiment-prefix example_run
+python -m abx_amr_simulator.analysis.diagnostic_analysis --experiment-name example_run
 
 # Generate evaluative plots (ensemble analysis, action interpretability)
-python -m abx_amr_simulator.analysis.evaluative_plots --experiment-prefix example_run
+python -m abx_amr_simulator.analysis.evaluative_plots --experiment-name example_run
 ```
 
 ### What These Tools Do
@@ -322,9 +347,9 @@ environment:
 ✅ You've trained your first RL agent!
 
 **Next tutorials**:
-- **Tutorial 2**: Customize your experiments (change patient distributions, tune reward lambda, configure AMR dynamics) — all via CLI
-- **Tutorial 3**: Analyze results with diagnostic and evaluative plots — CLI tools
-- **Tutorial 4**: Use the Python API for advanced customization (programmatic analysis, custom components) — ~5% of users need this
+- **Tutorial 2**: Set up your workspace with config scaffolding
+- **Tutorial 3**: Customize your experiments (change patient distributions, tune reward lambda, configure AMR dynamics)
+- **Tutorial 4**: Optimize hyperparameters with Optuna
 - **Tutorial 5**: Use the Streamlit GUI for experiment management
 
 ---
@@ -334,4 +359,4 @@ environment:
 1. **Configurations are modular**: Environment, rewards, patients, and algorithm settings are separate YAML files
 2. **CLI is the primary interface**: Edit configs, run `python -m abx_amr_simulator.training.train`, analyze with CLI tools
 3. **Reproducibility matters**: Seeds are automatically synchronized across components
-4. **Python API is optional**: ~95% of workflows use CLI; Python code is for advanced customization (see Tutorial 4)
+4. **Python API is optional**: ~95% of workflows use CLI; Python code is for advanced customization (see Tutorial 12)
