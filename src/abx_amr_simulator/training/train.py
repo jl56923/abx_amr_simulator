@@ -202,12 +202,17 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
         # Check that HRL config section exists
         hrl_config = config.get('hrl', {})
         
-        # Check that option library path exists
-        option_library_path = hrl_config.get('option_library')
-        if not option_library_path:
+        # Check that option library is specified
+        option_library_relative = hrl_config.get('option_library')
+        if not option_library_relative:
             errors.append(f"HRL algorithm '{algorithm}' requires 'hrl.option_library' in config")
-        elif not os.path.exists(option_library_path):
+        
+        # Check option library path exists - use resolved path if available, otherwise defer check
+        option_library_path = config.get('option_library_path')
+        if option_library_path and not os.path.exists(option_library_path):
             errors.append(f"Option library path does not exist: {option_library_path}")
+        # Note: If option_library_path is not yet resolved in config, it will be resolved in main()
+        # and verified there before the environment is created
         
         # Check that option_gamma is specified if using HRL
         option_gamma = hrl_config.get('option_gamma')
@@ -727,6 +732,16 @@ def main():
                 config_dir = Path(args.umbrella_config).parent
                 resolved_path = (config_dir / options_folder / option_library_relative).resolve()
                 config['option_library_path'] = str(resolved_path)
+            
+            # Verify resolved option library path exists
+            option_library_path = config.get('option_library_path')
+            if option_library_path and not os.path.exists(option_library_path):
+                print(f"\n{'='*70}")
+                print("CONFIG VALIDATION ERRORS")
+                print(f"{'='*70}")
+                print(f"❌ Option library path does not exist: {option_library_path}")
+                print(f"{'='*70}\n")
+                sys.exit(1)
         
         # Validate configuration
         validate_training_config(
