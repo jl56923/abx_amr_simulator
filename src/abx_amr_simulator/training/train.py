@@ -199,17 +199,20 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
     
     # HRL-specific validation
     if algorithm in ['HRL_PPO', 'HRL_RPPO']:
+        # Check that HRL config section exists
+        hrl_config = config.get('hrl', {})
+        
         # Check that option library path exists
-        option_library_path = config.get('option_library_path')
+        option_library_path = hrl_config.get('option_library')
         if not option_library_path:
-            errors.append(f"HRL algorithm '{algorithm}' requires 'option_library_path' in config")
+            errors.append(f"HRL algorithm '{algorithm}' requires 'hrl.option_library' in config")
         elif not os.path.exists(option_library_path):
             errors.append(f"Option library path does not exist: {option_library_path}")
         
         # Check that option_gamma is specified if using HRL
-        option_gamma = config.get('option_gamma')
+        option_gamma = hrl_config.get('option_gamma')
         if option_gamma is None:
-            warnings.append("HRL algorithm should specify 'option_gamma' in config (discount factor for OptionsWrapper)")
+            warnings.append("HRL algorithm should specify 'hrl.option_gamma' in config (discount factor for OptionsWrapper)")
     
     # Validate best params if loaded
     if loaded_best_params_from:
