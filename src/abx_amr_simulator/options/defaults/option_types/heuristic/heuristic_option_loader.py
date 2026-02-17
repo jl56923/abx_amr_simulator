@@ -205,8 +205,12 @@ class HeuristicWorker(OptionBase):
         
         expected_rewards = {}
         
-        # Compute expected reward for each antibiotic
+        # Compute expected reward for each antibiotic (exclude 'no_treatment', it gets special handling below)
         for abx_name in antibiotic_names:
+            # Skip 'no_treatment' - it doesn't have adverse effects and gets computed separately
+            if abx_name == 'no_treatment':
+                continue
+                
             visible_amr = current_amr_levels.get(abx_name, 0.0)
             pS = 1.0 - float(visible_amr)
             
@@ -214,7 +218,7 @@ class HeuristicWorker(OptionBase):
             expected_reward = pI * pS * pB * RB * vB
             expected_reward += pI * (1.0 - pS) * pF * RF * vF
             
-            # Adverse effects expectation
+            # Adverse effects expectation (only for actual antibiotics)
             ae_info = clinical_params['abx_adverse_effects_info'][abx_name]
             ae_penalty = ae_info['normalized_adverse_effect_penalty']
             pAE = ae_info['adverse_effect_probability']
@@ -222,7 +226,7 @@ class HeuristicWorker(OptionBase):
             
             expected_rewards[f'prescribe_{abx_name}'] = float(expected_reward)
         
-        # No treatment expected reward
+        # No treatment expected reward (separate calculation, no adverse effects)
         expected_reward_no_treatment = pI * r_spont * RB * vB
         expected_reward_no_treatment += pI * (1.0 - r_spont) * pF * RF * vF
         expected_rewards['no_treatment'] = float(expected_reward_no_treatment)
