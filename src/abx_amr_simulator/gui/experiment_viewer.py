@@ -121,6 +121,9 @@ def main():
     
     # Sidebar: Experiment selection
     st.sidebar.header("Experiment Runs")
+    st.sidebar.markdown("**Results directory**")
+    st.sidebar.code(str(RESULTS_DIR))
+    st.sidebar.caption("Expected layout: my_project/results/")
     
     # Check for newly completed experiment
     latest_from_marker = get_latest_experiment_from_marker()
@@ -139,8 +142,8 @@ def main():
     experiments = get_experiment_folders()
     
     if not experiments:
-        st.warning(f"No experiment folders found in `{RESULTS_DIR.relative_to(PROJECT_ROOT)}`")
-        st.info("Run an experiment using the training app to see results here.")
+        st.warning(f"No experiment folders found in `{RESULTS_DIR}`")
+        st.info("Run a quick experiment in the GUI or use the CLI to generate results in this folder.")
         return
     
     # Filter by name prefix

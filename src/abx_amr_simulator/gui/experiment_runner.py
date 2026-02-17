@@ -96,6 +96,8 @@ def main():
     if 'training_pid' not in st.session_state:
         st.session_state['training_pid'] = -1
 
+    results_dir = get_results_directory()
+
     st.sidebar.header("Configuration Source")
     configs = list_config_files()
     
@@ -117,6 +119,10 @@ def main():
     base_config_path = config_paths[selected_name]  # Use the actual full path
     config = load_config(str(base_config_path))
 
+    st.sidebar.markdown("**Results directory**")
+    st.sidebar.code(str(results_dir))
+    st.sidebar.caption("Expected layout: my_project/results/")
+
     st.sidebar.markdown("**Run naming**")
     run_name_input = st.sidebar.text_input("Run name prefix", value=config.get("run_name", "streamlit_run"))
     
@@ -126,7 +132,6 @@ def main():
     additional_episodes = None
     
     if continue_training:
-        results_dir = get_results_directory()
         if results_dir.exists():
             experiments = sorted([f.name for f in results_dir.iterdir() if f.is_dir()], reverse=True)
             if experiments:
@@ -813,6 +818,9 @@ def main():
                 })
             config["run_name"] = run_name_input
 
+                config.setdefault("config_folder_location", "../")
+                config.setdefault("options_folder_location", "../../options")
+
             # Write config
             config_path = write_config(config, run_name_input)
             st.success(f"Config written to {config_path}")
@@ -825,23 +833,26 @@ def main():
             # Build command based on whether continuing training or starting fresh
             if continue_training:
                 cmd = [
-                    sys.executable, "-u", "experiments/train.py",
-                    "--train-from-prior-results", str(results_dir / prior_experiment),
+                    sys.executable, "-u", "-m", "abx_amr_simulator.training.train",
+                    "--train-from-prior-results", str((results_dir / prior_experiment).resolve()),
                     "--additional-training-episodes", str(additional_episodes),
                     "--seed", str(seed)
                 ]
             else:
+                if not config_path.exists():
+                    st.error(f"Config file not found: {config_path}")
+                    return
                 cmd = [
-                    sys.executable, "-u", "experiments/train.py",
-                    "--config", str(config_path.relative_to(PROJECT_ROOT)),
-                    "--seed", str(seed)
+                    sys.executable, "-u", "-m", "abx_amr_simulator.training.train",
+                    "--umbrella-config", str(config_path.resolve()),
+                    "-p", f"training.seed={int(seed)}"
                 ]
             
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             process = subprocess.Popen(
                 cmd,
-                cwd=PROJECT_ROOT,
+                cwd=CWD,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
