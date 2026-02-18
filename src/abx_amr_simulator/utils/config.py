@@ -329,6 +329,10 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
                     # No component folder context; skip defensively
                     continue
                 component = rel_parts[0]
+                # Skip umbrella configs - they're explicitly handled in copy_map
+                # and should go to umbrella_configs/, not umbrella/
+                if component == "umbrella":
+                    continue
                 sub_rel = rel_parts[1:]
                 dst_dir = base / component
                 for part in sub_rel:

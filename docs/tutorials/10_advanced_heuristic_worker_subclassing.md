@@ -29,7 +29,7 @@ Create a new Python file in `workspace/experiments/options/option_types/heuristi
 
 from typing import Dict, Any
 from abx_amr_simulator.options.defaults.option_types.heuristic.heuristic_option_loader import (
-    HeuristicWorker, load_heuristic_option
+    HeuristicWorker,
 )
 
 
@@ -68,8 +68,16 @@ class ClinicalReasoningHeuristicWorker(HeuristicWorker):
         return patient
 
 
-def load_clinical_reasoning_heuristic(name: str, config: Dict[str, Any]) -> HeuristicWorker:
-    """Loader function for custom worker (delegates to base loader)."""
+def load_clinical_reasoning_heuristic_option(
+    name: str,
+    config: Dict[str, Any],
+) -> HeuristicWorker:
+    """Loader function for custom worker.
+
+    NOTE: The loader name must match the pattern load_{option_type}_option.
+    If option_type is "clinical_reasoning_heuristic", the loader must be
+    named load_clinical_reasoning_heuristic_option.
+    """
     # Validate and extract config using base loader validation logic
     if not isinstance(config, dict):
         raise TypeError(f"Config must be a dict, got {type(config).__name__}")
@@ -89,53 +97,64 @@ def load_clinical_reasoning_heuristic(name: str, config: Dict[str, Any]) -> Heur
     )
 ```
 
-### Step 2: Register Your Custom Loader
+### Step 2: Add a Default Config (Recommended)
 
-Update `workspace/experiments/options/option_types/__init__.py`:
+Create a default config alongside your subclass. For a clinical-reasoning worker,
+stick to the base `HeuristicWorker` fields.
 
-```python
-from .heuristic.my_custom_heuristic import load_clinical_reasoning_heuristic
+```yaml
+# workspace/experiments/options/option_types/heuristic/my_custom_heuristic_config.yaml
+duration: 10
 
-OPTION_LOADERS = {
-    'block': load_block_option,
-    'alternation': load_alternation_option,
-    'heuristic': load_heuristic_option,
-    'clinical_reasoning_heuristic': load_clinical_reasoning_heuristic,  # Add your loader
-}
+action_thresholds:
+    prescribe_A: 0.5
+    prescribe_B: 0.5
+    no_treatment: 0.0
+
+uncertainty_threshold: 10.0
+default_recovery_without_treatment_prob: 0.1
+
 ```
 
-### Step 3: Use in Option Library YAML
+### Step 3: Reference Your Loader Module in the Library YAML
+
+Option libraries are loaded dynamically via `OptionLibraryLoader`, so you just point
+each option at its loader module and default config file.
 
 ```yaml
 # workspace/experiments/options/option_libraries/my_library.yaml
-option_library_name: "clinical_reasoning_single_abx"
-use_relative_uncertainty: false
+library_name: "clinical_reasoning_single_abx"
+description: "Custom heuristic workers with clinical reasoning"
+version: "1.0"
 
 options:
-  CLINICAL_CONSERVATIVE:
-    type: clinical_reasoning_heuristic  # Use your custom type
-    duration: 10
-    action_thresholds:
-      prescribe_A: 0.8
-      no_treatment: 0.0
-    uncertainty_threshold: 2.0
-    default_recovery_without_treatment_prob: 0.1
-  
-  CLINICAL_AGGRESSIVE:
-    type: clinical_reasoning_heuristic
-    duration: 10
-    action_thresholds:
-      prescribe_A: 0.5
-      no_treatment: 0.0
-    uncertainty_threshold: 3.0
+    - option_name: "CLINICAL_CONSERVATIVE"
+        option_type: "clinical_reasoning_heuristic"
+        option_subconfig_file: "../option_types/heuristic/my_custom_heuristic_config.yaml"
+        loader_module: "../option_types/heuristic/my_custom_heuristic.py"
+        config_params_override:
+            action_thresholds:
+                prescribe_A: 0.8
+                no_treatment: 0.0
+            uncertainty_threshold: 2.0
+
+    - option_name: "CLINICAL_AGGRESSIVE"
+        option_type: "clinical_reasoning_heuristic"
+        option_subconfig_file: "../option_types/heuristic/my_custom_heuristic_config.yaml"
+        loader_module: "../option_types/heuristic/my_custom_heuristic.py"
+        config_params_override:
+            action_thresholds:
+                prescribe_A: 0.5
+                no_treatment: 0.0
+            uncertainty_threshold: 3.0
 ```
 
 ### Step 4: Train Your Agent
 
 ```bash
-python experiments/train.py \
-    --config experiments/configs/umbrella_configs/hrl_experiment.yaml \
-    -o "hrl.option_library_config=workspace/experiments/options/option_libraries/my_library.yaml"
+python -m abx_amr_simulator.training.train \
+    --umbrella-config /abs/path/to/umbrella_config.yaml \
+    -p "hrl.option_library=option_libraries/my_library.yaml"
 ```
 
 ---
@@ -255,24 +274,19 @@ A fundamentally different approach to handling incomplete information is **uncer
 
 ### Implementation: UncertaintyModulatedHeuristicWorker
 
-This subclass applies a **discount factor** to expected rewards based on uncertainty score (number of missing/padded attributes):
+This subclass applies a **discount factor** to expected rewards based on uncertainty score (number of missing/padded attributes). The excerpt below is pulled from
+`private_docs/heuristic/uncertainty_modulated_heuristic_worker.py`:
 
 ```python
-# workspace/experiments/options/option_types/heuristic/uncertainty_modulated_heuristic_worker.py
-
 from typing import Any, Dict
 import numpy as np
-from .heuristic_option_loader import HeuristicWorker
+
+from abx_amr_simulator.options.defaults.option_types.heuristic.heuristic_option_loader import (
+    HeuristicWorker,
+)
 
 
 class UncertaintyModulatedHeuristicWorker(HeuristicWorker):
-    """Adjusts expected rewards based on missing patient attributes.
-    
-    Instead of filling in defaults for missing attributes, this worker
-    discounts expected rewards when many attributes are missing, encoding
-    risk-averse behavior under uncertainty.
-    """
-    
     def __init__(
         self,
         name: str,
@@ -296,41 +310,132 @@ class UncertaintyModulatedHeuristicWorker(HeuristicWorker):
         self.uncertainty_modulation_alpha = uncertainty_modulation_alpha
         self.max_uncertainty = max_uncertainty
         self.use_relative_uncertainty = use_relative_uncertainty
-    
+
+        valid_types = ['none', 'linear', 'exponential', 'conservative']
+        if self.uncertainty_modulation_type not in valid_types:
+            raise ValueError(
+                f"Invalid uncertainty_modulation_type: {self.uncertainty_modulation_type}. "
+                f"Must be one of {valid_types}"
+            )
+
     def _adjust_expected_reward_for_uncertainty(
         self,
         expected_reward: float,
         uncertainty_score: float,
     ) -> float:
-        """Apply modulation strategy to discount expected reward."""
-        if self.uncertainty_modulation_type == 'none' or expected_reward <= 0:
+        if self.uncertainty_modulation_type == 'none':
             return expected_reward
-        
+
+        if expected_reward <= 0:
+            return expected_reward
+
+        if uncertainty_score == 0:
+            return expected_reward
+
         alpha = self.uncertainty_modulation_alpha
-        
+
         if self.uncertainty_modulation_type == 'linear':
-            # Linear penalty: adjusted = expected * (1 - α * uncertainty / max)
-            normalized = min(1.0, uncertainty_score / self.max_uncertainty)
-            discount = max(0.0, 1.0 - alpha * normalized)
-            return expected_reward * discount
-            
+            normalized_uncertainty = min(1.0, uncertainty_score / self.max_uncertainty)
+            discount_factor = max(0.0, 1.0 - alpha * normalized_uncertainty)
+            adjusted = expected_reward * discount_factor
+
         elif self.uncertainty_modulation_type == 'exponential':
-            # Exponential decay: adjusted = expected * exp(-α * uncertainty)
-            discount = np.exp(-alpha * uncertainty_score)
-            return expected_reward * discount
-            
+            discount_factor = np.exp(-alpha * uncertainty_score)
+            adjusted = expected_reward * discount_factor
+
         elif self.uncertainty_modulation_type == 'conservative':
-            # Hyperbolic: adjusted = expected / (1 + α * uncertainty)
-            discount = 1.0 / (1.0 + alpha * uncertainty_score)
-            return expected_reward * discount
-        
-        return expected_reward
-    
+            discount_factor = 1.0 / (1.0 + alpha * uncertainty_score)
+            adjusted = expected_reward * discount_factor
+
+        else:
+            adjusted = expected_reward
+
+        return adjusted
+
     def decide(self, env_state: Dict[str, Any]) -> np.ndarray:
-        """Override to apply uncertainty modulation before threshold comparison."""
-        # [Standard decide() logic, but modulate expected_rewards before threshold check]
-        # See full implementation in uncertainty_modulated_heuristic_worker.py
-        pass  # Abbreviated for tutorial
+        patients = env_state['patients']
+        num_patients = env_state['num_patients']
+        current_amr_levels = env_state['current_amr_levels']
+        reward_calculator = env_state['reward_calculator']
+
+        antibiotic_names = [
+            key.replace('prescribe_', '')
+            for key in self.action_thresholds.keys()
+            if key.startswith('prescribe_')
+        ]
+
+        action_keys = ['no_treatment'] + [f'prescribe_{abx}' for abx in antibiotic_names]
+        action_to_index = {action: i for i, action in enumerate(action_keys)}
+
+        actions = []
+
+        for patient in patients:
+            if self.use_relative_uncertainty:
+                uncertainty = self.compute_relative_uncertainty_score(patient=patient)
+            else:
+                patient_generator = env_state.get('patient_generator')
+                if patient_generator is None:
+                    raise ValueError(
+                        "env_state must contain 'patient_generator' for absolute uncertainty calculation"
+                    )
+                total_attrs = len(patient_generator.visible_patient_attributes)
+                uncertainty = self.compute_absolute_uncertainty_score(
+                    patient=patient,
+                    total_observable_attrs=total_attrs,
+                )
+
+            if uncertainty > self.uncertainty_threshold:
+                actions.append(action_to_index['no_treatment'])
+                continue
+
+            expected_rewards = self.compute_expected_reward(
+                patient=patient,
+                antibiotic_names=antibiotic_names,
+                current_amr_levels=current_amr_levels,
+                reward_calculator=reward_calculator,
+            )
+
+            adjusted_rewards = {
+                action: self._adjust_expected_reward_for_uncertainty(
+                    expected_reward=reward,
+                    uncertainty_score=uncertainty,
+                )
+                for action, reward in expected_rewards.items()
+            }
+
+            best_action = 'no_treatment'
+            best_reward = adjusted_rewards.get('no_treatment', 0.0)
+
+            for action_key in action_keys:
+                adjusted_reward = adjusted_rewards.get(action_key, 0.0)
+                threshold = self.action_thresholds.get(action_key, 0.0)
+
+                if adjusted_reward >= threshold and adjusted_reward > best_reward:
+                    best_action = action_key
+                    best_reward = adjusted_reward
+
+            actions.append(action_to_index[best_action])
+
+        return np.array(actions, dtype=np.int32)
+
+
+def load_uncertainty_modulated_heuristic_option(
+    name: str,
+    config: Dict[str, Any],
+) -> UncertaintyModulatedHeuristicWorker:
+    return UncertaintyModulatedHeuristicWorker(
+        name=name,
+        duration=config['duration'],
+        action_thresholds=config['action_thresholds'],
+        uncertainty_threshold=config.get('uncertainty_threshold', 2.0),
+        default_recovery_without_treatment_prob=config.get(
+            'default_recovery_without_treatment_prob', 0.1
+        ),
+        uncertainty_modulation_type=config.get('uncertainty_modulation_type', 'none'),
+        uncertainty_modulation_alpha=config.get('uncertainty_modulation_alpha', 0.5),
+        max_uncertainty=config.get('max_uncertainty', 6),
+        use_relative_uncertainty=config.get('use_relative_uncertainty', True),
+    )
 ```
 
 ### Modulation Strategies
@@ -363,57 +468,64 @@ adjusted_reward = expected_reward / (1 + α × uncertainty)
 
 ### Configuration Example
 
-```yaml
-# workspace/experiments/options/option_libraries/uncertainty_modulated_library.yaml
-option_library_name: "uncertainty_modulated_single_abx"
-use_relative_uncertainty: true
+The default config below is pulled from
+`private_docs/heuristic/uncertainty_modulated_heuristic_config.yaml`:
 
-options:
-  RISK_AVERSE_CONSERVATIVE:
-    type: uncertainty_modulated_heuristic  # Custom type
-    duration: 10
-    action_thresholds:
-      prescribe_A: 0.5
-      no_treatment: 0.0
-    uncertainty_modulation_type: 'conservative'  # Hyperbolic
-    uncertainty_modulation_alpha: 1.0  # Significant discounting
-    max_uncertainty: 6  # All 6 attributes could be missing
-    use_relative_uncertainty: true  # Count -1 values
-  
-  RISK_NEUTRAL:
-    type: uncertainty_modulated_heuristic
-    duration: 10
-    action_thresholds:
-      prescribe_A: 0.5
-      no_treatment: 0.0
-    uncertainty_modulation_type: 'none'  # No discounting
-    uncertainty_modulation_alpha: 0.0
-  
-  ULTRA_CONSERVATIVE:
-    type: uncertainty_modulated_heuristic
-    duration: 10
-    action_thresholds:
-      prescribe_A: 0.7  # Higher threshold
-      no_treatment: 0.0
-    uncertainty_modulation_type: 'exponential'  # Aggressive
-    uncertainty_modulation_alpha: 0.8
+```yaml
+duration: 10
+
+action_thresholds:
+    prescribe_A: 0.5
+    prescribe_B: 0.5
+    no_treatment: 0.0
+
+uncertainty_threshold: 10.0
+default_recovery_without_treatment_prob: 0.1
+
+uncertainty_modulation_type: 'linear'
+uncertainty_modulation_alpha: 0.5
+max_uncertainty: 6
+use_relative_uncertainty: true
 ```
 
-### Registering the Loader
+Then reference it in your option library (same structure as the default option libraries):
 
-Add to `workspace/experiments/options/option_types/__init__.py`:
+```yaml
+# workspace/experiments/options/option_libraries/uncertainty_modulated_library.yaml
+library_name: "uncertainty_modulated_single_abx"
+description: "Uncertainty-modulated heuristic workers"
+version: "1.0"
 
-```python
-from .heuristic.uncertainty_modulated_heuristic_worker import (
-    load_uncertainty_modulated_heuristic_option
-)
+options:
+    - option_name: "RISK_AVERSE_CONSERVATIVE"
+        option_type: "uncertainty_modulated_heuristic"
+        option_subconfig_file: "../option_types/heuristic/uncertainty_modulated_heuristic_config.yaml"
+        loader_module: "../option_types/heuristic/uncertainty_modulated_heuristic_worker.py"
+        config_params_override:
+            action_thresholds:
+                prescribe_A: 0.5
+                no_treatment: 0.0
+            uncertainty_modulation_type: "conservative"
+            uncertainty_modulation_alpha: 1.0
 
-OPTION_LOADERS = {
-    'block': load_block_option,
-    'alternation': load_alternation_option,
-    'heuristic': load_heuristic_option,
-    'uncertainty_modulated_heuristic': load_uncertainty_modulated_heuristic_option,
-}
+    - option_name: "RISK_NEUTRAL"
+        option_type: "uncertainty_modulated_heuristic"
+        option_subconfig_file: "../option_types/heuristic/uncertainty_modulated_heuristic_config.yaml"
+        loader_module: "../option_types/heuristic/uncertainty_modulated_heuristic_worker.py"
+        config_params_override:
+            uncertainty_modulation_type: "none"
+            uncertainty_modulation_alpha: 0.0
+
+    - option_name: "ULTRA_CONSERVATIVE"
+        option_type: "uncertainty_modulated_heuristic"
+        option_subconfig_file: "../option_types/heuristic/uncertainty_modulated_heuristic_config.yaml"
+        loader_module: "../option_types/heuristic/uncertainty_modulated_heuristic_worker.py"
+        config_params_override:
+            action_thresholds:
+                prescribe_A: 0.7
+                no_treatment: 0.0
+            uncertainty_modulation_type: "exponential"
+            uncertainty_modulation_alpha: 0.8
 ```
 
 ### Use Case: Heterogeneous Patient Visibility

@@ -5,10 +5,8 @@ import yaml
 
 import streamlit as st
 
-# Project root (repo root) needed for package-bundled assets
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-# Current working directory for user results
-CWD = Path.cwd()
+# Project root (user workspace) for results and marker files
+PROJECT_ROOT = Path(os.environ.get("ABX_PROJECT_ROOT", Path.cwd())).resolve()
 
 
 def get_results_directory() -> Path:
@@ -22,7 +20,8 @@ def get_results_directory() -> Path:
     Returns:
         Path: Absolute path to results directory (creates if doesn't exist)
     """
-    results_dir_str = os.environ.get('ABX_RESULTS_DIR', './results')
+    project_root = Path(os.environ.get("ABX_PROJECT_ROOT", Path.cwd())).resolve()
+    results_dir_str = os.environ.get('ABX_RESULTS_DIR', str(project_root / "results"))
     results_dir = Path(results_dir_str).resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
     return results_dir

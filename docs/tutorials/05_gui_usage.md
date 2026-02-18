@@ -1,8 +1,10 @@
 # Tutorial 5: GUI Experiment Runner and Viewer
 
-**Goal**: Learn to use the Streamlit GUI applications for configuring experiments, launching training runs, and analyzing results.
+**Goal**: Learn to use the Streamlit GUI applications for lightweight experiment configuration, launching training runs, and browsing results.
 
 **Prerequisites**: Completed Tutorial 1 (Basic Training Workflow) and Tutorial 2 (Config Scaffolding)
+
+**Scope**: The GUI is designed for **lightweight workflows only**. For HRL, optimization, or advanced customization, use the CLI as documented in other tutorials.
 
 ---
 
@@ -10,173 +12,196 @@
 
 The `abx_amr_simulator` package includes two Streamlit GUI applications:
 
-1. **Experiment Runner** — Interactive interface for configuring and launching training runs
-2. **Experiment Viewer** — Browse completed experiments, view configs, and explore diagnostic plots
+1. **Experiment Runner** — Interactive interface for configuring basic training runs
+2. **Experiment Viewer** — Browse completed experiments and view configs
 
-Both apps are accessible via console entry points or direct Streamlit commands.
+Both apps treat your current working directory as the project root and look for
+configs in `./experiments/configs/`.
+
+**Important**: The GUI does **not** support HRL or Optuna workflows—use CLI tutorials for those.
 
 ---
 
-## Step 1: Launch the Experiment Runner
+## Step 1: Set Up Your Project
 
-### Option A: Console Entry Point (Recommended)
+The GUI expects you to run it from your project root (e.g., `myproject/`) where you have:
+
+```
+myproject/
+├── experiments/
+│   ├── configs/
+│   │   ├── umbrella_configs/
+│   │   │   └── base_experiment.yaml
+│   │   ├── environment/
+│   │   ├── patient_generator/
+│   │   ├── reward_calculator/
+│   │   └── agent_algorithm/
+│   └── options/     # Optional (HRL only, not GUI-supported)
+├── results/         # Created automatically if missing
+```
+
+If you haven't set up configs yet, run from `myproject/`:
 
 ```bash
+python -c "from abx_amr_simulator.utils import setup_config_folders_with_defaults; setup_config_folders_with_defaults('experiments')"
+```
+
+This creates `experiments/configs/` with default subconfig files and umbrella configs.
+
+---
+
+## Step 2: Launch the Experiment Runner
+
+### From your project directory:
+
+```bash
+cd myproject
 abx-amr-simulator-experiment-runner
 ```
 
-This launches the app on `http://localhost:8501`.
+This launches the app on `http://localhost:8501` and uses your current directory as the project root:
+- Results saved to `./results/`
+- Configs loaded from `./experiments/configs/umbrella_configs/`
+- Working directory printed on startup for verification
 
-### Option B: Direct Streamlit Command
+**Custom results directory** (optional):
 
 ```bash
-cd /path/to/your/workspace
-streamlit run /path/to/abx_amr_simulator/src/abx_amr_simulator/gui/experiment_runner.py
+abx-amr-simulator-experiment-runner --results-dir /path/to/custom/results
 ```
 
-**Note**: The console entry point is more convenient and doesn't require knowing the package installation path.
+---
+
+## Step 3: Using the Experiment Runner
+
+The Experiment Runner provides a simplified interface for basic training workflows:
+
+### 1. Config Selection (Sidebar)
+- **Base config**: Select umbrella config from `experiments/configs/umbrella_configs/` (defaults to `base_experiment.yaml`)
+- **Results directory**: Shown for reference (defaults to `./results/`)
+- **Run name prefix**: Give your experiment a descriptive name
+
+### 2. Environment Settings
+- **Core environment**: Number of patients, max timesteps, AMR observation settings
+- **Observable patient attributes**: Choose which patient features the agent can observe (minimum: `prob_infected`)
+- **Antibiotics & Crossresistance**: Configure antibiotic parameters (leak rate, AMR dynamics, crossresistance)
+
+### 3. Reward Calculator
+- **Lambda weight**: Balance between AMR penalty (community) and clinical benefit (individual patients)
+- **Per-antibiotic rewards**: Clinical benefit, failure penalty, adverse effect penalty
+
+### 4. Patient Generator
+- **Observable attributes**: Select which patient attributes to include in observations
+- **Per-attribute configuration**: Set distribution (constant/gaussian), observation noise/bias, clipping bounds
+
+### 5. Agent Algorithm
+- **Algorithm**: PPO, A2C (DQN if available)
+- **Network architecture**: MLP policy with configurable hidden layers
+- **Hyperparameters**: Learning rate, batch size, GAE lambda, etc.
+
+### 6. Training Settings (Sidebar)
+- **Total episodes**: How many episodes to train
+- **Save/eval frequency**: How often to checkpoint and evaluate
+- **Seed**: Random seed for reproducibility
+
+### 7. Launch Training
+Click **"Start Training Run"** to:
+- Generate umbrella config with GUI settings
+- Launch training via `python -m abx_amr_simulator.training.train`
+- Stream terminal output in the GUI
+- Save results to `results/<run_name>_<timestamp>/`
+
+**Continue Training**: Check the sidebar option to resume from a prior experiment (adds more episodes to an existing run).
+
+### What the GUI Does NOT Support
+- **HRL workflows**: Use [Tutorial 06](06_hrl_quickstart.md) for option-based training
+- **Optuna optimization**: Use [Tutorial 04](04_optimization.md) for hyperparameter tuning
+- **Advanced parameter overrides**: Use CLI with `-p` flags for complex customization
+- **Batch sweeps**: Use CLI workflows for scripted parameter sweeps
 
 ---
 
-## Step 2: Using the Experiment Runner
+## Step 4: Launch the Experiment Viewer
 
-### Interface Overview
-
-The Experiment Runner has several sections:
-
-1. **Project Setup** — Select your workspace directory (containing `experiments/`, `results/`, etc.)
-2. **Config Selection** — Choose umbrella config and component subconfigs
-3. **Parameter Overrides** — Modify config values via interactive widgets
-4. **Training Settings** — Set run name, seed, total episodes, eval frequency
-5. **Launch Button** — Start training with a single click
-
-### Workflow Example
-
-1. **Set workspace directory**:
-   - Click "Browse" in the Project Setup section
-   - Select your `my_project/` directory
-
-2. **Choose configs**:
-   - **Umbrella Config**: Select from `experiments/configs/umbrella_configs/`
-   - **Component Subconfigs**: Optionally override default subconfigs
-
-3. **Override parameters** (optional):
-   - Click "Add Parameter Override"
-   - Enter key (e.g., `reward_calculator.lambda_weight`) and value (e.g., `0.8`)
-
-4. **Configure training**:
-   - **Run Name**: Enter a descriptive name (e.g., `lambda_sweep_clinical`)
-   - **Seed**: Set random seed for reproducibility
-   - **Total Episodes**: Set training length
-   - **Eval Frequency**: How often to evaluate the agent
-
-5. **Launch training**:
-   - Click "Launch Training"
-   - The app runs training in a background process
-   - Monitor progress in the terminal output section
-
-### Advanced Features
-
-- **Load Best Params**: Load tuned hyperparameters from prior Optuna runs
-- **Skip If Exists**: Avoid overwriting completed experiments
-- **Train from Prior Results**: Continue training from a checkpoint
-
----
-
-## Step 3: Launch the Experiment Viewer
-
-### Option A: Console Entry Point (Recommended)
+### From your project directory:
 
 ```bash
+cd myproject
 abx-amr-simulator-experiment-viewer
 ```
 
-This launches the app on `http://localhost:8502` (different port than the runner).
+This launches the app on `http://localhost:8502` (different port than the runner, so you can run both simultaneously).
 
-### Option B: Direct Streamlit Command
+**Custom results directory** (optional):
 
 ```bash
-streamlit run /path/to/abx_amr_simulator/src/abx_amr_simulator/gui/experiment_viewer.py --server.port 8502
+abx-amr-simulator-experiment-viewer --results-dir /path/to/custom/results
 ```
 
-**Why port 8502?** This lets you run both apps simultaneously—configure in the runner while viewing results in the viewer.
-
 ---
 
-## Step 4: Using the Experiment Viewer
+## Step 5: Using the Experiment Viewer
+
+The Experiment Viewer provides a read-only interface to browse completed experiments:
 
 ### Interface Overview
+1. **Results directory**: Displayed at top (defaults to `./results/`)
+2. **Experiments list**: All experiment folders with timestamps
+3. **Config inspector**: View the `full_agent_env_config.yaml` used for each run
+4. **Basic metadata**: Run name, timestamp, completion status
 
-The Experiment Viewer has several tabs:
+### Workflow
+1. Launch the viewer from your project directory
+2. Select an experiment from the dropdown
+3. View its configuration in YAML format
+4. Compare configs across multiple runs
 
-1. **Experiments List** — Browse all completed experiments
-2. **Config Inspector** — View full configuration used for each run
-3. **Diagnostic Plots** — Explore training metrics and environment behavior
-4. **Evaluation Plots** — View policy performance and action analysis
-
-### Workflow Example
-
-1. **Select results directory**:
-   - Click "Browse" and select `my_project/results/`
-
-2. **Browse experiments**:
-   - The app lists all experiment folders (with timestamps)
-   - Click on an experiment to view details
-
-3. **Inspect configuration**:
-   - Switch to "Config Inspector" tab
-   - View the full `config.yaml` used for that run
-   - See all parameter values in structured format
-
-4. **View diagnostic plots**:
-   - Switch to "Diagnostic Plots" tab
-   - Explore:
-     - Observation error distributions
-     - Reward-error correlations
-     - AMR dynamics over time
-
-5. **View evaluation plots**:
-   - Switch to "Evaluation Plots" tab
-   - Explore:
-     - Performance curves (rewards, AMR levels, prescribing rates)
-     - Action-attribute associations (which patient features drive actions)
+**Note**: The viewer shows basic experiment information only. For advanced analysis (diagnostic plots, evaluation metrics), use the CLI analysis tools documented in other tutorials.
 
 ---
 
-## Step 5: Running Both Apps Simultaneously
+## Step 6: Running Both Apps Simultaneously
 
-You can run both the Experiment Runner and Viewer at the same time:
+Launch both apps in separate terminals from your project directory:
 
 ```bash
-# Terminal 1
+# Terminal 1 (Experiment Runner)
+cd myproject
 abx-amr-simulator-experiment-runner
 
-# Terminal 2
+# Terminal 2 (Experiment Viewer)
+cd myproject
 abx-amr-simulator-experiment-viewer
 ```
 
-This lets you:
-- Launch new training runs in the Runner (port 8501)
-- Monitor completed runs in the Viewer (port 8502)
-- Switch between tabs in your browser
+**Or use the dual launcher**:
+
+```bash
+cd myproject
+abx-amr-simulator-launch-gui
+```
+
+This starts both apps and opens them in separate browser tabs (runner on port 8501, viewer on port 8502).
 
 ---
 
 ## GUI vs CLI: When to Use Each
 
 ### Use the GUI when:
-- You want interactive exploration of configuration options
-- You're new to the package and want guided setup
-- You prefer visual feedback and point-and-click workflows
-- You want to quickly browse and compare completed experiments
+- You want interactive exploration of basic config options
+- You're new to the package and learning the config structure
+- You need quick visual feedback on parameter choices
+- You want to browse and compare completed experiments quickly
 
 ### Use the CLI when:
-- You need to run large parameter sweeps (shell scripts)
-- You want reproducible workflows (version-controlled configs)
-- You're running experiments on remote servers (no GUI)
-- You need fine-grained control over all parameters
+- **HRL workflows**: Option libraries, PPO/RPPO training, diagnostics
+- **Hyperparameter optimization**: Optuna sweeps with PostgreSQL backend
+- **Batch parameter sweeps**: Experiment sets with JSON-defined grids
+- **Remote execution**: SSH/cluster jobs without GUI access
+- **Reproducible workflows**: Version-controlled config files
+- **Advanced customization**: Complex parameter overrides, subclassing
 
-**Recommendation**: Use the GUI for learning and exploration, then transition to CLI for production workflows.
+**Recommendation**: Use the GUI for initial learning and lightweight experiments, then transition to CLI for production workflows.
 
 ---
 
@@ -184,35 +209,48 @@ This lets you:
 
 ### "Address already in use" error
 
-**Solution**: Another Streamlit app is running on the same port. Either:
-1. Stop the other app
-2. Use a different port: `streamlit run ... --server.port 8503`
+**Cause**: Another Streamlit app is running on the same port.
 
-### GUI doesn't show my experiments
+**Solution**:
+1. Stop the other app (Ctrl+C in its terminal)
+2. Or use a different port: `abx-amr-simulator-experiment-runner --results-dir . & sleep 2 && streamlit run ... --server.port 8503`
 
-**Solution**: Make sure you've selected the correct results directory. The Viewer looks for folders inside `results/` with timestamps in their names.
+### "Working directory: /wrong/path"
 
-### Parameter override doesn't work
+**Cause**: You launched the GUI from the wrong directory.
 
-**Solution**: Check that you're using the correct dot notation for nested config keys. Example:
-- ✓ Correct: `reward_calculator.lambda_weight`
-- ✗ Incorrect: `lambda_weight` or `reward_calculator/lambda_weight`
+**Solution**: Always launch from your project root (e.g., `cd myproject && abx-amr-simulator-experiment-runner`)
+
+### GUI doesn't show my configs/experiments
+
+**Cause**: Missing `experiments/configs/umbrella_configs/` or `results/` directories.
+
+**Solution**: Run `setup_config_folders_with_defaults('experiments')` from your project root (see Step 1).
+
+### Training command fails with "Config not found"
+
+**Cause**: GUI-generated config uses relative paths, but your project structure doesn't match expectations.
+
+**Solution**: Ensure you have `experiments/configs/` with component subfolders, and `results/` at project root. The GUI reads umbrella configs from `experiments/configs/umbrella_configs/`.
 
 ---
 
 ## What's Next?
 
-✅ You've learned to use the GUI!
+✅ You've learned to use the GUI for lightweight workflows!
 
 **Next tutorials**:
-- **Tutorial 6**: Train hierarchical RL agents with option libraries
-- **Tutorial 10**: Run experiment sets with JSON-defined parameter sweeps
+- **Tutorial 06**: [HRL Quick Start](06_hrl_quickstart.md) — Train hierarchical RL agents with option libraries (CLI-only)
+- **Tutorial 04**: [Optimization](04_optimization.md) — Hyperparameter tuning with Optuna (CLI-only)
+- **Tutorial 10**: [Advanced Heuristic Worker Subclassing](10_advanced_heuristic_worker_subclassing.md) — Extend heuristic options (CLI-only)
 
 ---
 
 ## Key Takeaways
 
-1. **Two GUI apps**: Experiment Runner (config/launch) and Experiment Viewer (browse/analyze)
-2. **Different ports**: Runner on 8501, Viewer on 8502 (run simultaneously)
-3. **Console entry points**: `abx-amr-simulator-experiment-runner` and `abx-amr-simulator-experiment-viewer`
-4. **Complementary to CLI**: GUI for exploration, CLI for production workflows
+1. **Lightweight scope**: GUI supports basic PPO/A2C training only—no HRL, no optimization
+2. **Working directory**: Always launch from project root (`myproject/`) where `experiments/configs/` and `results/` live
+3. **Two apps**: Experiment Runner (configure/launch) and Experiment Viewer (browse)
+4. **Dual launcher**: `abx-amr-simulator-launch-gui` starts both apps simultaneously
+5. **Different ports**: Runner on 8501, Viewer on 8502
+6. **CLI for advanced features**: HRL, Optuna, experiment sets, complex overrides

@@ -5,7 +5,7 @@ Entry point for launching the Experiment Runner (experiment_runner.py) Streamlit
 Allows users to launch from anywhere with optional custom results directory.
 
 Usage:
-    abx-amr-simulator-experiment-runner                                    # Uses workspace/results/
+    abx-amr-simulator-experiment-runner                                    # Uses project_root/results/
     abx-amr-simulator-experiment-runner --results-dir /path/to/results    # Uses custom results directory
 """
 
@@ -16,13 +16,7 @@ from pathlib import Path
 import argparse
 
 
-def get_workspace_dir() -> Path:
-    """Find the workspace directory (assumes project structure is stable)."""
-    # This script is at: project_root/src/abx_amr_simulator/gui/runner_entry.py
-    # Go up to project_root, then to workspace
-    project_root = Path(__file__).resolve().parents[3]
-    workspace_dir = project_root / "workspace"
-    return workspace_dir
+# Removed get_workspace_dir() - entry points should respect user's CWD as project root
 
 
 def main():
@@ -32,7 +26,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  abx-amr-simulator-experiment-runner                                    # Default: uses workspace/results/
+    abx-amr-simulator-experiment-runner                                    # Default: uses project_root/results/
   abx-amr-simulator-experiment-runner --results-dir /path/to/results    # Custom results directory
         """,
     )
@@ -40,11 +34,14 @@ Examples:
         "--results-dir",
         type=str,
         default=None,
-        help="Absolute path to results directory (default: workspace/results/)",
+        help="Absolute path to results directory (default: project_root/results/)",
     )
     
     args = parser.parse_args()
     
+    # Treat current working directory as the project root.
+    os.environ["ABX_PROJECT_ROOT"] = str(Path.cwd().resolve())
+
     # Determine results directory
     if args.results_dir:
         results_dir = Path(args.results_dir).resolve()
@@ -55,9 +52,8 @@ Examples:
         os.environ["ABX_RESULTS_DIR"] = str(results_dir)
         print(f"✅ Using results directory: {results_dir}")
     else:
-        # Default to workspace/results
-        workspace_dir = get_workspace_dir()
-        results_dir = workspace_dir / "results"
+        # Default to ./results in project root
+        results_dir = Path.cwd() / "results"
         results_dir.mkdir(parents=True, exist_ok=True)
         os.environ["ABX_RESULTS_DIR"] = str(results_dir)
         print(f"✅ Using default results directory: {results_dir}")
@@ -72,13 +68,9 @@ Examples:
     
     # Launch Streamlit app
     print(f"🚀 Launching Experiment Runner...")
+    print(f"📂 Working directory: {os.getcwd()}")
     try:
-        # Change to workspace directory for relative path resolution
-        workspace_dir = get_workspace_dir()
-        os.chdir(workspace_dir)
-        print(f"📂 Working directory: {os.getcwd()}")
-        
-        # Run streamlit
+        # Run streamlit - subprocess inherits current working directory
         subprocess.run(
             ["streamlit", "run", str(runner_script)],
             check=False,
