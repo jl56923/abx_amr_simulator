@@ -20,6 +20,7 @@ PROJECT_ROOT = Path(os.environ.get("ABX_PROJECT_ROOT", Path.cwd())).resolve()
 
 from abx_amr_simulator.utils import load_config, apply_param_overrides
 from abx_amr_simulator.gui.patient_gen_ui_helper import migrate_old_config_to_new, build_attribute_ui_section
+from abx_amr_simulator.gui.config_validation import validate_umbrella_config_references
 
 
 def get_results_directory() -> Path:
@@ -65,6 +66,8 @@ def list_config_files():
     
     configs = sorted([f for f in umbrella_dir.glob("*.yaml") if f.is_file()])
     return configs
+
+
 
 
 def get_default_component_configs() -> Dict[str, Path]:
@@ -123,6 +126,13 @@ def main():
     
     selected_name = st.sidebar.selectbox("Base config", config_names, index=default_idx)
     base_config_path = config_paths[selected_name]  # Use the actual full path
+    validation_errors, validation_warnings = validate_umbrella_config_references(base_config_path)
+    for warning in validation_warnings:
+        st.warning(warning)
+    if validation_errors:
+        for error in validation_errors:
+            st.error(error)
+        st.stop()
     config = load_config(str(base_config_path))
 
     st.sidebar.markdown("**Results directory**")
@@ -872,7 +882,6 @@ def main():
             env["PYTHONUNBUFFERED"] = "1"
             process = subprocess.Popen(
                 cmd,
-                cwd=PROJECT_ROOT,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

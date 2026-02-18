@@ -21,7 +21,7 @@ This tutorial covers:
 
 ## 1. Scaffold Tuning Configs
 
-If you do not already have tuning configs, scaffold the defaults (from `my_project/experiments/` directory):
+If you do not already have tuning configs, scaffold the defaults (from `my_first_project/experiments/` directory):
 
 ```bash
 python -m abx_amr_simulator.training.setup_tuning --target-path .
@@ -121,10 +121,10 @@ tuning_config:
 ```bash
 # From my_project/ directory
 # Verify your location first:
-pwd  # Should show: .../my_project
+pwd  # Should show: .../my_first_project
 
 python -m abx_amr_simulator.training.tune \
-  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  --config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   --tuning-config $(pwd)/experiments/tuning_configs/ppo_tuning_default.yaml \
   --run-name ppo_baseline_tune
 ```
@@ -234,7 +234,7 @@ The package includes ready-to-use scripts:
 ### Basic Single-Worker Tuning
 
 ```bash
-# From my_project/ directory
+# From my_first_project/ directory
 python -m abx_amr_simulator.training.tune \
   --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   --tuning-config $(pwd)/experiments/tuning_configs/ppo_tuning_default.yaml \
@@ -246,7 +246,7 @@ python -m abx_amr_simulator.training.tune \
 Customize the tuning experiment with subconfig/parameter overrides:
 
 ```bash
-# From my_project/ directory
+# From my_first_project/ directory
 python -m abx_amr_simulator.training.tune \
   --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   --tuning-config $(pwd)/experiments/tuning_configs/ppo_tuning_default.yaml \
@@ -380,7 +380,7 @@ Each trial logs `mean_reward`, `std_reward`, and `stability_penalty` for debuggi
 Use the most recent optimization run by experiment name:
 
 ```bash
-# From my_project/ directory
+# From my_first_project/ directory
 python -m abx_amr_simulator.training.train \
   --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   --load-best-params-by-experiment-name ppo_baseline_tune

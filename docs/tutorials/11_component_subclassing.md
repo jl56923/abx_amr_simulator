@@ -56,7 +56,7 @@ Let's add a new patient attribute `infection_severity` ∈ [0,1] that modulates 
 #### Step 1: Subclass PatientGenerator
 
 ```python
-# my_project/custom_components/severity_patient_generator.py
+# my_first_project/custom_components/severity_patient_generator.py
 
 from dataclasses import dataclass
 from typing import List
@@ -166,7 +166,7 @@ class SeverityPatientGenerator(BasePatientGenerator):
 #### Step 2: Subclass RewardCalculator
 
 ```python
-# my_project/custom_components/severity_reward_calculator.py
+# my_first_project/custom_components/severity_reward_calculator.py
 
 from typing import List
 import numpy as np
@@ -262,7 +262,7 @@ class SeverityRewardCalculator(BaseRewardCalculator):
 #### Step 3: Create Factory Functions
 
 ```python
-# my_project/custom_components/factories.py
+# my_first_project/custom_components/factories.py
 
 from pathlib import Path
 from abx_amr_simulator.utils import load_config
@@ -307,7 +307,7 @@ def create_severity_reward_calculator(config: dict, seed: int = None) -> Severit
 Modify your training script to use custom components:
 
 ```python
-# my_project/train_with_custom_components.py
+# my_first_project/train_with_custom_components.py
 
 from abx_amr_simulator.utils import load_config
 from abx_amr_simulator.core import ABXAMREnv
@@ -343,7 +343,7 @@ For even deeper customization (e.g., novel AMR dynamics beyond leaky balloon), s
 ### Example: Multi-Compartment AMR Model
 
 ```python
-# my_project/custom_components/compartment_env.py
+# my_first_project/custom_components/compartment_env.py
 
 from abx_amr_simulator.core import ABXAMREnv
 

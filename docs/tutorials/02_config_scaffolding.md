@@ -20,25 +20,25 @@ This tutorial shows how to use each utility and explains the resulting folder st
 
 ## Step 1: Create Your Project Directory
 
-Start by creating a project directory:
+Start by creating a project directory (consistent with Tutorial 1):
 
 ```bash
-mkdir my_project
-cd my_project
+mkdir my_first_project
+cd my_first_project
 mkdir experiments
 cd experiments
 
 # Verify you're in the correct directory
-pwd  # Should show: .../my_project/experiments
+pwd  # Should show: .../my_first_project/experiments
 ```
 
 Your workspace should look like:
 ```
-my_project/
+my_first_project/
 └── experiments/
 ```
 
-**Path validation tip**: Many commands in this tutorial refer to "From my_project/ directory" or "From my_project/experiments/ directory". Always verify your location with `pwd` before running commands to avoid "file not found" errors.
+**Path validation tip**: Many commands in this tutorial refer to "From my_first_project/ directory" or "From my_first_project/experiments/ directory". Always verify your location with `pwd` before running commands to avoid "file not found" errors.
 
 ---
 
@@ -65,7 +65,9 @@ experiments/
     │   ├── ppo.yaml
     │   ├── a2c.yaml
     │   ├── hrl_ppo.yaml
-    │   └── hrl_rppo.yaml
+    │   ├── hrl_rppo.yaml
+    │   ├── mbpo.yaml
+    │   └── recurrent_ppo.yaml
     ├── environment/
     │   └── default.yaml
     ├── patient_generator/
@@ -162,10 +164,10 @@ You'll learn how to use these in Tutorial 4 (Optimization).
 
 ## Step 5: Complete Project Structure
 
-After running all three scaffolding utilities, your `my_project/` directory should look like:
+After running all three scaffolding utilities, your `my_first_project/` directory should look like:
 
 ```
-my_project/
+my_first_project/
 ├── experiments/
 │   ├── configs/
 │   │   ├── umbrella_configs/
@@ -190,7 +192,7 @@ my_project/
 Check that all folders exist:
 
 ```bash
-cd my_project
+cd my_first_project
 ls -R experiments/
 ```
 
@@ -201,7 +203,7 @@ You should see all the scaffolded folders and default config files.
 ## Quick Reference: Scaffolding Commands
 
 ```bash
-# From within my_project/experiments/, run:
+# From within my_first_project/experiments/, run:
 
 # 1. Config scaffolding (Python API)
 python -c "from abx_amr_simulator.utils import setup_config_folders_with_defaults; setup_config_folders_with_defaults('.')"

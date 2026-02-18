@@ -11,5 +11,8 @@ from pathlib import Path
 # This makes the import available to all test files without per-file sys.path manipulation
 _tests_root = Path(__file__).parent
 _utils_path = _tests_root / "unit" / "utils"
+_src_path = _tests_root.parent / "src"
+if str(_src_path) not in sys.path:
+    sys.path.insert(0, str(_src_path))
 if str(_utils_path) not in sys.path:
     sys.path.insert(0, str(_utils_path))

@@ -8,10 +8,10 @@
 
 ## Overview: The Configuration Hierarchy
 
-Before diving into customization, understand how configurations are organized. After completing Tutorial 2 (Config Scaffolding), your `my_project/experiments/` directory contains:
+Before diving into customization, understand how configurations are organized. After completing Tutorial 2 (Config Scaffolding), your `my_first_project/experiments/` directory contains:
 
 ```
-my_project/
+my_first_project/
 ├── experiments/
 │   └── configs/
 │       ├── umbrella_configs/
@@ -23,9 +23,13 @@ my_project/
 │       ├── patient_generator/
 │       │   └── default.yaml                  # Homogeneous population (all constants/same values)
 │       └── agent_algorithm/
-│           ├── default.yaml                  # PPO
-│           ├── ppo.yaml                      # PPO
-│           └── a2c.yaml                      # A2C
+           ├── default.yaml                  # PPO (default algorithm)
+           ├── ppo.yaml                      # PPO
+           ├── a2c.yaml                      # A2C
+           ├── hrl_ppo.yaml                  # Hierarchical RL with PPO
+           ├── hrl_rppo.yaml                 # Hierarchical RL with Recurrent PPO
+           ├── mbpo.yaml                     # Model-Based PPO
+           └── recurrent_ppo.yaml            # Recurrent PPO
 ├── results/          # Created automatically during training
 └── optimization/     # Created automatically during tuning
 ```
@@ -80,9 +84,9 @@ You have two approaches: create separate reward calculator subconfig files, or o
 Run three training jobs with different lambda values using direct parameter overrides:
 
 ```bash
-# From my_project/ directory
+# From my_first_project/ directory
 # Verify your location first:
-pwd  # Should show: .../my_project
+pwd  # Should show: .../my_first_project
 
 # Clinical-focused agent (minimize patient failures)
 python -m abx_amr_simulator.training.train \
@@ -111,7 +115,7 @@ python -m abx_amr_simulator.training.train \
 You may also choose to create separate reward calculator configs and modify them individually; this option allows you to full customize how the RewardCalculator is initialized:
 
 ```bash
-# From my_project/experiments/ directory
+# From my_first_project/experiments/ directory
 # Create three lambda-specific reward calculator configs
 cat > configs/reward_calculator/lambda_0.0.yaml << 'EOF'
 lambda_weight: 0.0  # Only consider individual clinical benefit
@@ -165,7 +169,7 @@ seed: 42
 EOF
 ```
 
-Now run with subconfig overrides (from `my_project/` directory):
+Now run with subconfig overrides (from `my_first_project/` directory):
 
 ```bash
 # Clinical-focused
@@ -269,7 +273,7 @@ include_steps_since_amr_update_in_obs: false
 **Before running an experiment**, visualize the leaky balloon's response to understand the dynamics:
 
 ```bash
-# From my_project/ directory
+# From my_first_project/ directory
 python -m abx_amr_simulator.utils.visualization.visualize_environment_behavior \
   --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   -s environment-subconfig=$(pwd)/experiments/configs/environment/steep_amr.yaml
@@ -327,7 +331,7 @@ action_mode: multidiscrete
 include_steps_since_amr_update_in_obs: false
 ```
 
-Run it (from `my_project/` directory):
+Run it (from `my_first_project/` directory):
 
 ```bash
 python -m abx_amr_simulator.training.train \
@@ -375,7 +379,7 @@ observation_mode: partial
 include_steps_since_amr_update_in_obs: false
 ```
 
-Run it (from `my_project/` directory):
+Run it (from `my_first_project/` directory):
 
 ```bash
 python -m abx_amr_simulator.training.train \
@@ -396,7 +400,7 @@ Create a shell script `run_sweep.sh`:
 
 ```bash
 #!/bin/bash
-# Run from my_project/ directory
+# Run from my_first_project/ directory
 
 # Define sweep parameters
 LAMBDAS=(0.0 0.3 0.5 0.7 1.0)
@@ -523,7 +527,7 @@ distributions:
     value: 0.1
 ```
 
-Run it (from `my_project/` directory):
+Run it (from `my_first_project/` directory):
 
 ```bash
 python -m abx_amr_simulator.training.train \
@@ -590,7 +594,7 @@ components:
     config: patient_generator/high_risk.yaml
 ```
 
-Run it (from `my_project/` directory):
+Run it (from `my_first_project/` directory):
 
 ```bash
 python -m abx_amr_simulator.training.train \
@@ -662,7 +666,7 @@ marginal_amr_penalty: -0.05           # Higher penalty per unit AMR
 You can customize any subconfig (environment, reward_calculator, patient_generator, agent_algorithm) and mix-and-match them:
 
 ```bash
-# From my_project/ directory\npython -m abx_amr_simulator.training.train \
+# From my_first_project/ directory\npython -m abx_amr_simulator.training.train \
   --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   -s environment-subconfig=$(pwd)/experiments/configs/environment/custom_small.yaml \
   -p training.run_name=experiment_small_conservative
@@ -671,7 +675,7 @@ You can customize any subconfig (environment, reward_calculator, patient_generat
 **Note**: You can use shorthand flags: `-p` for `--param-override` and `-s` for `--subconfig-override`:
 
 ```bash
-# From my_project/ directory
+# From my_first_project/ directory
 python -m abx_amr_simulator.training.train \
   --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   -s environment-subconfig=$(pwd)/experiments/configs/environment/custom_small.yaml \
@@ -711,7 +715,7 @@ Double-check the parameter name in the original config file.
 **Important**: The `--umbrella-config` flag and `-s` subconfig overrides require **absolute paths**. The recommended pattern is to use `$(pwd)` to build absolute paths:
 
 ```bash
-# From my_project/ directory - CORRECT approach:
+# From my_first_project/ directory - CORRECT approach:
 python -m abx_amr_simulator.training.train \
   --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   -s environment-subconfig=$(pwd)/experiments/configs/environment/custom_small.yaml
@@ -730,7 +734,7 @@ Example:
 # From my_project/ directory
 # Instead of:
 python -m abx_amr_simulator.training.train \
-  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  --config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   --param-override training.run_name=my_run \
   --subconfig-override environment-subconfig=$(pwd)/experiments/configs/environment/custom.yaml \
   --param-override reward_calculator.lambda_weight=0.8

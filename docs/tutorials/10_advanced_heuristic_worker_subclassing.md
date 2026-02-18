@@ -22,10 +22,10 @@ This tutorial shows how to create custom `HeuristicWorker` subclasses to impleme
 
 ### Step 1: Create Your Custom Subclass
 
-Create a new Python file in `workspace/experiments/options/option_types/heuristic/`:
+Create a new Python file in `my_first_project/experiments/options/option_types/heuristic/`:
 
 ```python
-# workspace/experiments/options/option_types/heuristic/my_custom_heuristic.py
+# my_first_project/experiments/options/option_types/heuristic/my_custom_heuristic.py
 
 from typing import Dict, Any
 from abx_amr_simulator.options.defaults.option_types.heuristic.heuristic_option_loader import (
@@ -103,7 +103,7 @@ Create a default config alongside your subclass. For a clinical-reasoning worker
 stick to the base `HeuristicWorker` fields.
 
 ```yaml
-# workspace/experiments/options/option_types/heuristic/my_custom_heuristic_config.yaml
+# my_first_project/experiments/options/option_types/heuristic/my_custom_heuristic_config.yaml
 duration: 10
 
 action_thresholds:
@@ -122,7 +122,7 @@ Option libraries are loaded dynamically via `OptionLibraryLoader`, so you just p
 each option at its loader module and default config file.
 
 ```yaml
-# workspace/experiments/options/option_libraries/my_library.yaml
+# my_first_project/experiments/options/option_libraries/my_library.yaml
 library_name: "clinical_reasoning_single_abx"
 description: "Custom heuristic workers with clinical reasoning"
 version: "1.0"
@@ -159,7 +159,65 @@ python -m abx_amr_simulator.training.train \
 
 ---
 
+## Critical: Action Index Mapping
+
+**⚠️ Important:** Options must use the environment's antibiotic-to-action-index mapping, not create their own.
+
+### Why This Matters
+
+The environment defines a canonical mapping of antibiotic names to action indices:
+```python
+# From RewardCalculator (authoritative source)
+abx_name_to_index = {
+    'prescribe_A': 0,
+    'prescribe_B': 1,
+    # ... other antibiotics ...
+    'no_treatment': num_antibiotics  # Always LAST index
+}
+```
+
+When your option selects an action, it must return an index from this mapping. **Creating your own local mapping will cause action misalignment and select wrong actions.**
+
+### How to Do It Correctly
+
+Always access the environment's mapping via `env_state`:
+
+```python
+def decide(self, env_state: Dict[str, Any]) -> np.ndarray:
+    # ✅ CORRECT: Use environment's mapping (single source of truth)
+    option_library = env_state['option_library']
+    abx_name_to_index = option_library.abx_name_to_index
+    
+    # Your decision logic here
+    selected_action = 'prescribe_A'  # or 'no_treatment', etc.
+    
+    # Return action index from environment's mapping
+    action_index = abx_name_to_index[selected_action]
+    return np.array([action_index, ...], dtype=np.int32)
+```
+
+### What NOT to Do
+
+```python
+# ❌ WRONG: Creating local mapping with 'no_treatment' at index 0
+action_keys = ['no_treatment'] + [f'prescribe_{abx}' for abx in abx_list]
+action_to_index = {action: i for i, action in enumerate(action_keys)}
+# This creates: {'no_treatment': 0, 'prescribe_A': 1, ...}
+# But environment expects: {'prescribe_A': 0, 'prescribe_B': 1, ..., 'no_treatment': N}
+# Result: agent selects wrong antibiotics!
+```
+
+### Validation
+
+The `OptionLibrary` validates all options at import time:
+- Checks that option library's `abx_name_to_index` matches environment's
+- Fails loudly with clear error if mappings don't match
+- This prevents silent action misalignment bugs
+
+---
+
 ## Advanced Examples
+
 
 ### Example 1: Nonlinear Estimation Model
 
@@ -274,8 +332,7 @@ A fundamentally different approach to handling incomplete information is **uncer
 
 ### Implementation: UncertaintyModulatedHeuristicWorker
 
-This subclass applies a **discount factor** to expected rewards based on uncertainty score (number of missing/padded attributes). The excerpt below is pulled from
-`private_docs/heuristic/uncertainty_modulated_heuristic_worker.py`:
+This subclass applies a **discount factor** to expected rewards based on uncertainty score (number of missing/padded attributes). Create your own implementation by creating the following files:
 
 ```python
 from typing import Any, Dict
@@ -358,14 +415,17 @@ class UncertaintyModulatedHeuristicWorker(HeuristicWorker):
         current_amr_levels = env_state['current_amr_levels']
         reward_calculator = env_state['reward_calculator']
 
+        # IMPORTANT: Use environment's antibiotic mapping (single source of truth)
+        # The environment's RewardCalculator defines action indices, and the option_library
+        # validates that its mapping matches the environment's
+        option_library = env_state['option_library']
+        abx_name_to_index = option_library.abx_name_to_index
+
         antibiotic_names = [
             key.replace('prescribe_', '')
             for key in self.action_thresholds.keys()
             if key.startswith('prescribe_')
         ]
-
-        action_keys = ['no_treatment'] + [f'prescribe_{abx}' for abx in antibiotic_names]
-        action_to_index = {action: i for i, action in enumerate(action_keys)}
 
         actions = []
 
@@ -385,7 +445,7 @@ class UncertaintyModulatedHeuristicWorker(HeuristicWorker):
                 )
 
             if uncertainty > self.uncertainty_threshold:
-                actions.append(action_to_index['no_treatment'])
+                actions.append(abx_name_to_index['no_treatment'])
                 continue
 
             expected_rewards = self.compute_expected_reward(
@@ -406,7 +466,10 @@ class UncertaintyModulatedHeuristicWorker(HeuristicWorker):
             best_action = 'no_treatment'
             best_reward = adjusted_rewards.get('no_treatment', 0.0)
 
-            for action_key in action_keys:
+            # Build list of all possible actions from the environment's mapping
+            possible_actions = [f'prescribe_{abx}' for abx in antibiotic_names] + ['no_treatment']
+            
+            for action_key in possible_actions:
                 adjusted_reward = adjusted_rewards.get(action_key, 0.0)
                 threshold = self.action_thresholds.get(action_key, 0.0)
 
@@ -414,7 +477,8 @@ class UncertaintyModulatedHeuristicWorker(HeuristicWorker):
                     best_action = action_key
                     best_reward = adjusted_reward
 
-            actions.append(action_to_index[best_action])
+            # Use environment's action index mapping
+            actions.append(abx_name_to_index[best_action])
 
         return np.array(actions, dtype=np.int32)
 
@@ -468,8 +532,7 @@ adjusted_reward = expected_reward / (1 + α × uncertainty)
 
 ### Configuration Example
 
-The default config below is pulled from
-`private_docs/heuristic/uncertainty_modulated_heuristic_config.yaml`:
+Create this config file in your my_first_project:
 
 ```yaml
 duration: 10
@@ -491,7 +554,7 @@ use_relative_uncertainty: true
 Then reference it in your option library (same structure as the default option libraries):
 
 ```yaml
-# workspace/experiments/options/option_libraries/uncertainty_modulated_library.yaml
+# my_first_project/experiments/options/option_libraries/uncertainty_modulated_library.yaml
 library_name: "uncertainty_modulated_single_abx"
 description: "Uncertainty-modulated heuristic workers"
 version: "1.0"
@@ -580,11 +643,11 @@ This approach is particularly useful when patient populations have **heterogeneo
 
 ## Testing Your Custom Worker
 
-Create a test file `tests/unit/options/test_my_custom_heuristic.py`:
+Create a test file `my_first_project/tests/unit/options/test_my_custom_heuristic.py`:
 
 ```python
 import pytest
-from workspace.experiments.options.option_types.heuristic.my_custom_heuristic import (
+from experiments.options.option_types.heuristic.my_custom_heuristic import (
     ClinicalReasoningHeuristicWorker
 )
 
@@ -652,6 +715,7 @@ def test_estimation_handles_padded_values():
 
 Run tests:
 ```bash
+cd my_first_project
 pytest tests/unit/options/test_my_custom_heuristic.py -v
 ```
 
@@ -746,15 +810,6 @@ def _estimate_unobserved_attribute_values_from_observed(self, patient):
     
     return patient
 ```
-
----
-
-## Related Documentation
-
-- [HEURISTIC_POLICY_WORKERS_IMPLEMENTATION.md](../HEURISTIC_POLICY_WORKERS_IMPLEMENTATION.md) - Architecture and design decisions
-- [OPTIONS_LIBRARY_IMPLEMENTATION.md](../hrl/OPTIONS_LIBRARY_IMPLEMENTATION.md) - How to create option libraries
-- [OPTION_PROTOCOL.md](../hrl/OPTION_PROTOCOL.md) - OptionBase protocol specification
-- [uncertainty_modulated_heuristic_worker.py](../../workspace/experiments/options/option_types/heuristic/uncertainty_modulated_heuristic_worker.py) - Full implementation of uncertainty modulation
 
 ---
 

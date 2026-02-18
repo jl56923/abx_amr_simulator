@@ -263,7 +263,7 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
     Creates nested structure:
         target_path/configs/
             umbrella_configs/base_experiment.yaml, hrl_ppo_default.yaml
-            agent_algorithm/default.yaml, ppo.yaml, a2c.yaml, hrl_ppo.yaml, hrl_rppo.yaml
+            agent_algorithm/default.yaml, ppo.yaml, a2c.yaml, hrl_ppo.yaml, hrl_rppo.yaml, mbpo.yaml, recurrent_ppo.yaml
             environment/default.yaml
             patient_generator/default.yaml, patient_generator/default_mixer.yaml
             reward_calculator/default.yaml
@@ -305,6 +305,8 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
         defaults_root.joinpath("agent_algorithm/a2c.yaml"): agent_dir / "a2c.yaml",
         defaults_root.joinpath("agent_algorithm/hrl_ppo.yaml"): agent_dir / "hrl_ppo.yaml",
         defaults_root.joinpath("agent_algorithm/hrl_rppo.yaml"): agent_dir / "hrl_rppo.yaml",
+        defaults_root.joinpath("agent_algorithm/mbpo.yaml"): agent_dir / "mbpo.yaml",
+        defaults_root.joinpath("agent_algorithm/recurrent_ppo.yaml"): agent_dir / "recurrent_ppo.yaml",
         # Explicit core defaults (will also be covered by recursive copy below)
         defaults_root.joinpath("agent_algorithm/default.yaml"): agent_dir / "default.yaml",
         defaults_root.joinpath("environment/default.yaml"): env_dir / "default.yaml",
