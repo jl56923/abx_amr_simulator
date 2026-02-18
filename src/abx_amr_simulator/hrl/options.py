@@ -152,6 +152,40 @@ class OptionLibrary:
                 "Environment has no antibiotics configured (abx_name_to_index is empty)."
             )
 
+        # Validate action mapping consistency and no_treatment index position
+        reward_calculator = env.unwrapped.reward_calculator
+        if 'no_treatment' not in reward_calculator.abx_name_to_index:
+            raise ValueError(
+                "RewardCalculator mapping missing 'no_treatment'. "
+                "This action must be present and mapped to the last index."
+            )
+        if 'no_treatment' not in self.abx_name_to_index:
+            raise ValueError(
+                "OptionLibrary mapping missing 'no_treatment'. "
+                "This action must be present and mapped to the last index."
+            )
+
+        expected_no_treatment_index = len(reward_calculator.abx_name_to_index) - 1
+        if reward_calculator.abx_name_to_index['no_treatment'] != expected_no_treatment_index:
+            raise ValueError(
+                "RewardCalculator must map 'no_treatment' to the last action index. "
+                f"Expected {expected_no_treatment_index}, got "
+                f"{reward_calculator.abx_name_to_index['no_treatment']}."
+            )
+        if self.abx_name_to_index['no_treatment'] != expected_no_treatment_index:
+            raise ValueError(
+                "OptionLibrary must map 'no_treatment' to the last action index. "
+                f"Expected {expected_no_treatment_index}, got "
+                f"{self.abx_name_to_index['no_treatment']}."
+            )
+
+        if self.abx_name_to_index != reward_calculator.abx_name_to_index:
+            raise ValueError(
+                "OptionLibrary action mapping must match RewardCalculator mapping. "
+                "Ensure options use env_state['option_library'].abx_name_to_index "
+                "or env_state['reward_calculator'].abx_name_to_index consistently."
+            )
+
         # Extract patient attributes from patient generator
         try:
             provided_patient_attrs = set(patient_generator.visible_patient_attributes)

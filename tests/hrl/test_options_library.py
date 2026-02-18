@@ -240,6 +240,31 @@ class TestOptionLibraryValidation:
         assert 'B' in lib.abx_name_to_index
         assert 'no_treatment' in lib.abx_name_to_index
 
+    def test_validation_fails_when_no_treatment_not_last(self):
+        """Test validation fails if RewardCalculator maps no_treatment incorrectly."""
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib = OptionLibrary(env=env)
+        lib.add_option(SimpleOption(name='opt1', k=5))
+
+        # Corrupt mapping to simulate a bad no_treatment index
+        env.reward_calculator.abx_name_to_index['no_treatment'] = 0
+
+        with pytest.raises(ValueError, match="no_treatment"):
+            lib.validate_environment_compatibility(env=env, patient_generator=env.unwrapped.patient_generator)
+
+    def test_validation_fails_when_mapping_mismatch(self):
+        """Test validation fails if OptionLibrary mapping diverges from RewardCalculator."""
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib = OptionLibrary(env=env)
+        lib.add_option(SimpleOption(name='opt1', k=5))
+
+        # Corrupt option library mapping without touching RewardCalculator
+        lib.abx_name_to_index = dict(env.reward_calculator.abx_name_to_index)
+        lib.abx_name_to_index['A'] = 1
+
+        with pytest.raises(ValueError, match="action mapping"):
+            lib.validate_environment_compatibility(env=env, patient_generator=env.unwrapped.patient_generator)
+
     def test_validation_empty_library_raises(self):
         """Test validation fails on empty library."""
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
