@@ -9,14 +9,20 @@ from test_reference_helpers import create_mock_environment  # type: ignore[impor
 
 
 class SimpleOption(OptionBase):
-    """Simple concrete option for testing."""
+    """Simple concrete option for testing that uses correct action mapping."""
     REQUIRES_OBSERVATION_ATTRIBUTES = []
     REQUIRES_AMR_LEVELS = False
 
     def decide(self, env_state):
-        """Decide method matching new signature (no antibiotic_names param)."""
+        """Decide method that returns correct no_treatment index for all patients.
+        
+        Updated to return the canonical no_treatment index (last action) instead of 0,
+        to work with the enhanced runtime validation that verifies semantic correctness.
+        """
         num_patients = env_state['num_patients']
-        return np.zeros(num_patients, dtype=np.int32)
+        # Use the canonical mapping to get no_treatment index
+        no_treatment_index = env_state['reward_calculator'].abx_name_to_index['no_treatment']
+        return np.full(num_patients, no_treatment_index, dtype=np.int32)
     
     def get_referenced_antibiotics(self):
         """Test option returns no specific antibiotics."""
@@ -280,7 +286,9 @@ class TestOptionLibraryValidation:
             REQUIRES_AMR_LEVELS = True
 
             def decide(self, env_state):
-                return np.zeros(1, dtype=np.int32)
+                num_patients = env_state['num_patients']
+                no_treatment_index = env_state['reward_calculator'].abx_name_to_index['no_treatment']
+                return np.full(num_patients, no_treatment_index, dtype=np.int32)
             
             def get_referenced_antibiotics(self):
                 return []
@@ -330,7 +338,9 @@ class TestOptionLibraryValidation:
                 return []
 
             def decide(self, env_state):
-                return np.zeros(1, dtype=np.int32)
+                num_patients = env_state['num_patients']
+                no_treatment_index = env_state['reward_calculator'].abx_name_to_index['no_treatment']
+                return np.full(num_patients, no_treatment_index, dtype=np.int32)
 
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         lib = OptionLibrary(env=env)
@@ -366,4 +376,188 @@ class TestOptionLibraryValidation:
         # Should show available antibiotics for debugging
         assert 'A' in error_msg and 'B' in error_msg
 
+
+class TestRuntimeActionIndexValidation:
+    """Test runtime validation of action index mapping correctness.
+    
+    These tests verify that the enhanced validation catches options that build
+    incorrect action_to_index mappings internally, which would cause semantic
+    errors (e.g., prescribing antibiotic A when deciding no_treatment).
+    """
+
+    class BuggyActionMappingOption(OptionBase):
+        """Option that builds incorrect action_to_index mapping (no_treatment at index 0).
+        
+        This mimics the bug in UncertaintyModulatedHeuristicWorker where the option
+        builds its own action mapping with no_treatment first, conflicting with the
+        canonical mapping where no_treatment is last.
+        """
+        REQUIRES_OBSERVATION_ATTRIBUTES = []
+        REQUIRES_AMR_LEVELS = False
+        
+        def decide(self, env_state):
+            """Build buggy action mapping and return actions."""
+            num_patients = env_state['num_patients']
+            
+            # Build INCORRECT mapping (no_treatment at index 0)
+            antibiotic_names = [
+                abx for abx in env_state['option_library'].abx_name_to_index.keys()
+                if abx != 'no_treatment'
+            ]
+            action_keys = ['no_treatment'] + [f'prescribe_{abx}' for abx in antibiotic_names]
+            action_to_index = {action: i for i, action in enumerate(action_keys)}
+            
+            # Always choose no_treatment using buggy mapping (returns 0)
+            return np.full(num_patients, action_to_index['no_treatment'], dtype=np.int32)
+        
+        def get_referenced_antibiotics(self):
+            return []  # No specific antibiotics
+    
+    class CorrectActionMappingOption(OptionBase):
+        """Option that uses canonical action mapping correctly."""
+        REQUIRES_OBSERVATION_ATTRIBUTES = []
+        REQUIRES_AMR_LEVELS = False
+        
+        def decide(self, env_state):
+            """Use correct action mapping from reward_calculator."""
+            num_patients = env_state['num_patients']
+            # Use canonical mapping (no_treatment is LAST)
+            no_treatment_index = env_state['reward_calculator'].abx_name_to_index['no_treatment']
+            return np.full(num_patients, no_treatment_index, dtype=np.int32)
+        
+        def get_referenced_antibiotics(self):
+            return []
+    
+    class OutOfRangeOption(OptionBase):
+        """Option that returns invalid action indices."""
+        REQUIRES_OBSERVATION_ATTRIBUTES = []
+        REQUIRES_AMR_LEVELS = False
+        
+        def decide(self, env_state):
+            """Return out-of-range action indices."""
+            num_patients = env_state['num_patients']
+            # Return index 999 which is way out of range
+            return np.full(num_patients, 999, dtype=np.int32)
+        
+        def get_referenced_antibiotics(self):
+            return []
+    
+    class WrongShapeOption(OptionBase):
+        """Option that returns wrong shape."""
+        REQUIRES_OBSERVATION_ATTRIBUTES = []
+        REQUIRES_AMR_LEVELS = False
+        
+        def decide(self, env_state):
+            """Return actions with wrong shape."""
+            # Return wrong number of actions
+            return np.array([0], dtype=np.int32)  # Only 1 action instead of num_patients
+        
+        def get_referenced_antibiotics(self):
+            return []
+    
+    def test_validation_catches_buggy_action_mapping(self):
+        """Test that runtime validation catches options with incorrect action index mapping.
+        
+        This is the key test - it should catch the UncertaintyModulatedHeuristicWorker bug
+        where the option builds its own action_to_index with no_treatment at index 0,
+        but the environment expects no_treatment at the last index.
+        """
+        env = create_mock_environment(
+            antibiotic_names=['A'],  # Single antibiotic: A=0, no_treatment=1
+            num_patients_per_time_step=3
+        )
+        lib = OptionLibrary(env=env)
+        lib.add_option(self.BuggyActionMappingOption(name='buggy_opt', k=10))
+        
+        # Validation should FAIL with clear semantic error message
+        with pytest.raises(ValueError) as exc_info:
+            lib.validate_environment_compatibility(
+                env=env,
+                patient_generator=env.unwrapped.patient_generator
+            )
+        
+        error_msg = str(exc_info.value)
+        assert 'buggy_opt' in error_msg
+        assert 'SEMANTIC ERROR' in error_msg
+        assert 'no_treatment' in error_msg
+        # Should mention the index mismatch
+        assert '0' in error_msg  # What option returned
+        assert '1' in error_msg  # What it should be for single-abx case
+        # Should suggest the fix
+        assert 'reward_calculator.abx_name_to_index' in error_msg or 'action_to_index' in error_msg
+    
+    def test_validation_passes_correct_action_mapping(self):
+        """Test that validation passes for options using correct action mapping."""
+        env = create_mock_environment(
+            antibiotic_names=['A', 'B'],
+            num_patients_per_time_step=3
+        )
+        lib = OptionLibrary(env=env)
+        lib.add_option(self.CorrectActionMappingOption(name='correct_opt', k=10))
+        
+        # Should pass without errors
+        lib.validate_environment_compatibility(
+            env=env,
+            patient_generator=env.unwrapped.patient_generator
+        )
+    
+    def test_validation_catches_out_of_range_indices(self):
+        """Test that validation catches action indices outside valid range."""
+        env = create_mock_environment(
+            antibiotic_names=['A', 'B'],
+            num_patients_per_time_step=3
+        )
+        lib = OptionLibrary(env=env)
+        lib.add_option(self.OutOfRangeOption(name='bad_range', k=5))
+        
+        with pytest.raises(ValueError) as exc_info:
+            lib.validate_environment_compatibility(
+                env=env,
+                patient_generator=env.unwrapped.patient_generator
+            )
+        
+        error_msg = str(exc_info.value)
+        assert 'bad_range' in error_msg
+        assert 'invalid action indices' in error_msg.lower() or 'out of range' in error_msg.lower()
+        assert '999' in error_msg  # The invalid index
+    
+    def test_validation_catches_wrong_shape(self):
+        """Test that validation catches actions with wrong shape."""
+        env = create_mock_environment(
+            antibiotic_names=['A'],
+            num_patients_per_time_step=3
+        )
+        lib = OptionLibrary(env=env)
+        lib.add_option(self.WrongShapeOption(name='wrong_shape', k=5))
+        
+        with pytest.raises(ValueError) as exc_info:
+            lib.validate_environment_compatibility(
+                env=env,
+                patient_generator=env.unwrapped.patient_generator
+            )
+        
+        error_msg = str(exc_info.value)
+        assert 'wrong_shape' in error_msg
+        assert 'shape' in error_msg.lower()
+    
+    def test_validation_two_antibiotics_buggy_mapping(self):
+        """Test semantic validation with two antibiotics (more complex case)."""
+        env = create_mock_environment(
+            antibiotic_names=['A', 'B'],  # A=0, B=1, no_treatment=2
+            num_patients_per_time_step=3
+        )
+        lib = OptionLibrary(env=env)
+        lib.add_option(self.BuggyActionMappingOption(name='buggy_two_abx', k=10))
+        
+        # Should catch that option returns 0 for no_treatment when it should be 2
+        with pytest.raises(ValueError) as exc_info:
+            lib.validate_environment_compatibility(
+                env=env,
+                patient_generator=env.unwrapped.patient_generator
+            )
+        
+        error_msg = str(exc_info.value)
+        assert 'buggy_two_abx' in error_msg
+        assert 'SEMANTIC ERROR' in error_msg
+        assert '2' in error_msg  # Correct no_treatment index for 2-abx case
 
