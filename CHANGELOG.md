@@ -8,12 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- AMR dynamics abstraction: `AMRDynamicsBase` abstract base class enabling custom resistance models
+  - `AMRDynamicsBase` ABC with `step()` and `reset()` abstract methods for extensibility
+  - `AMR_LeakyBalloon` now inherits from `AMRDynamicsBase` with enhanced `reset()` input validation
+  - `NAME` class constant for dynamics model identification
+  - Comprehensive test suite for ABC contract validation (bounds, determinism, state initialization)
 - Temporal features support in ABXAMREnv: optional prescription history tracking and AMR deltas in observations via `enable_temporal_features` and `temporal_windows` config parameters.
 - MBPO core components and training loop scaffolding:
   - `DynamicsModel` for learning environment dynamics with MultiDiscrete action support
   - `TrajectoryReplayEnv` for replaying synthetic trajectories during PPO training
   - `MBPOAgent` with real-data collection, model training, synthetic rollouts, and replay training
   - Unit tests covering DynamicsModel, TrajectoryReplayEnv, and MBPOAgent core behaviors
+
+### Changed
+- `ABXAMREnv.amr_balloon_models` type hint updated from `Dict[str, AMR_LeakyBalloon]` to `Dict[str, AMRDynamicsBase]` for better extensibility
 
 ## [0.1.0] - 2026-02-01
 

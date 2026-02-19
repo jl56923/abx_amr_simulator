@@ -305,30 +305,33 @@ class OptionLibrary:
                         f"and {max_valid_index} is no_treatment"
                     )
                 
-                # Semantic validation: verify "obvious no_treatment" case returns correct index
-                # Create a patient that should clearly select no_treatment (zero infection probability)
-                test_no_rx_env_state = self._build_test_env_state(
-                    env=env,
-                    patient_generator=patient_generator,
-                    force_no_treatment_scenario=True,
-                )
-                no_rx_actions = option.decide(env_state=test_no_rx_env_state)
-                expected_no_treatment_index = reward_calculator.abx_name_to_index['no_treatment']
-                
-                # For deterministic options, all test patients should select no_treatment
-                # For stochastic options, at least check the indices are valid (already done above)
-                if all(action == no_rx_actions[0] for action in no_rx_actions):
-                    # Deterministic behavior detected - verify semantic correctness
-                    if no_rx_actions[0] != expected_no_treatment_index:
-                        raise ValueError(
-                            f"Option '{option_name}' SEMANTIC ERROR: When prob_infected=0.0 "
-                            f"(should clearly select no_treatment), option returned action index "
-                            f"{no_rx_actions[0]}, but reward_calculator maps 'no_treatment' to index "
-                            f"{expected_no_treatment_index}. This indicates the option is using "
-                            f"a custom action_to_index mapping that conflicts with the canonical mapping. "
-                            f"Fix: Use reward_calculator.abx_name_to_index or option_library.abx_name_to_index "
-                            f"instead of building custom action mappings."
-                        )
+                # Semantic validation: for options that READ patient observations,
+                # verify they handle "obvious no_treatment" case correctly.
+                # Non-observation-reading options (e.g., BlockOption) are allowed to always prescribe.
+                if option.REQUIRES_OBSERVATION_ATTRIBUTES:
+                    # Create a patient that should clearly select no_treatment (zero infection probability)
+                    test_no_rx_env_state = self._build_test_env_state(
+                        env=env,
+                        patient_generator=patient_generator,
+                        force_no_treatment_scenario=True,
+                    )
+                    no_rx_actions = option.decide(env_state=test_no_rx_env_state)
+                    expected_no_treatment_index = reward_calculator.abx_name_to_index['no_treatment']
+                    
+                    # For deterministic options, all test patients should select no_treatment
+                    # For stochastic options, at least check the indices are valid (already done above)
+                    if all(action == no_rx_actions[0] for action in no_rx_actions):
+                        # Deterministic behavior detected - verify semantic correctness
+                        if no_rx_actions[0] != expected_no_treatment_index:
+                            raise ValueError(
+                                f"Option '{option_name}' SEMANTIC ERROR: When prob_infected=0.0 "
+                                f"(should clearly select no_treatment), option returned action index "
+                                f"{no_rx_actions[0]}, but reward_calculator maps 'no_treatment' to index "
+                                f"{expected_no_treatment_index}. This indicates the option is using "
+                                f"a custom action_to_index mapping that conflicts with the canonical mapping. "
+                                f"Fix: Use reward_calculator.abx_name_to_index or option_library.abx_name_to_index "
+                                f"instead of building custom action mappings."
+                            )
                 
             except Exception as e:
                 # Re-raise with option name context if not already a ValueError from above

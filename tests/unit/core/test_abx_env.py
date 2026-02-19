@@ -261,7 +261,7 @@ def test_delta_amr_is_computed_and_included_in_info():
     # Check that delta_visible_amr_per_antibiotic is in the info dict
     assert "delta_visible_amr_per_antibiotic" in info
     assert "A" in info["delta_visible_amr_per_antibiotic"]
-    # Delta should be positive when prescribing (2 puffs)
+    # Delta should be positive when prescribing (2 doses)
     assert info["delta_visible_amr_per_antibiotic"]["A"] > 0
 
 
@@ -525,7 +525,7 @@ def test_crossresistance_matrix_identity_default():
 def test_asymmetric_crossresistance_increases_target_amr():
     """Test that asymmetric crossresistance increases target antibiotic AMR by ratio*count."""
     crossresistance = {
-        "A": {"B": 0.5},  # Prescribing A contributes 0.5x its puffs to B
+        "A": {"B": 0.5},  # Prescribing A contributes 0.5x its doses to B
         "B": {"A": 0.01},
     }
     env = create_ABXAMR_Env_instance(
@@ -538,16 +538,16 @@ def test_asymmetric_crossresistance_increases_target_amr():
     action_all_a = np.zeros(env.num_patients_per_time_step, dtype=int)
     obs, _, _, _, info = env.step(action_all_a)
     
-    # Check effective puffs: A gets 5, B gets 5 * 0.5 = 2.5
-    assert info["effective_puffs"]["A"] == 5.0
-    assert info["effective_puffs"]["B"] == pytest.approx(2.5)
+    # Check effective doses: A gets 5, B gets 5 * 0.5 = 2.5
+    assert info["effective_doses"]["A"] == 5.0
+    assert info["effective_doses"]["B"] == pytest.approx(2.5)
     
     # B's AMR should increase due to crossresistance from A
     assert info["actual_amr_levels"]["B"] > 0.0
 
 
-def test_crossresistance_fractional_puffs():
-    """Test that fractional crossresistance ratios produce fractional effective puffs."""
+def test_crossresistance_fractional_doses():
+    """Test that fractional crossresistance ratios produce fractional effective doses."""
     crossresistance = {
         "A": {"B": 0.33},
         "B": {"A": 0.25},
@@ -562,9 +562,9 @@ def test_crossresistance_fractional_puffs():
     action = np.array([0, 0, 0, env.no_treatment_action, env.no_treatment_action], dtype=int)
     obs, _, _, _, info = env.step(action)
     
-    # A gets 3 puffs (3 * 1.0), B gets 3 * 0.33 = 0.99
-    assert info["effective_puffs"]["A"] == 3.0
-    assert info["effective_puffs"]["B"] == pytest.approx(3 * 0.33)
+    # A gets 3 doses (3 * 1.0), B gets 3 * 0.33 = 0.99
+    assert info["effective_doses"]["A"] == 3.0
+    assert info["effective_doses"]["B"] == pytest.approx(3 * 0.33)
 
 
 def test_crossresistance_invalid_antibiotic_raises():
@@ -640,7 +640,7 @@ def test_crossresistance_seeded_repeatability():
     
     # Should be identical
     assert np.isclose(r1, r2)
-    assert info1["effective_puffs"] == info2["effective_puffs"]
+    assert info1["effective_doses"] == info2["effective_doses"]
     assert info1["actual_amr_levels"] == info2["actual_amr_levels"]
 
 
@@ -662,9 +662,9 @@ def test_crossresistance_applied_in_info():
     
     # Check crossresistance_applied structure
     assert "crossresistance_applied" in info
-    # A should receive puffs from A (3) and B (2 * 0.1 = 0.2)
+    # A should receive doses from A (3) and B (2 * 0.1 = 0.2)
     assert "A" in info["crossresistance_applied"]
-    # B should receive puffs from A (3 * 0.5 = 1.5) and B (2)
+    # B should receive doses from A (3 * 0.5 = 1.5) and B (2)
     assert info["crossresistance_applied"]["B"]["A"] == pytest.approx(1.5)
     assert info["crossresistance_applied"]["B"]["B"] == 2.0
 

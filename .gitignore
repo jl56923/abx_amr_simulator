@@ -91,3 +91,6 @@ COPILOT_TODO.md
 
 # Ignore 'private_docs/' directory
 private_docs/
+
+# Ignore 'test_outputs/' directory
+test_outputs/

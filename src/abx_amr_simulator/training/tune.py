@@ -979,8 +979,12 @@ def main():
     n_existing_trials = len(study.trials)
     n_completed_trials_with_results = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
     
-    # Check if we've already reached the target number of completed trials
-    if n_completed_trials_with_results >= n_trials:
+    # Determine if this is a new study or a resumed study
+    is_resumed_study = n_existing_trials > 0
+    
+    # For NEW studies only: check if we've already reached the target number of completed trials
+    # For RESUMED studies: always allow adding n_trials more (configs already validated as matching)
+    if not is_resumed_study and n_completed_trials_with_results >= n_trials:
         print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
         print(f"  Completed trials with results: {n_completed_trials_with_results}")
         print(f"  Target n_trials: {n_trials}")
@@ -1026,12 +1030,13 @@ def main():
         sys.exit(0)
     
     # Not yet complete, continue or start optimization
-    if n_existing_trials > 0:
+    if is_resumed_study:
         print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
         print(f"  Completed trials with results: {n_completed_trials_with_results}")
         print(f"  Best value so far: {study.best_value:.4f}")
-        remaining_trials = n_trials - n_completed_trials_with_results
-        print(f"  Will run {remaining_trials} additional trial(s) (target: {n_trials} total)")
+        # For resumed studies, always add n_trials more
+        remaining_trials = n_trials
+        print(f"  Will run {remaining_trials} additional trial(s) (total will be {n_existing_trials + n_trials})")
     else:
         print(f"✓ Starting new study")
         remaining_trials = n_trials

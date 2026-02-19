@@ -172,7 +172,7 @@ def test_crossresistance_end_to_end_coupling() -> None:
     _, _, _, _, info = env.step(action=actions)
 
     expected_contribution = 4 * 0.5
-    assert info["effective_puffs"]["B"] == expected_contribution
+    assert info["effective_doses"]["B"] == expected_contribution
     assert info["crossresistance_applied"]["B"]["A"] == expected_contribution
     assert info["actual_amr_levels"]["B"] > initial_b
 

@@ -13,12 +13,12 @@ if str(ROOT) not in sys.path:
 from abx_amr_simulator.core import AMR_LeakyBalloon
 
 
-def test_leak_and_bounds_no_puffs():
+def test_leak_and_bounds_no_doses():
     # This test verifies that the balloon's latent pressure decays over time
-    # due to the leak rate when no puffs are added. It checks that the volume
+    # due to the leak rate when no doses are added. It checks that the volume
     # after one step matches the expected volume based on the leak formula:
     # pressure_new = pressure_old - leak, and that the output is bounded [0, 1].
-    """Test that balloon leaks when no puffs are added."""
+    """Test that balloon leaks when no doses are added."""
     balloon = AMR_LeakyBalloon(
         leak=0.2,
         flatness_parameter=1.0,
@@ -26,19 +26,19 @@ def test_leak_and_bounds_no_puffs():
         initial_amr_level=0.5
     )
     initial_volume = balloon.get_volume()
-    volume_after_step = balloon.step(puffs=0)
+    volume_after_step = balloon.step(doses=0)
     
-    # After one step with no puffs, latent pressure should decay
+    # After one step with no doses, latent pressure should decay
     # which reduces volume slightly
     assert volume_after_step < initial_volume
     assert 0.0 <= volume_after_step <= 1.0
 
 
-def test_monotonic_with_puffs_and_bounded():
-    # This test ensures that adding puffs always increases the balloon's volume
+def test_monotonic_with_doses_and_bounded():
+    # This test ensures that adding doses always increases the balloon's volume
     # monotonically, and that the volume stays within the valid bounds [0, 1].
-    # It verifies that more puffs lead to higher volumes in sequence.
-    """Test that balloon volume increases with puffs and stays bounded."""
+    # It verifies that more doses lead to higher volumes in sequence.
+    """Test that balloon volume increases with doses and stays bounded."""
     balloon = AMR_LeakyBalloon(
         leak=0.1,
         flatness_parameter=1.0,
@@ -46,18 +46,18 @@ def test_monotonic_with_puffs_and_bounded():
         initial_amr_level=0.0
     )
     v0 = balloon.get_volume()
-    v1 = balloon.step(puffs=1)
-    v2 = balloon.step(puffs=3)
+    v1 = balloon.step(doses=1)
+    v2 = balloon.step(doses=3)
     
     assert v1 > v0
     assert v2 > v1
     assert 0.0 <= v2 <= 1.0
 
 
-def test_negative_puffs_raises():
-    # This test verifies that the step() method rejects invalid input (negative puffs)
-    # by raising a ValueError. Negative puffs don't make physical sense in the model.
-    """Test that negative puffs raise an error."""
+def test_negative_doses_raises():
+    # This test verifies that the step() method rejects invalid input (negative doses)
+    # by raising a ValueError. Negative doses don't make physical sense in the model.
+    """Test that negative doses raise an error."""
     balloon = AMR_LeakyBalloon()
     with pytest.raises(ValueError):
         balloon.step(-1)
@@ -74,7 +74,7 @@ def test_reset_restores_initial_amr():
         permanent_residual_volume=0.0,
         initial_amr_level=0.0
     )
-    balloon.step(puffs=5)
+    balloon.step(doses=5)
     balloon.reset(initial_amr_level=0.3)
     
     expected_volume = 0.3
@@ -111,7 +111,7 @@ def test_permanent_residual_volume_shifts_baseline():
 
 def test_flatness_parameter_affects_sigmoid_slope():
     # This test checks that the flatness_parameter controls the steepness of the sigmoid.
-    # A smaller flatness_parameter produces a steeper sigmoid curve, so the same puffs
+    # A smaller flatness_parameter produces a steeper sigmoid curve, so the same doses
     # should increase the volume more than with a larger flatness_parameter.
     """Test that flatness_parameter affects how steeply the sigmoid rises."""
     # Steeper sigmoid (lower flatness parameter)
@@ -138,10 +138,10 @@ def test_flatness_parameter_affects_sigmoid_slope():
     
     puff_sequence = [1, 1]
     
-    # Step both balloons with same puffs
-    for puffs in puff_sequence:
-        balloon_steep.step(puffs=puffs)
-        balloon_flat.step(puffs=puffs)
+    # Step both balloons with same doses
+    for doses in puff_sequence:
+        balloon_steep.step(doses=doses)
+        balloon_flat.step(doses=doses)
     
     # Get the final volumes for each balloon:
     final_volume_steep = balloon_steep.get_volume()
@@ -168,10 +168,10 @@ def test_flatness_parameter_affects_sigmoid_slope():
 
 
 def test_delta_volume_counterfactual():
-    # This test verifies that the get_delta_volume_for_counterfactual_num_puffs_vs_one_less()
-    # method correctly computes the marginal volume change when increasing puffs by one.
+    # This test verifies that the get_delta_volume_for_counterfactual_num_doses_vs_one_less()
+    # method correctly computes the marginal volume change when increasing doses by one.
     # It checks that the delta is a valid float and non-negative.
-    """Test delta volume computation for counterfactual puffs."""
+    """Test delta volume computation for counterfactual doses."""
     balloon = AMR_LeakyBalloon(
         leak=0.1,
         flatness_parameter=1.0,
@@ -179,17 +179,17 @@ def test_delta_volume_counterfactual():
         initial_amr_level=0.0
     )
     
-    delta = balloon.get_delta_volume_for_counterfactual_num_puffs_vs_one_less(num_counterfactual_puffs=5)
+    delta = balloon.get_delta_volume_for_counterfactual_num_doses_vs_one_less(num_counterfactual_doses=5)
     assert isinstance(delta, float)
     assert delta >= 0.0  # Delta should be non-negative
 
 
-def test_delta_volume_zero_puffs():
-    # This test is an edge case check: when the counterfactual puffs is 0, the delta
-    # between 0 puffs and -1 puffs should be 0 (since -1 would be invalid/clamped).
-    """Test that delta volume is 0 when counterfactual puffs is 0."""
+def test_delta_volume_zero_doses():
+    # This test is an edge case check: when the counterfactual doses is 0, the delta
+    # between 0 doses and -1 doses should be 0 (since -1 would be invalid/clamped).
+    """Test that delta volume is 0 when counterfactual doses is 0."""
     balloon = AMR_LeakyBalloon()
-    delta = balloon.get_delta_volume_for_counterfactual_num_puffs_vs_one_less(0)
+    delta = balloon.get_delta_volume_for_counterfactual_num_doses_vs_one_less(0)
     assert delta == 0.0
 
 def test_copy_creates_independent_instance():
@@ -224,15 +224,15 @@ def test_copy_creates_independent_instance():
     assert copy.permanent_residual_volume == original.permanent_residual_volume
     
     # Step the copy multiple times
-    copy_volume_after_step1 = copy.step(puffs=2.0)
-    copy_volume_after_step2 = copy.step(puffs=1.0)
+    copy_volume_after_step1 = copy.step(doses=2.0)
+    copy_volume_after_step2 = copy.step(doses=1.0)
     
     # Verify original is unaffected by copy's steps
     assert original.get_volume() == original_initial_volume
     assert original.pressure == original_initial_pressure
     
     # Now step the original
-    original_volume_after_step1 = original.step(puffs=0.0)  # Just leak, no puffs
+    original_volume_after_step1 = original.step(doses=0.0)  # Just leak, no doses
     
     # Verify copy is unaffected by original's steps
     assert copy.pressure != original.pressure
@@ -241,7 +241,7 @@ def test_copy_creates_independent_instance():
     # Original should have leaked (lower volume than initial)
     assert original_volume_after_step1 < original_initial_volume
     
-    # Copy should have higher volume (added puffs)
+    # Copy should have higher volume (added doses)
     assert copy_volume_after_step1 > original_initial_volume
 
 
@@ -251,7 +251,7 @@ def test_copy_with_reset_counterfactual():
     This mimics the environment usage where we:
     1. Copy the balloon model
     2. Reset it to visible AMR level
-    3. Compute delta for a hypothetical number of puffs
+    3. Compute delta for a hypothetical number of doses
     4. Do NOT modify the original
     """
     # Create original balloon with some pressure
@@ -267,11 +267,11 @@ def test_copy_with_reset_counterfactual():
     balloon_copy = original.copy()
     balloon_copy.reset(initial_amr_level=0.3)  # Reset to visible level
     
-    # Compute counterfactual delta (how much volume would change with 3 puffs vs 2)
-    delta_for_3_vs_2_puffs = balloon_copy.get_delta_volume_for_counterfactual_num_puffs_vs_one_less(3)
+    # Compute counterfactual delta (how much volume would change with 3 doses vs 2)
+    delta_for_3_vs_2_doses = balloon_copy.get_delta_volume_for_counterfactual_num_doses_vs_one_less(3)
     
-    # Verify delta is positive (more puffs = more volume)
-    assert delta_for_3_vs_2_puffs > 0.0
+    # Verify delta is positive (more doses = more volume)
+    assert delta_for_3_vs_2_doses > 0.0
     
     # Verify original is completely unaffected
     assert original.get_volume() == original_initial_volume
@@ -426,32 +426,32 @@ class TestDynamicsComprehensive:
     """Comprehensive tests for puff and leak dynamics."""
     
     def test_puff_accumulation_without_leak(self):
-        """Test puffs accumulate linearly when leak=0 is simulated with very small leak."""
+        """Test doses accumulate linearly when leak=0 is simulated with very small leak."""
         # Use very small leak to approximate no leak
         balloon = AMR_LeakyBalloon(leak=0.0001, flatness_parameter=1.0)
         pressures = []
         
         for i in range(5):
-            balloon.step(puffs=1.0)
+            balloon.step(doses=1.0)
             pressures.append(balloon.pressure)
         
         # Pressure should increase but not exactly linearly (leak gradually removes)
         for i in range(len(pressures) - 1):
             assert pressures[i] < pressures[i + 1]
     
-    def test_linear_decay_with_no_puffs(self):
+    def test_linear_decay_with_no_doses(self):
         """Test pressure decays linearly with leak amount."""
         leak_rate = 0.5
         balloon = AMR_LeakyBalloon(leak=leak_rate)
         
         # Build up pressure
-        balloon.step(puffs=10.0)
+        balloon.step(doses=10.0)
         initial_pressure = balloon.pressure
         
         # Record pressure after each step - should decrease by leak amount each step
         pressures = [initial_pressure]
         for _ in range(10):
-            balloon.step(puffs=0.0)
+            balloon.step(doses=0.0)
             pressures.append(balloon.pressure)
         
         # Check linear decay: p_n = p_{n-1} - leak (until pressure hits zero)
@@ -462,7 +462,7 @@ class TestDynamicsComprehensive:
                 assert pressures[i] == pytest.approx(max(0.0, expected_pressure), abs=1e-6)
     
     def test_long_term_evolution_to_residual(self):
-        """Test that without puffs, volume converges to residual."""
+        """Test that without doses, volume converges to residual."""
         residual = 0.15
         balloon = AMR_LeakyBalloon(
             leak=0.3,
@@ -472,23 +472,23 @@ class TestDynamicsComprehensive:
         
         # Run for many steps
         for _ in range(200):
-            balloon.step(puffs=0.0)
+            balloon.step(doses=0.0)
         
         final_volume = balloon.get_volume()
         assert final_volume == pytest.approx(residual, abs=1e-5)
     
-    def test_puffs_with_leak_equilibrium(self):
-        """Test system behavior with constant puffs and leak."""
+    def test_doses_with_leak_equilibrium(self):
+        """Test system behavior with constant doses and leak."""
         leak_rate = 0.1
         balloon = AMR_LeakyBalloon(leak=leak_rate)
         
         # Constant puff rate
-        constant_puffs = 0.2
+        constant_doses = 0.2
         
         # Run until equilibrium
         volumes = []
         for _ in range(100):
-            v = balloon.step(puffs=constant_puffs)
+            v = balloon.step(doses=constant_doses)
             volumes.append(v)
         
         # Last 10 steps should be nearly constant (equilibrium reached)
@@ -498,31 +498,31 @@ class TestDynamicsComprehensive:
         for v in last_volumes:
             assert abs(v - avg_last) < 0.01  # Within 1% of average
     
-    def test_fractional_puffs(self):
+    def test_fractional_doses(self):
         """Test that fractional puff values work correctly."""
         balloon = AMR_LeakyBalloon(leak=0.001, initial_amr_level=0.1)
         
-        v1 = balloon.step(puffs=0.5)
-        v2 = balloon.step(puffs=0.3)
-        v3 = balloon.step(puffs=0.2)
+        v1 = balloon.step(doses=0.5)
+        v2 = balloon.step(doses=0.3)
+        v3 = balloon.step(doses=0.2)
         
         # All should be valid volumes bounded in [0, 1]
         assert 0.0 <= v1 <= 1.0
         assert 0.0 <= v2 <= 1.0
         assert 0.0 <= v3 <= 1.0
         
-        # With small leak (0.001) and positive puffs, volumes should generally trend upward
+        # With small leak (0.001) and positive doses, volumes should generally trend upward
         # (accumulation > leak for these puff values)
         assert v1 > 0.1  # Should have accumulated from initial state
-        """Test that zero puffs still applies leak (doesn't maintain pressure)."""
+        """Test that zero doses still applies leak (doesn't maintain pressure)."""
         balloon = AMR_LeakyBalloon(leak=0.2)
         
         # Build pressure
-        balloon.step(puffs=3.0)
+        balloon.step(doses=3.0)
         p_after_puff = balloon.pressure
         
-        # Zero puffs, leak applies
-        balloon.step(puffs=0.0)
+        # Zero doses, leak applies
+        balloon.step(doses=0.0)
         p_after_leak = balloon.pressure
         
         # Pressure should decrease by leak amount
@@ -541,7 +541,7 @@ class TestEdgeCasesComprehensive:
         assert abs(balloon.get_volume() - 0.99) < 0.01
         
         # After one step with small puff, should still be bounded at 1.0
-        v = balloon.step(puffs=1.0)
+        v = balloon.step(doses=1.0)
         assert v <= 1.0
     
     def test_high_residual_floor(self):
@@ -552,9 +552,9 @@ class TestEdgeCasesComprehensive:
             initial_amr_level=residual
         )
         
-        # Even with no puffs, should stay above 80%
+        # Even with no doses, should stay above 80%
         for _ in range(100):
-            balloon.step(puffs=0.0)
+            balloon.step(doses=0.0)
         
         final_volume = balloon.get_volume()
         assert final_volume >= residual - 1e-5
@@ -562,12 +562,12 @@ class TestEdgeCasesComprehensive:
     def test_very_slow_decay(self):
         """Test balloon with minimal leak (very slow decay)."""
         balloon = AMR_LeakyBalloon(leak=0.001, initial_amr_level=0.5)
-        balloon.step(puffs=1.0)
+        balloon.step(doses=1.0)
         initial_pressure = balloon.pressure
         
-        # After 100 steps with no puffs, still should have>90% pressure
+        # After 100 steps with no doses, still should have>90% pressure
         for _ in range(100):
-            balloon.step(puffs=0.0)
+            balloon.step(doses=0.0)
         
         remaining_fraction = balloon.pressure / initial_pressure
         assert remaining_fraction > 0.9
@@ -575,21 +575,21 @@ class TestEdgeCasesComprehensive:
     def test_very_fast_decay(self):
         """Test balloon with high leak (very fast decay)."""
         balloon = AMR_LeakyBalloon(leak=0.95)
-        balloon.step(puffs=5.0)
+        balloon.step(doses=5.0)
         
         # After a few steps, pressure should be nearly zero
         for _ in range(10):
-            balloon.step(puffs=0.0)
+            balloon.step(doses=0.0)
         
         # Should be very close to residual (which is 0.0 by default)
         assert balloon.get_volume() < 0.01
     
-    def test_step_with_very_large_puffs(self):
+    def test_step_with_very_large_doses(self):
         """Test step with extremely large puff values."""
         balloon = AMR_LeakyBalloon()
         
         # Very large puff
-        volume = balloon.step(puffs=10000.0)
+        volume = balloon.step(doses=10000.0)
         
         # Should saturate near 1.0
         assert volume > 0.9999
@@ -641,23 +641,23 @@ class TestStepNoStateChange:
     def test_no_state_change_preserves_pressure(self):
         """Test that _step_no_internal_state_change doesn't modify pressure."""
         balloon = AMR_LeakyBalloon()
-        balloon.step(puffs=2.0)
+        balloon.step(doses=2.0)
         
         saved_pressure = balloon.pressure
-        balloon._step_no_internal_state_change(puffs=1.0)
+        balloon._step_no_internal_state_change(doses=1.0)
         
         assert balloon.pressure == saved_pressure
     
     def test_no_state_change_returns_correct_volume(self):
         """Test that _step_no_internal_state_change returns correct hypothetical volume."""
         balloon = AMR_LeakyBalloon(leak=0.1)
-        balloon.step(puffs=2.0)
+        balloon.step(doses=2.0)
         
         # Compute hypothetical
-        hypothetical_volume = balloon._step_no_internal_state_change(puffs=1.0)
+        hypothetical_volume = balloon._step_no_internal_state_change(doses=1.0)
         
         # Now actually step
-        actual_volume = balloon.step(puffs=1.0)
+        actual_volume = balloon.step(doses=1.0)
         
         # Should match
         assert hypothetical_volume == pytest.approx(actual_volume, abs=1e-10)
