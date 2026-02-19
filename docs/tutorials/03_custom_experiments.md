@@ -230,7 +230,7 @@ Results with aggregation by seed are saved to `analysis_output/lambda_sweep_indi
 ## Customization 2: Configure AMR Dynamics (Leaky Balloon)
 
 The ABXAMREnv instance 
-The AMR dynamics are modeled as a **leaky balloon**: prescriptions add "puff" (resistance), time adds "leak" (recovery).
+The AMR dynamics are modeled as a **leaky balloon**: prescriptions add "dose" (resistance), time adds "leak" (recovery).
 
 **View the default environment config**:
 
@@ -280,7 +280,7 @@ python -m abx_amr_simulator.utils.visualization.visualize_environment_behavior \
 ```
 
 This generates plots showing:
-- How AMR levels respond to different puff sequences
+- How AMR levels respond to different dose sequences
 - Sample random trajectories with observations and rewards
 - Saved to `visualization_outputs/`
 

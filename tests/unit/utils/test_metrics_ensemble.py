@@ -66,7 +66,7 @@ def test_plot_metrics_ensemble_agents_writes_outcomes_json(tmp_path, monkeypatch
 
     # Avoid actual plotting side effects
     monkeypatch.setattr(AMR_LeakyBalloon, "plot_leaky_balloon_response_curve", lambda self, *args, **kwargs: None)
-    monkeypatch.setattr(AMR_LeakyBalloon, "plot_leaky_balloon_response_to_puff_sequence", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(AMR_LeakyBalloon, "plot_leaky_balloon_response_to_dose_sequence", lambda self, *args, **kwargs: None)
 
     # Force deterministic single-step trajectory
     monkeypatch.setattr(

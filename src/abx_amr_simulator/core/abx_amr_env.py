@@ -680,7 +680,7 @@ class ABXAMREnv(gym.Env):
         1. Process per-patient prescriptions (mutually exclusive: one antibiotic OR no treatment)
         2. Count prescriptions per antibiotic
         3. Apply crossresistance matrix to compute effective doses
-        4. Step each antibiotic's leaky balloon with effective puff
+        4. Step each antibiotic's leaky balloon with effective dose
         5. Calculate reward (individual + community components)
         6. Sample new patient cohort for next timestep
         7. Construct observation (patient features + AMR levels)

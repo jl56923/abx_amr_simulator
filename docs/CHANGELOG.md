@@ -1010,7 +1010,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Visualization & Debugging Tools
 - **`experiments/visualize_env_behavior.py`**: Environment behavior visualization tool
-  - Plot AMR leaky balloon responses to puff sequences
+  - Plot AMR leaky balloon responses to dose sequences
   - Sample random actions and save observation/reward data
   - Configurable output folder for plots
 - **`experiments/make_figures_for_experiment_run.py`**: Post-training diagnostic plotting

@@ -15,7 +15,7 @@ class AMR_LeakyBalloon(AMRDynamicsBase):
     
     OWNERSHIP (for future multi-agent refactor):
     - Owns: latent pressure state, leak dynamics, sigmoid transformation
-    - Input: non-negative puff values (from prescriptions)
+    - Input: non-negative dose values (from prescriptions)
     - Output: visible AMR fraction in [permanent_residual_volume, 1.0]
     
     Future multi-agent notes:
@@ -49,7 +49,7 @@ class AMR_LeakyBalloon(AMRDynamicsBase):
             permanent_residual_volume (float): Minimum AMR level (floor, y-intercept). Must be
                 in [0, 1). Even with zero pressure, AMR remains at this level. Represents
                 baseline resistance that never fully disappears. Default: 0.0 (can decay to zero).
-            initial_amr_level (float): Starting observable AMR level (volume/fraction) before first puff.
+            initial_amr_level (float): Starting observable AMR level (volume/fraction) before first dose.
                 Must be in [permanent_residual_volume, 1.0]. Default: 0.0 (balloon starts at residual).
                 Internally, this is converted to the corresponding latent pressure via inverse sigmoid.
         
@@ -309,7 +309,7 @@ class AMR_LeakyBalloon(AMRDynamicsBase):
     
     def plot_leaky_balloon_response_to_dose_sequence(self, dose_sequence, title, fname=None, save_plot_folder=None, show_plot=False, width=10, height=6):
         """
-        Plot the leaky balloon response to a given puff sequence.
+        Plot the leaky balloon response to a given dose sequence.
         """
         plt.figure(figsize=(width, height))
         ax1 = plt.subplot(2, 1, 1)

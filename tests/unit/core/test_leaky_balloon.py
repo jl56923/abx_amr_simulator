@@ -136,10 +136,10 @@ def test_flatness_parameter_affects_sigmoid_slope():
     
     # Print each of these:
     
-    puff_sequence = [1, 1]
+    dose_sequence = [1, 1]
     
     # Step both balloons with same doses
-    for doses in puff_sequence:
+    for doses in dose_sequence:
         balloon_steep.step(doses=doses)
         balloon_flat.step(doses=doses)
     
@@ -423,9 +423,9 @@ class TestVolumeMappingComprehensive:
 
 
 class TestDynamicsComprehensive:
-    """Comprehensive tests for puff and leak dynamics."""
+    """Comprehensive tests for dose and leak dynamics."""
     
-    def test_puff_accumulation_without_leak(self):
+    def test_dose_accumulation_without_leak(self):
         """Test doses accumulate linearly when leak=0 is simulated with very small leak."""
         # Use very small leak to approximate no leak
         balloon = AMR_LeakyBalloon(leak=0.0001, flatness_parameter=1.0)
@@ -482,7 +482,7 @@ class TestDynamicsComprehensive:
         leak_rate = 0.1
         balloon = AMR_LeakyBalloon(leak=leak_rate)
         
-        # Constant puff rate
+        # Constant dose rate
         constant_doses = 0.2
         
         # Run until equilibrium
@@ -499,7 +499,7 @@ class TestDynamicsComprehensive:
             assert abs(v - avg_last) < 0.01  # Within 1% of average
     
     def test_fractional_doses(self):
-        """Test that fractional puff values work correctly."""
+        """Test that fractional dose values work correctly."""
         balloon = AMR_LeakyBalloon(leak=0.001, initial_amr_level=0.1)
         
         v1 = balloon.step(doses=0.5)
@@ -512,21 +512,21 @@ class TestDynamicsComprehensive:
         assert 0.0 <= v3 <= 1.0
         
         # With small leak (0.001) and positive doses, volumes should generally trend upward
-        # (accumulation > leak for these puff values)
+        # (accumulation > leak for these dose values)
         assert v1 > 0.1  # Should have accumulated from initial state
         """Test that zero doses still applies leak (doesn't maintain pressure)."""
         balloon = AMR_LeakyBalloon(leak=0.2)
         
         # Build pressure
         balloon.step(doses=3.0)
-        p_after_puff = balloon.pressure
+        p_after_dose = balloon.pressure
         
         # Zero doses, leak applies
         balloon.step(doses=0.0)
         p_after_leak = balloon.pressure
         
         # Pressure should decrease by leak amount
-        expected = p_after_puff - 0.2
+        expected = p_after_dose - 0.2
         assert p_after_leak == pytest.approx(max(0.0, expected), abs=1e-6)
 
 
@@ -540,7 +540,7 @@ class TestEdgeCasesComprehensive:
         # Volume should be at the set level (0.99)
         assert abs(balloon.get_volume() - 0.99) < 0.01
         
-        # After one step with small puff, should still be bounded at 1.0
+        # After one step with small dose, should still be bounded at 1.0
         v = balloon.step(doses=1.0)
         assert v <= 1.0
     
@@ -585,10 +585,10 @@ class TestEdgeCasesComprehensive:
         assert balloon.get_volume() < 0.01
     
     def test_step_with_very_large_doses(self):
-        """Test step with extremely large puff values."""
+        """Test step with extremely large dose values."""
         balloon = AMR_LeakyBalloon()
         
-        # Very large puff
+        # Very large dose
         volume = balloon.step(doses=10000.0)
         
         # Should saturate near 1.0

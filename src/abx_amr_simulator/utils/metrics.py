@@ -818,15 +818,15 @@ def plot_metrics_trained_agent(model, env, experiment_folder, deterministic=True
         if not os.path.exists(experiment_figures_folder):
             os.mkdir(experiment_figures_folder)
     
-    # First, create a plot of the AMR response for every antibiotic, for a steady puff sequence of [1, 1, 1, ..., 1].
+    # First, create a plot of the AMR response for every antibiotic, for a steady dose sequence of [1, 1, 1, ..., 1].
     
-    puff_sequence = [1] * 10 + [0] * 10 + [2] * 10
+    dose_sequence = [1] * 10 + [0] * 10 + [2] * 10
     
     for antibiotic_name, AMR_leakyballoon_params in env.unwrapped.antibiotics_AMR_dict.items():
         # Create a leaky balloon instance with the given parameters
         leaky_balloon = AMR_LeakyBalloon(**AMR_leakyballoon_params)
-        leaky_balloon.plot_leaky_balloon_response_to_puff_sequence(
-            puff_sequence,
+        leaky_balloon.plot_leaky_balloon_response_to_dose_sequence(
+            dose_sequence,
             title=f"AMR Response for {antibiotic_name}",
             fname=f"leaky_balloon_response_{antibiotic_name}.png",
             save_plot_folder=experiment_figures_folder,
@@ -1168,9 +1168,9 @@ def plot_metrics_trained_agent(model, env, experiment_folder, deterministic=True
 
 
 def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_folder_name: Optional[str] = "figures"):
-    """Generate publication-quality plots from a direct puff sequence trajectory.
+    """Generate publication-quality plots from a direct dose sequence trajectory.
     
-    Takes a pre-computed trajectory (e.g., from a specific puff sequence or manual strategy)
+    Takes a pre-computed trajectory (e.g., from a specific dose sequence or manual strategy)
     and creates the same diagnostic plots as plot_metrics_trained_agent:
     - Leaky balloon AMR responses (for each antibiotic)
     - AMR levels over time (actual vs. observable)
@@ -1179,7 +1179,7 @@ def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_fol
     - Patient outcome breakdowns
     - Antibiotic prescriptions over time
     
-    This allows visualization of arbitrary puff sequences without requiring a trained agent.
+    This allows visualization of arbitrary dose sequences without requiring a trained agent.
     
     Args:
         trajectory (dict): Trajectory dictionary with keys:
@@ -1220,14 +1220,14 @@ def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_fol
         if not os.path.exists(experiment_figures_folder):
             os.makedirs(experiment_figures_folder)
     
-    # First, create a plot of the AMR response for every antibiotic, for a steady puff sequence of [1, 1, 1, ..., 1].
-    puff_sequence = [1] * 10 + [0] * 10 + [2] * 10
+    # First, create a plot of the AMR response for every antibiotic, for a steady dose sequence of [1, 1, 1, ..., 1].
+    dose_sequence = [1] * 10 + [0] * 10 + [2] * 10
     
     for antibiotic_name, AMR_leakyballoon_params in env.unwrapped.antibiotics_AMR_dict.items():
         # Create a leaky balloon instance with the given parameters
         leaky_balloon = AMR_LeakyBalloon(**AMR_leakyballoon_params)
-        leaky_balloon.plot_leaky_balloon_response_to_puff_sequence(
-            puff_sequence,
+        leaky_balloon.plot_leaky_balloon_response_to_dose_sequence(
+            dose_sequence,
             title=f"AMR Response for {antibiotic_name}",
             fname=f"leaky_balloon_response_{antibiotic_name}.png",
             save_plot_folder=experiment_figures_folder,
@@ -1630,11 +1630,11 @@ def plot_metrics_ensemble_agents(
     antibiotic_names = env.unwrapped.antibiotic_names
     
     # Plot leaky balloon responses once (deterministic, independent of agent)
-    puff_sequence = [1] * 10 + [0] * 10 + [2] * 10
+    dose_sequence = [1] * 10 + [0] * 10 + [2] * 10
     for antibiotic_name, AMR_leakyballoon_params in env.unwrapped.antibiotics_AMR_dict.items():
         leaky_balloon = AMR_LeakyBalloon(**AMR_leakyballoon_params)
-        leaky_balloon.plot_leaky_balloon_response_to_puff_sequence(
-            puff_sequence,
+        leaky_balloon.plot_leaky_balloon_response_to_dose_sequence(
+            dose_sequence,
             title=f"AMR Response for {antibiotic_name}",
             fname=f"leaky_balloon_response_{antibiotic_name}.png",
             save_plot_folder=experiment_figures_folder,

@@ -1,8 +1,8 @@
-# The purpose of this script is to allow the user to visualize the behavior of the ABXAMREnv environment given different environment parameters. Specifically, it saves plots of how the AMR levels evolve in response to a puff sequence, and also what the reward looks like for different actions that are chosen.
+# The purpose of this script is to allow the user to visualize the behavior of the ABXAMREnv environment given different environment parameters. Specifically, it saves plots of how the AMR levels evolve in response to a dose sequence, and also what the reward looks like for different actions that are chosen.
 
 """Environment parameters ABXAMREnv
 Use with: python visualize_env_with_params_behavior.py --config experiments/configs/sample_environment_params.yaml
-The script visualize_env_with_params_behavior.py visualizes environment behavior given these parameters. This is to allow the user to get a feel for how different environment parameters affect dynamics, and what kind of observations/rewards are generated. Specifically, it saves plots of how the AMR levels evolve in response to a puff sequence, and also what the reward looks like for different actions that are chosen.
+The script visualize_env_with_params_behavior.py visualizes environment behavior given these parameters. This is to allow the user to get a feel for how different environment parameters affect dynamics, and what kind of observations/rewards are generated. Specifically, it saves plots of how the AMR levels evolve in response to a dose sequence, and also what the reward looks like for different actions that are chosen.
 """
 
 # %% Import libraries
@@ -75,19 +75,19 @@ def main():
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
     
-    # Visualize environment behavior. The first thing that I am interested in is how the AMR levels evolve in response to a puff sequence. The AMR leaky ballooons are an attribute of the environment, contained in the 'amr_balloon_models' attribute of the environment.
+    # Visualize environment behavior. The first thing that I am interested in is how the AMR levels evolve in response to a dose sequence. The AMR leaky ballooons are an attribute of the environment, contained in the 'amr_balloon_models' attribute of the environment.
     for abx_name, abx_amr_leaky_balloon in env.amr_balloon_models.items():
         print(f"Visualizing behavior for ABX: {abx_name}")
         
-        # Define a puff sequence to visualize
-        puff_sequence = [1, 1, 1, 1, 1, 0, 0, 0, 2, 2, 2, 0, 0, 1, 1, 1, 1, 1]
+        # Define a dose sequence to visualize
+        dose_sequence = [1, 1, 1, 1, 1, 0, 0, 0, 2, 2, 2, 0, 0, 1, 1, 1, 1, 1]
         
         # Plot and save the leaky balloon response
         title = f"Leaky Balloon Response for {abx_name}"
         fname = f"{abx_name}_leaky_balloon_response.png"
         
-        abx_amr_leaky_balloon.plot_leaky_balloon_response_to_puff_sequence(
-            puff_sequence=puff_sequence,
+        abx_amr_leaky_balloon.plot_leaky_balloon_response_to_dose_sequence(
+            dose_sequence=dose_sequence,
             title=title,
             fname=fname,
             save_plot_folder=output_folder,

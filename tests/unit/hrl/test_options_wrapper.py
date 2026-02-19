@@ -31,9 +31,13 @@ class ConstantOption(OptionBase):
         return ["A"]
 
 
-def _build_library(env, action_index: int = 0) -> OptionLibrary:
+def _build_library(env, action_index: int | None = None) -> OptionLibrary:
     library = OptionLibrary(env=env)
-    library.add_option(option=ConstantOption(name="opt", action_index=action_index, k=1))
+    if action_index is None:
+        action_index = env.unwrapped.reward_calculator.abx_name_to_index["no_treatment"]
+    library.add_option(
+        option=ConstantOption(name="opt", action_index=action_index, k=1)
+    )
     return library
 
 

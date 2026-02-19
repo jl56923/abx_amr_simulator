@@ -66,7 +66,7 @@ class TestAMRDynamicsContract:
             initial_amr_level=0.0
         )
         
-        # Test various puff amounts
+        # Test various dose amounts
         for doses in [0, 0.5, 1.0, 5.0, 10.0, 100.0, 1000.0]:
             result = balloon.step(doses)
             assert 0.0 <= result <= 1.0, f"step({doses}) returned {result}, not in [0, 1]"
@@ -153,14 +153,14 @@ class TestAMRDynamicsContract:
         assert 0 <= result <= 1
     
     def test_deterministic_with_same_sequence(self):
-        """Test that step() is deterministic given same puff sequence."""
+        """Test that step() is deterministic given same dose sequence."""
         balloon1 = AMR_LeakyBalloon(leak=0.1, flatness_parameter=1.0, initial_amr_level=0.0)
         balloon2 = AMR_LeakyBalloon(leak=0.1, flatness_parameter=1.0, initial_amr_level=0.0)
         
-        puff_sequence = [0, 1, 2, 0.5, 3, 0, 0, 1.5]
+        dose_sequence = [0, 1, 2, 0.5, 3, 0, 0, 1.5]
         
-        results1 = [balloon1.step(p) for p in puff_sequence]
-        results2 = [balloon2.step(p) for p in puff_sequence]
+        results1 = [balloon1.step(p) for p in dose_sequence]
+        results2 = [balloon2.step(p) for p in dose_sequence]
         
         for r1, r2 in zip(results1, results2):
             assert math.isclose(r1, r2, rel_tol=1e-12)

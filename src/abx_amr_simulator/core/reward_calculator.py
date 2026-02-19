@@ -407,7 +407,7 @@ class RewardCalculator(RewardCalculatorBase):
             visible_amr_level (float): Current AMR level for this antibiotic ∈ [0,1].
                 Used to compute sensitivity probability pS = 1 - visible_amr_level.
                 Ignored if antibiotic_name == 'no_treatment'.
-            delta_visible_amr (float): Marginal AMR contribution (puff) if prescribing.
+            delta_visible_amr (float): Marginal AMR contribution (dose) if prescribing.
                 Used in epsilon penalty term. Ignored if antibiotic_name == 'no_treatment'.
         
         Returns:
@@ -458,7 +458,7 @@ class RewardCalculator(RewardCalculatorBase):
             ...     patient=patient,
             ...     antibiotic_name='A',
             ...     amr_level=0.3,  # 30% resistance
-            ...     delta_amr=0.02,  # Puff contribution
+            ...     delta_amr=0.02,  # Dose contribution
             ... )
             >>> # For validation: MC mean should match expected with large samples
             >>> mc_samples = [rc.calculate_individual_reward(...) for _ in range(50000)]
@@ -565,7 +565,7 @@ class RewardCalculator(RewardCalculatorBase):
                 These are the observed/potentially-delayed resistance estimates. Used for:
                 1. Computing community reward penalty (based on visible burden, not ground truth)
             delta_visible_amr_per_antibiotic (Dict[str, float]): Marginal AMR contribution
-                (puff) per antibiotic for this step. Used in epsilon penalty term.
+                (dose) per antibiotic for this step. Used in epsilon penalty term.
         
         Returns:
             tuple[float, Dict]: (total_reward, info_dict) where:
@@ -733,7 +733,7 @@ class RewardCalculator(RewardCalculatorBase):
                 1. Computing sensitivity probabilities (pS = 1 - visible_amr_level)
                 2. Computing community reward component (based on visible burden)
             delta_visible_amr_per_antibiotic (Dict[str, float]): Marginal AMR contributions
-                (puff) per antibiotic for this step. Used in epsilon penalty term.
+                (dose) per antibiotic for this step. Used in epsilon penalty term.
         
         Returns:
             float: Expected composite reward (deterministic, no randomness).

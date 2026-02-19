@@ -57,7 +57,7 @@ def test_validate_training_config_requires_option_library_for_hrl(capsys: pytest
 
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
-    assert "requires 'option_library_path'" in captured.out
+    assert "requires 'hrl.option_library'" in captured.out
 
 
 def test_validate_training_config_warns_on_missing_option_gamma(
@@ -71,7 +71,9 @@ def test_validate_training_config_warns_on_missing_option_gamma(
         "environment": {},
         "training": {},
         "algorithm": "HRL_PPO",
-        "option_library_path": str(option_library_path),
+        "hrl": {
+            "option_library": str(option_library_path),
+        },
     }
 
     train_module.validate_training_config(config=config)

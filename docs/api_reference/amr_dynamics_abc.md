@@ -105,7 +105,7 @@ def step(self, doses: float) -> float:
 - Output must always be bounded: `residual_floor <= output <= 1.0`
 - If `doses=0` repeated, output should decay toward `residual_floor` (no prescribing → resistance decreases)
 - If `doses>0` repeated, output should increase toward 1.0 (prescribing → resistance accumulates)
-- Must be deterministic (same puff sequence → same resistance trajectory)
+- Must be deterministic (same dose sequence → same resistance trajectory)
 
 **Design Notes**:
 - `step()` is called once per timestep for each antibiotic
@@ -269,7 +269,7 @@ class LinearAccumulation(AMRDynamicsBase):
     """
     Simple linear accumulation with exponential decay.
     
-    Resistance increases by 0.01 per unit puff, decays by 10% each step.
+    Resistance increases by 0.01 per unit dose, decays by 10% each step.
     No sigmoid—just limits to [0, 1].
     """
     
@@ -418,7 +418,7 @@ self._pressure += doses  # No decay term
 
 ### 3. Deterministic Behavior
 
-**Intent**: Same puff sequence → same resistance trajectory.
+**Intent**: Same dose sequence → same resistance trajectory.
 
 ```python
 # ✓ Good: No randomness, repeatable
