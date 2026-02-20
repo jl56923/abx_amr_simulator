@@ -320,7 +320,7 @@ class DummyOption(OptionBase):
 
     def decide(self, env_state):
         num_patients = env_state.get("num_patients", 1)
-        return np.zeros(shape=num_patients, dtype=np.int32)
+        return np.full(shape=num_patients, fill_value='no_treatment', dtype=object)
 
     def get_referenced_antibiotics(self):
         return ["A"]
@@ -376,7 +376,7 @@ class DummyOption(OptionBase):
 
     def decide(self, env_state):
         num_patients = env_state.get("num_patients", 1)
-        return np.zeros(shape=num_patients, dtype=np.int32)
+        return np.full(shape=num_patients, fill_value='no_treatment', dtype=object)
 
     def get_referenced_antibiotics(self):
         return ["A"]

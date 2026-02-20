@@ -45,20 +45,10 @@ def create_test_option(
 
         def decide(self, env_state: dict) -> np.ndarray:
             num_patients = env_state.get("num_patients", 1)
-            reward_calculator = env_state.get("reward_calculator")
-            if reward_calculator is not None:
-                no_treatment_index = reward_calculator.abx_name_to_index["no_treatment"]
-            else:
-                option_library = env_state.get("option_library")
-                if option_library is None:
-                    raise ValueError(
-                        "env_state must include 'reward_calculator' or 'option_library'"
-                    )
-                no_treatment_index = option_library.abx_name_to_index["no_treatment"]
             return np.full(
                 shape=(num_patients,),
-                fill_value=no_treatment_index,
-                dtype=np.int32,
+                fill_value='no_treatment',
+                dtype=object,
             )
 
     return TestOption(name=name, k=k)
@@ -78,20 +68,10 @@ class ObservableOption(OptionBase):
 
     def decide(self, env_state: dict) -> np.ndarray:
         num_patients = env_state.get("num_patients", 1)
-        reward_calculator = env_state.get("reward_calculator")
-        if reward_calculator is not None:
-            no_treatment_index = reward_calculator.abx_name_to_index["no_treatment"]
-        else:
-            option_library = env_state.get("option_library")
-            if option_library is None:
-                raise ValueError(
-                    "env_state must include 'reward_calculator' or 'option_library'"
-                )
-            no_treatment_index = option_library.abx_name_to_index["no_treatment"]
         return np.full(
             shape=(num_patients,),
-            fill_value=no_treatment_index,
-            dtype=np.int32,
+            fill_value='no_treatment',
+            dtype=object,
         )
 
     def set_observable_attributes(self, attrs: list) -> None:

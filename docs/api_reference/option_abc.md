@@ -43,12 +43,13 @@ class OptionBase(ABC):
         self,
         observation: dict,  # env_state dict with keys from REQUIRES_*
         is_training: bool = True,
-    ) -> Tuple[int, str]:
+    ) -> np.ndarray:
         """
         Decide action and termination condition.
         
         Returns:
-            (action: int, termination_info: str)
+            np.ndarray: Array of shape (num_patients,) with dtype=object.
+                       Each element is an antibiotic name string (e.g., 'A', 'B', 'no_treatment')
         """
         pass
     
@@ -186,7 +187,7 @@ def decide(
     self,
     observation: dict,          # Environment state dict with requested fields
     is_training: bool = True,   # True during training, False during eval
-) -> Tuple[int, str]:
+) -> np.ndarray:
     """
     Make decision based on observation.
     
@@ -199,10 +200,9 @@ def decide(
         is_training (bool): Flag for exploratory vs. deterministic behavior
     
     Returns:
-        Tuple[int, str]:
-            - action (int): Index of action to take (0 to num_actions-1)
-            - termination_info (str): Human-readable termination condition description
-                                      (e.g., "patient_is_infected", "reached_max_steps")
+        np.ndarray: Shape (num_patients,) with dtype=object. Each element is an antibiotic name
+                   string (e.g., 'A', 'B', 'no_treatment') representing the action selected
+                   for each patient.
     """
     pass
 ```
@@ -223,9 +223,10 @@ def decide(
 
 **Contract**:
 - Must inspect `observation` only for fields declared in `REQUIRES_*` constants
-- Must return valid action index
-- Termination string should describe why this option achieved termination
+- Must return `np.ndarray` with shape (num_patients,) and dtype=object
+- Each element must be a valid antibiotic name string (e.g., 'A', 'B', 'no_treatment')
 - Must be deterministic if `is_training=False` (for reproducibility in evaluation)
+- The OptionsWrapper will convert strings to action indices before passing to environment
 
 ### `reset() -> None`
 
@@ -256,25 +257,35 @@ def reset(self) -> None:
 ## Concrete Example 1: Block Option (Constant Action)
 
 ```python
+import numpy as np
 from abx_amr_simulator.hrl import OptionBase
 
 class BlockOption(OptionBase):
-    """Option that always returns the same action."""
+    """Option that always returns the same antibiotic name string."""
     
     REQUIRES_OBSERVATION_ATTRIBUTES = []  # No observation needed
     REQUIRES_AMR_LEVELS = False
     REQUIRES_STEP_NUMBER = False
     PROVIDES_TERMINATION_CONDITION = True
     
-    def __init__(self, action: int):
-        """Initialize to always return this action."""
-        self.action = action
+    def __init__(self, antibiotic: str):
+        """Initialize to always return this antibiotic name.
+        
+        Args:
+            antibiotic: Name of antibiotic to prescribe (e.g., 'A', 'B', 'no_treatment')
+        """
+        self.antibiotic = antibiotic
         self.steps_since_start = 0
     
-    def decide(self, observation: dict, is_training: bool = True) -> tuple:
-        """Always return the same action."""
+    def decide(self, observation: dict, is_training: bool = True) -> np.ndarray:
+        """Always return the same antibiotic name.
+        
+        Returns:
+            np.ndarray: Shape (num_patients,) with dtype=object, all elements = self.antibiotic
+        """
         self.steps_since_start += 1
-        return self.action, "always_active"
+        num_patients = len(observation.get('patients', []))
+        return np.full(num_patients, self.antibiotic, dtype=object)
     
     def reset(self) -> None:
         """Reset step counter."""
@@ -283,13 +294,18 @@ class BlockOption(OptionBase):
 
 Usage:
 ```python
-option = BlockOption(action=0)  # Always prescribe antibiotic A
-action, termination = option.decide({})  # Returns (0, "always_active")
+option = BlockOption(antibiotic='A')  # Always prescribe antibiotic A
+# With 3 patients in observation:
+actions = option.decide({'patients': [p1, p2, p3]})  
+# Returns: np.array(['A', 'A', 'A'], dtype=object)
 ```
 
 ## Concrete Example 2: Condition-Based Heuristic
 
 ```python
+import numpy as np
+from abx_amr_simulator.hrl import OptionBase
+
 class PrescribeIfHighRisk(OptionBase):
     """Prescribe if infection probability > threshold."""
     
@@ -300,32 +316,41 @@ class PrescribeIfHighRisk(OptionBase):
     
     def __init__(
         self,
-        prescribe_action: int,
-        no_treat_action: int,
+        prescribe_action: str,
+        no_treat_action: str,
         infection_threshold: float = 0.5,
     ):
-        """Initialize threshold and actions."""
+        """Initialize threshold and antibiotic names.
+        
+        Args:
+            prescribe_action: Antibiotic name to prescribe (e.g., 'A')
+            no_treat_action: Antibiotic name for no treatment (e.g., 'no_treatment')
+            infection_threshold: Infection probability threshold above which to prescribe
+        """
         self.prescribe_action = prescribe_action
         self.no_treat_action = no_treat_action
         self.infection_threshold = infection_threshold
     
-    def decide(self, observation: dict, is_training: bool = True) -> tuple:
-        """Decide based on aggregated infection probability."""
+    def decide(self, observation: dict, is_training: bool = True) -> np.ndarray:
+        """Decide based on aggregated infection probability.
+        
+        Returns:
+            np.ndarray: Shape (num_patients,) with dtype=object.
+                       Returns self.prescribe_action or self.no_treat_action for each patient.
+        """
         patients = observation['patients']
+        num_patients = len(patients)
+        
         avg_prob_infected = sum(
             p.prob_infected_obs for p in patients
-        ) / len(patients)
+        ) / num_patients
         
         if avg_prob_infected > self.infection_threshold:
-            return (
-                self.prescribe_action,
-                f"high_risk_{avg_prob_infected:.2f}"
-            )
+            action_name = self.prescribe_action
         else:
-            return (
-                self.no_treat_action,
-                f"low_risk_{avg_prob_infected:.2f}"
-            )
+            action_name = self.no_treat_action
+        
+        return np.full(num_patients, action_name, dtype=object)
     
     def reset(self) -> None:
         """No state to reset."""
@@ -335,20 +360,26 @@ class PrescribeIfHighRisk(OptionBase):
 Usage:
 ```python
 option = PrescribeIfHighRisk(
-    prescribe_action=0,
-    no_treat_action=len(abx_names),  # No treatment action
+    prescribe_action='A',
+    no_treat_action='no_treatment',
     infection_threshold=0.6,
 )
-action, term = option.decide({'patients': [Patient(...), ...]})
-# Returns (0, "high_risk_0.75") if avg infection > 0.6
+actions = option.decide({'patients': [Patient(...), Patient(...), Patient(...)]})
+# If avg infection > 0.6:
+#   Returns np.array(['A', 'A', 'A'], dtype=object)
+# Otherwise:
+#   Returns np.array(['no_treatment', 'no_treatment', 'no_treatment'], dtype=object)
 ```
 
 ## Concrete Example 3: Time-Varying Strategy
 
 ```python
+import numpy as np
+from abx_amr_simulator.hrl import OptionBase
+
 class AlternatingStrategy(OptionBase):
     """
-    Alternates between two actions every N steps.
+    Alternates between two antibiotic names every N steps.
     
     Useful for testing multi-step strategies during exploration.
     """
@@ -360,22 +391,34 @@ class AlternatingStrategy(OptionBase):
     
     def __init__(
         self,
-        action_even: int,
-        action_odd: int,
+        action_even: str,
+        action_odd: str,
         cycle_length: int = 1,
     ):
-        """Initialize alternating scheme."""
+        """Initialize alternating scheme.
+        
+        Args:
+            action_even: Antibiotic name to use on even cycles (e.g., 'A')
+            action_odd: Antibiotic name to use on odd cycles (e.g., 'B')
+            cycle_length: Number of steps per cycle
+        """
         self.action_even = action_even
         self.action_odd = action_odd
         self.cycle_length = cycle_length
         self.internal_step = 0
     
-    def decide(self, observation: dict, is_training: bool = True) -> tuple:
-        """Alternate based on step number."""
+    def decide(self, observation: dict, is_training: bool = True) -> np.ndarray:
+        """Alternate based on step number.
+        
+        Returns:
+            np.ndarray: Shape (num_patients,) with dtype=object.
+                       Alternates between self.action_even and self.action_odd.
+        """
         step = observation['step_number']
+        num_patients = len(observation.get('patients', []))
         action_idx = (step // self.cycle_length) % 2
         action = self.action_even if action_idx == 0 else self.action_odd
-        return action, f"cycle_phase_{action_idx}_at_step_{step}"
+        return np.full(num_patients, action, dtype=object)
     
     def reset(self) -> None:
         """Reset internal counter."""
@@ -405,31 +448,43 @@ class ResistanceAwareHeuristic(OptionBase):
     
     def __init__(
         self,
-        antibiotic_index: int,
-        prescribe_action: int,
-        no_treat_action: int,
+        antibiotic: str,
+        prescribe_action: str,
+        no_treat_action: str,
         infection_threshold: float = 0.5,
         resistance_threshold: float = 0.6,
         benefit_multiplier_threshold: float = 1.0,
     ):
-        """Initialize heuristic parameters."""
-        self.antibiotic_index = antibiotic_index
+        """Initialize heuristic parameters.
+        
+        Args:
+            antibiotic: Name of antibiotic to consider (e.g., 'A')
+            prescribe_action: Antibiotic name to prescribe
+            no_treat_action: Antibiotic name for no treatment
+            infection_threshold: Minimum infection probability to consider prescribing
+            resistance_threshold: Maximum acceptable resistance level
+            benefit_multiplier_threshold: Minimum expected benefit to prescribe
+        """
+        self.antibiotic = antibiotic
         self.prescribe_action = prescribe_action
         self.no_treat_action = no_treat_action
         self.infection_threshold = infection_threshold
         self.resistance_threshold = resistance_threshold
         self.benefit_multiplier_threshold = benefit_multiplier_threshold
     
-    def decide(self, observation: dict, is_training: bool = True) -> tuple:
-        """Complex decision logic combining multiple factors."""
-        patients = observation['patients']
-        amr_levels = observation['amr_levels']
-        option_library = observation['option_library']
+    def decide(self, observation: dict, is_training: bool = True) -> np.ndarray:
+        """Complex decision logic combining multiple factors.
         
-        # Get antibiotic name from option library
-        abx_names = option_library.abx_names
-        abx_name = abx_names[self.antibiotic_index]
-        current_resistance = amr_levels[abx_name]
+        Returns:
+            np.ndarray: Shape (num_patients,) with dtype=object.
+                       Returns self.prescribe_action or self.no_treat_action for each patient.
+        """
+        patients = observation['patients']
+        num_patients = len(patients)
+        amr_levels = observation['amr_levels']
+        
+        # Get current resistance for this antibiotic
+        current_resistance = amr_levels[self.antibiotic]
         
         # Aggregate patient metrics
         avg_infection = np.mean([p.prob_infected_obs for p in patients])
@@ -437,28 +492,15 @@ class ResistanceAwareHeuristic(OptionBase):
         
         # Decision tree
         if avg_infection < self.infection_threshold:
-            reason = f"low_infection_{avg_infection:.2f}"
-            return self.no_treat_action, reason
+            return np.full(num_patients, self.no_treat_action, dtype=object)
         
         if current_resistance > self.resistance_threshold:
-            reason = (
-                f"high_resistance_{current_resistance:.2f}_"
-                f"despite_infection_{avg_infection:.2f}"
-            )
-            return self.no_treat_action, reason
+            return np.full(num_patients, self.no_treat_action, dtype=object)
         
         if avg_benefit < self.benefit_multiplier_threshold:
-            reason = (
-                f"low_benefit_{avg_benefit:.2f}_"
-                f"despite_low_resistance_{current_resistance:.2f}"
-            )
-            return self.no_treat_action, reason
+            return np.full(num_patients, self.no_treat_action, dtype=object)
         
-        reason = (
-            f"prescribe_infection={avg_infection:.2f}_"
-            f"resistance={current_resistance:.2f}_benefit={avg_benefit:.2f}"
-        )
-        return self.prescribe_action, reason
+        return np.full(num_patients, self.prescribe_action, dtype=object)
     
     def reset(self) -> None:
         """No episode-specific state."""
@@ -539,14 +581,14 @@ class MyCustomOption(OptionBase):
         # Initialize state
         self.counter = 0
     
-    def decide(self, observation: dict, is_training: bool = True) -> tuple:
+    def decide(self, observation: dict, is_training: bool = True) -> np.ndarray:
         """
         Make decision based on observation.
         
         Your logic:
         1. Extract fields from observation
         2. Compute decision (deterministic if is_training=False)
-        3. Return (action_index, termination_reason)
+        3. Return np.ndarray with antibiotic name strings
         """
         option_library = observation.get('option_library')
         
@@ -556,10 +598,10 @@ class MyCustomOption(OptionBase):
         step = observation.get('step_number', 0)
         
         # Decision logic here
-        action = 0  # Your logic determines this
-        termination_info = "your_termination_reason"
+        action_name = 'A'  # Your logic determines this
+        num_patients = len(patients)
         
-        return action, termination_info
+        return np.full(num_patients, action_name, dtype=object)
     
     def reset(self) -> None:
         """Reset state for new episode."""
@@ -574,11 +616,11 @@ Options are typically instantiated via YAML configuration and loader functions:
 ```python
 # In YAML config (e.g., always_prescribe_A.yaml):
 # option_type: block
-# antibiotic_index: 0
+# antibiotic: "A"
 
 def load_block_option(config: dict) -> BlockOption:
     """Loader function: dict → BlockOption."""
-    return BlockOption(action=config['antibiotic_index'])
+    return BlockOption(antibiotic=config['antibiotic'])
 
 # Registry pattern
 OPTION_LOADERS = {
@@ -610,21 +652,23 @@ def create_option_from_config(option_type: str, config: dict) -> OptionBase:
    ```python
    # ✓ Good: Deterministic
    if is_training and random() > epsilon:
-       action = explore()
+       action_name = explore()
    else:
-       action = best_known()
+       action_name = best_known()
    
    # ✗ Bad: Non-deterministic in eval
-   action = random_choice(action_set)  # Always random
+   action_name = random_choice(['A', 'B', 'no_treatment'])  # Always random
    ```
 
-3. **Meaningful termination info**: Provide diagnostic strings
+3. **Return antibiotic name strings**: Always return np.ndarray with dtype=object containing antibiotic names
    ```python
-   # ✓ Good: Informative
-   return action, f"infection_{avg_prob:.2f}_resistance_{amr:.2f}"
+   # ✓ Good: Correct string protocol
+   num_patients = len(observation.get('patients', []))
+   return np.full(num_patients, 'A', dtype=object)
    
-   # ✗ Bad: Uninformative
-   return action, "done"
+   # ✗ Bad: Wrong return type
+   return np.array([0, 0, 0], dtype=np.int32)  # Action indices, not names
+   return ('A', 0)  # Tuple, not ndarray
    ```
 
 4. **Validate inputs**: Check observation has required fields
@@ -652,11 +696,37 @@ def create_option_from_config(option_type: str, config: dict) -> OptionBase:
 
 ## Validation and Error Handling
 
-Options are validated at environment initialization:
+Options are validated at environment initialization. The primary validation occurs in OptionsWrapper when options are called during step-time:
 
 ```python
-# Validation checks:
-# 1. All required REQUIRES_* fields are accessible
+# Options return antibiotic name strings, which are validated by wrapper:
+option_library = OptionLibrary(abx_names=['A', 'B', 'no_treatment'], ...)
+option = BlockOption(antibiotic='A')  # Valid antibiotic name
+
+# At step-time, wrapper validates:
+actions = option.decide(observation)  # Returns np.array(['A', 'A', 'A'], dtype=object)
+
+# Wrapper checks:
+# 1. actions is np.ndarray with dtype=object
+if actions.dtype != object:
+    raise TypeError(f"decide() must return dtype=object, got {actions.dtype}")
+
+# 2. All action names are valid antibiotics
+valid_abx = set(option_library.abx_names)
+for action_name in np.unique(actions):
+    if action_name not in valid_abx:
+        raise ValueError(
+            f"decide() returned invalid antibiotic '{action_name}'. "
+            f"Valid antibiotics: {valid_abx}"
+        )
+
+# 3. reset() is callable
+option.reset()  # Should not raise
+```
+
+**Earlier validation** (at library initialization):
+```python
+# All required REQUIRES_* fields are accessible
 observed_attrs = patient_generator.visible_patient_attributes
 for required in option.REQUIRES_OBSERVATION_ATTRIBUTES:
     if required not in observed_attrs:
@@ -664,16 +734,6 @@ for required in option.REQUIRES_OBSERVATION_ATTRIBUTES:
             f"Option {option.name} requires '{required}' "
             f"but PatientGenerator only provides {observed_attrs}"
         )
-
-# 2. decide() returns valid action
-action, term_info = option.decide(observation)
-if not isinstance(action, (int, np.integer)):
-    raise TypeError(f"decide() must return int action, got {type(action)}")
-if action < 0 or action >= num_actions:
-    raise ValueError(f"Action {action} outside [0, {num_actions-1}]")
-
-# 3. reset() is callable
-option.reset()  # Should not raise
 ```
 
 ## Related ABCs & Components

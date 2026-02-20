@@ -320,9 +320,9 @@ class HeuristicWorker(OptionBase):
                 - 'max_steps': Episode length limit (unused)
         
         Returns:
-            np.ndarray of shape (num_patients,) with action indices
-            - 0 to len(antibiotic_names)-1: prescribe that antibiotic
-            - len(antibiotic_names): no treatment
+            np.ndarray of shape (num_patients,) with antibiotic name strings
+            - 'A', 'B', etc.: prescribe that antibiotic
+            - 'no_treatment': do not prescribe
         """
         patients = env_state['patients']
         current_amr_levels = env_state['current_amr_levels']
@@ -348,7 +348,7 @@ class HeuristicWorker(OptionBase):
             )
             actions.append(action)
         
-        return np.array(actions, dtype=np.int32)
+        return np.array(actions, dtype=object)
     
     def _select_action_for_patient(
         self,
@@ -359,7 +359,7 @@ class HeuristicWorker(OptionBase):
         use_relative_uncertainty: bool,
         total_observable_attrs: int,
         option_library: Any,
-    ) -> int:
+    ) -> str:
         """Deterministic action selection for a single patient.
         
         Logic:
@@ -378,7 +378,7 @@ class HeuristicWorker(OptionBase):
             option_library: OptionLibrary reference (for abx_name_to_index)
         
         Returns:
-            Action index ∈ {0, ..., len(antibiotic_names)} where len(antibiotic_names) = no treatment
+            Antibiotic name string: 'A', 'B', etc., or 'no_treatment'
         """
         # Compute expected rewards
         expected_rewards = self.compute_expected_reward(
@@ -400,14 +400,13 @@ class HeuristicWorker(OptionBase):
         # Check uncertainty threshold (refuse to prescribe if too uncertain)
         if uncertainty > self.uncertainty_threshold:
             # Too much missing data—default to no treatment
-            return reward_calculator.abx_name_to_index['no_treatment']
+            return 'no_treatment'
         
         # Find best action exceeding its threshold
-        no_treatment_index = reward_calculator.abx_name_to_index['no_treatment']
-        best_action = no_treatment_index  # default to no_treatment
+        best_action = 'no_treatment'  # default to no_treatment
         best_value = expected_rewards.get('no_treatment', -np.inf)
         
-        for abx_idx, abx in enumerate(antibiotic_names):
+        for abx in antibiotic_names:
             action_key = f'prescribe_{abx}'
             if action_key not in expected_rewards:
                 continue  # Skip if this antibiotic not in clinical params
@@ -417,7 +416,7 @@ class HeuristicWorker(OptionBase):
             
             # Only consider actions exceeding their threshold
             if action_value >= threshold and action_value > best_value:
-                best_action = abx_idx
+                best_action = abx
                 best_value = action_value
         
         return best_action

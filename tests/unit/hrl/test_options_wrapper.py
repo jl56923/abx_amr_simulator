@@ -12,31 +12,31 @@ from test_reference_helpers import create_mock_environment, create_mock_patient_
 
 
 class ConstantOption(OptionBase):
-    """Option that always prescribes the same action index."""
+    """Option that always prescribes the same antibiotic."""
 
     REQUIRES_OBSERVATION_ATTRIBUTES = ["prob_infected"]
     REQUIRES_AMR_LEVELS = False
     REQUIRES_STEP_NUMBER = False
     PROVIDES_TERMINATION_CONDITION = False
 
-    def __init__(self, name: str, action_index: int, k: int = 1):
+    def __init__(self, name: str, action_name: str, k: int = 1):
         super().__init__(name=name, k=k)
-        self._action_index = action_index
+        self._action_name = action_name
 
     def decide(self, env_state: dict) -> np.ndarray:
         num_patients = env_state.get("num_patients", 1)
-        return np.full(shape=(num_patients,), fill_value=self._action_index, dtype=np.int32)
+        return np.full(shape=(num_patients,), fill_value=self._action_name, dtype=object)
 
     def get_referenced_antibiotics(self) -> list:
         return ["A"]
 
 
-def _build_library(env, action_index: int | None = None) -> OptionLibrary:
+def _build_library(env, action_name: str | None = None) -> OptionLibrary:
     library = OptionLibrary(env=env)
-    if action_index is None:
-        action_index = env.unwrapped.reward_calculator.abx_name_to_index["no_treatment"]
+    if action_name is None:
+        action_name = "no_treatment"
     library.add_option(
-        option=ConstantOption(name="opt", action_index=action_index, k=1)
+        option=ConstantOption(name="opt", action_name=action_name, k=1)
     )
     return library
 

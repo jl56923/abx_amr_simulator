@@ -386,8 +386,8 @@ class TestActionSelection:
         
         actions = worker.decide(env_state=env_state)
         
-        # Should prescribe (not no_treatment which is index 2)
-        assert actions[0] in [0, 1]  # Prescribe A or B
+        # Should prescribe (not 'no_treatment')
+        assert actions[0] in ['A', 'B']  # Prescribe A or B
     
     def test_refuse_when_uncertainty_too_high(self):
         """Test that worker refuses to prescribe when uncertainty exceeds threshold."""
@@ -421,9 +421,8 @@ class TestActionSelection:
         
         actions = worker.decide(env_state=env_state)
         
-        # Should default to no_treatment due to high uncertainty
-        no_treatment_index = env_state['reward_calculator'].abx_name_to_index['no_treatment']
-        assert actions[0] == no_treatment_index
+        # Should default to 'no_treatment' due to high uncertainty
+        assert actions[0] == 'no_treatment'
     
     def test_select_best_action_among_multiple(self):
         """Test that worker selects highest expected reward among valid actions."""
@@ -455,8 +454,8 @@ class TestActionSelection:
         
         actions = worker.decide(env_state=env_state)
         
-        # Should select A (index 0) because it has lower AMR
-        assert actions[0] == 0
+        # Should select 'A' because it has lower AMR
+        assert actions[0] == 'A'
     
     def test_multiple_patients(self):
         """Test action selection for multiple patients."""
@@ -487,8 +486,8 @@ class TestActionSelection:
         
         assert len(actions) == 2
         # With realistic reward calculation, both patients' expected rewards may be below threshold
-        # Just verify we get valid actions (0, 1, or 2 for no_treatment)
-        assert all(action in [0, 1, 2] for action in actions)
+        # Just verify we get valid antibiotic name strings ('A', 'B', or 'no_treatment')
+        assert all(action in ['A', 'B', 'no_treatment'] for action in actions)
 
 
 class TestHeuristicOptionLoader:

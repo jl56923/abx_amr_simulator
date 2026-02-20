@@ -220,19 +220,19 @@ class OptionsWrapper(gym.Wrapper):
             # Build env_state
             env_state = self._build_env_state(current_obs)
 
-            # Get action from option (option accesses abx_name_to_index via env_state['option_library'])
+            # Get action from option (option returns antibiotic name strings)
             try:
-                actions = option.decide(env_state)
+                action_strings = option.decide(env_state)
             except Exception as e:
                 raise RuntimeError(
                     f"Option '{option.name}' decide() failed: {e}\n"
                     f"env_state keys: {env_state.keys()}"
                 )
 
-            # Validate actions (Layer 3 validation)
-            self._validate_actions(actions, option.name)
+            # Convert antibiotic name strings to action indices (Layer 3 validation)
+            actions = self._convert_and_validate_actions(action_strings, option.name)
 
-            # Step base environment
+            # Step base environment with indices
             base_obs, base_reward, terminated, truncated, info = self.env.step(actions)
             self.current_env_obs = cast(np.ndarray, base_obs)
             current_obs = self.current_env_obs
@@ -522,46 +522,56 @@ class OptionsWrapper(gym.Wrapper):
             else:
                 self._steps_since_prescribed[abx] += 1
 
-    def _validate_actions(self, actions: np.ndarray, option_name: str) -> None:
-        """Validate actions returned by option.decide() (Layer 3 validation).
+    def _convert_and_validate_actions(self, action_strings: np.ndarray, option_name: str) -> np.ndarray:
+        """Convert and validate antibiotic name strings to action indices.
+        
+        Options return antibiotic name strings ('A', 'B', 'no_treatment', etc.).
+        This method validates and converts them to action indices for the base environment.
         
         Args:
-            actions: Action array returned by option.
+            action_strings: Action array of antibiotic name strings returned by option.decide().
             option_name: Name of option that returned actions (for error messages).
         
+        Returns:
+            np.ndarray: Action indices (integers) in valid range for base environment.
+        
         Raises:
-            TypeError: If actions not np.ndarray.
-            ValueError: If shape wrong or indices out of range.
+            TypeError: If action_strings not np.ndarray or wrong dtype.
+            ValueError: If shape wrong or invalid antibiotic names.
         """
         # Check type
-        if not isinstance(actions, np.ndarray):
+        if not isinstance(action_strings, np.ndarray):
             raise TypeError(
-                f"Option '{option_name}': decide() returned {type(actions).__name__}, "
+                f"Option '{option_name}': decide() returned {type(action_strings).__name__}, "
                 f"expected np.ndarray"
             )
 
         # Check shape
         num_patients = self._base_env.num_patients_per_time_step
-        if actions.shape != (num_patients,):
+        if action_strings.shape != (num_patients,):
             raise ValueError(
                 f"Option '{option_name}': Expected action shape ({num_patients},), "
-                f"got {actions.shape}"
+                f"got {action_strings.shape}"
             )
 
-        # Check dtype (should be integer)
-        if not np.issubdtype(actions.dtype, np.integer):
+        # Check dtype (should be object/string)
+        if not (action_strings.dtype == object or np.issubdtype(action_strings.dtype, np.str_)):
             raise TypeError(
-                f"Option '{option_name}': Expected integer dtype, got {actions.dtype}"
+                f"Option '{option_name}': Expected string dtype (object or str), got {action_strings.dtype}"
             )
 
-        # Check action range
-        num_antibiotics = len(self.option_library.abx_name_to_index)
-        max_action = num_antibiotics  # 0 to num_antibiotics-1 = prescribe; num_antibiotics = NO_RX
-        if np.any((actions < 0) | (actions > max_action)):
-            invalid_actions = actions[(actions < 0) | (actions > max_action)]
-            antibiotic_names = list(self.option_library.abx_name_to_index.keys())
-            raise ValueError(
-                f"Option '{option_name}': Invalid action indices {set(invalid_actions)}. "
-                f"Valid range: [0, {max_action}] for {num_antibiotics} antibiotics "
-                f"{antibiotic_names}"
-            )
+        # Convert strings to indices and validate
+        action_indices = []
+        valid_antibiotic_names = set(self.option_library.abx_name_to_index.keys())
+        
+        for i, action_str in enumerate(action_strings):
+            action_name = str(action_str)  # Convert to string in case of numpy string
+            if action_name not in valid_antibiotic_names:
+                raise ValueError(
+                    f"Option '{option_name}' returned invalid antibiotic name '{action_name}' "
+                    f"for patient {i}. Valid options: {sorted(valid_antibiotic_names)}"
+                )
+            action_idx = self.option_library.abx_name_to_index[action_name]
+            action_indices.append(action_idx)
+        
+        return np.array(action_indices, dtype=np.int32)

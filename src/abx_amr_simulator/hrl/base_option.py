@@ -74,7 +74,7 @@ class OptionBase(ABC):
 
     @abstractmethod
     def decide(self, env_state: Dict[str, Any]) -> np.ndarray:
-        """Decide which actions to take for each patient at current step.
+        """Decide which antibiotics to prescribe/not prescribe for each patient at current step.
         
         This is the core decision-making method. It receives decoded environment state
         (not raw observation arrays) for clarity and maintainability.
@@ -93,34 +93,36 @@ class OptionBase(ABC):
                 - 'current_amr_levels': Dict mapping antibiotic name -> resistance (float in [0, 1]).
                   Only present if REQUIRES_AMR_LEVELS=True; empty dict otherwise.
                 - 'option_library': Reference to OptionLibrary instance.
-                  Used to access abx_name_to_index mapping via env_state['option_library'].abx_name_to_index
+                  Used to access antibiotic names and validate decisions.
         
         Returns:
-            np.ndarray: Action indices, shape (num_patients,).
-                Values: integers in [0, num_antibiotics] where:
-                    - 0 to num_antibiotics-1: prescribe that antibiotic (index from abx_name_to_index)
-                    - num_antibiotics: no treatment (NO_RX)
-                dtype: np.int32
+            np.ndarray: Antibiotic name strings, shape (num_patients,).
+                Values: strings representing antibiotic names or 'no_treatment'
+                    - 'A', 'B', etc.: prescribe that antibiotic
+                    - 'no_treatment': do not prescribe
+                dtype: np.object_ (string array)
         
         Raises:
-            ValueError: If configuration is invalid (e.g., antibiotic not in abx_name_to_index).
-            TypeError: If return type is not np.ndarray or if action values wrong type.
+            ValueError: If configuration is invalid (e.g., antibiotic not in environment).
+            TypeError: If return type is not np.ndarray.
         
         Example (BlockOption - prescribe antibiotic 'A' to all patients):
             def decide(self, env_state):
                 num_patients = env_state['num_patients']
-                option_library = env_state['option_library']
-                
-                # Get action index from cached mapping
-                try:
-                    action_idx = option_library.abx_name_to_index[self.target_antibiotic]
-                except KeyError:
-                    available = list(option_library.abx_name_to_index.keys())
-                    raise ValueError(
-                        f"Option '{self.name}': antibiotic '{self.target_antibiotic}' "
-                        f"not in environment. Available: {available}"
-                    )
-                return np.full(shape=num_patients, fill_value=action_idx, dtype=np.int32)
+                # Return antibiotic name directly (not index)
+                return np.full(shape=num_patients, fill_value='A', dtype=object)
+        
+        Example (HeuristicWorker - adaptive decision based on patient state):
+            def decide(self, env_state):
+                patients = env_state['patients']
+                actions = []
+                for patient in patients:
+                    # ... compute expected reward for each action ...
+                    if best_expected_reward >= threshold:
+                        actions.append(best_antibiotic)  # string name
+                    else:
+                        actions.append('no_treatment')
+                return np.array(actions, dtype=object)
         """
         pass
 

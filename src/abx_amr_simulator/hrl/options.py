@@ -282,57 +282,38 @@ class OptionLibrary:
                 # For future use; just log for now
                 pass
             
-            # Check 6: Semantic validation of action index mapping
-            # Test option's behavior on low-infection scenarios to catch buggy action mappings.
-            # Skip for BlockOptions (which are explicitly designed to always prescribe one antibiotic)
-            try:
-                BlockOptionClass = _get_block_option_class()
-                is_block_option = isinstance(option, BlockOptionClass)
-                
-                if not is_block_option:
-                    # Create test scenarios: normal case and low-infection case
-                    # to verify semantic correctness of action index mapping
-                    try:
-                        test_env_state = self._build_test_env_state(
-                            env=env,
-                            patient_generator=patient_generator,
-                        )
-                        test_actions = option.decide(env_state=test_env_state)
-                        
-                        # Create a patient that should clearly select no_treatment (zero infection probability)
-                        test_no_rx_env_state = self._build_test_env_state(
-                            env=env,
-                            patient_generator=patient_generator,
-                            force_no_treatment_scenario=True,
-                        )
-                        no_rx_actions = option.decide(env_state=test_no_rx_env_state)
-                        expected_no_treatment_index = reward_calculator.abx_name_to_index['no_treatment']
-                        
-                        # For deterministic options, all test patients should select no_treatment
-                        # For stochastic options, at least check the indices are valid (already done above)
-                        if all(action == no_rx_actions[0] for action in no_rx_actions):
-                            # Deterministic behavior detected - verify semantic correctness
-                            if no_rx_actions[0] != expected_no_treatment_index:
-                                raise ValueError(
-                                    f"Option '{option_name}' SEMANTIC ERROR: When prob_infected=0.0 "
-                                    f"(should clearly select no_treatment), option returned action index "
-                                    f"{no_rx_actions[0]}, but reward_calculator maps 'no_treatment' to index "
-                                    f"{expected_no_treatment_index}. This indicates the option is using "
-                                    f"a custom action_to_index mapping that conflicts with the canonical mapping. "
-                                    f"Fix: Use reward_calculator.abx_name_to_index or option_library.abx_name_to_index "
-                                    f"instead of building custom action mappings."
-                                )
-                    except ValueError as e:
-                        # Re-raise semantic validation errors (these are important bugs to catch)
-                        raise
-                    except Exception as e:
-                        # For other errors (assertions, side effects, etc.), don't fail validation
-                        # These will be caught at actual runtime when the option is used
-                        pass
-                
-            except ValueError as e:
-                # Re-raise ValueError from semantic validation
-                raise
+            # Check 6: Semantic validation - verify observation-reading options return 'no_treatment' strings
+            # when prob_infected=0.0 (clear signal to not prescribe)
+            # Only validate observation-reading options (those that require patient attributes)
+            if option.REQUIRES_OBSERVATION_ATTRIBUTES:
+                # For observation-reading options, verify semantic correctness
+                # by testing behavior on low-infection scenarios
+                try:
+                    test_no_rx_env_state = self._build_test_env_state(
+                        env=env,
+                        patient_generator=patient_generator,
+                        force_no_treatment_scenario=True,
+                    )
+                    no_rx_actions = option.decide(env_state=test_no_rx_env_state)
+                    
+                    # For deterministic options, all test patients should select no_treatment
+                    if all(action == no_rx_actions[0] for action in no_rx_actions):
+                        # Deterministic behavior detected - verify it returns 'no_treatment' string
+                        if no_rx_actions[0] != 'no_treatment':
+                            raise ValueError(
+                                f"Option '{option_name}' SEMANTIC ERROR: When prob_infected=0.0 "
+                                f"(should clearly select no_treatment), option returned '{no_rx_actions[0]}' "
+                                f"but should return 'no_treatment'. "
+                                f"Fix: Return 'no_treatment' string for no-treatment decisions, "
+                                f"not an antibiotic name or index."
+                            )
+                except ValueError as e:
+                    # Re-raise semantic validation errors (these are important bugs to catch)
+                    raise
+                except Exception as e:
+                    # For other errors (assertions, side effects, etc.), don't fail validation
+                    # These will be caught at runtime when the option is actually used
+                    pass
         
         # After validation, inject full observable attribute list into options that support it
         # (e.g., HeuristicWorker needs this for uncertainty scoring)

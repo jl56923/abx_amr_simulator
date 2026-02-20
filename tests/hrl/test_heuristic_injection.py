@@ -266,12 +266,11 @@ class TestObservableAttributeInjection:
             'max_steps': 100,
         }
         
-        # Uncertain patient: should refuse (return no_treatment action index)
+        # Uncertain patient: should refuse (return 'no_treatment' antibiotic name string)
         actions_uncertain = worker.decide(env_state=env_state)
-        no_treatment_index = env_state['reward_calculator'].abx_name_to_index['no_treatment']
-        assert actions_uncertain[0] == no_treatment_index
+        assert actions_uncertain[0] == 'no_treatment'
         
-        # Certain patient: should prescribe (action 0 = prescribe A)
+        # Certain patient: should prescribe (antibiotic name 'A')
         env_state['patients'] = [patient_certain]
         actions_certain = worker.decide(env_state=env_state)
-        assert actions_certain[0] == 0  # prescribe A
+        assert actions_certain[0] == 'A'  # prescribe A

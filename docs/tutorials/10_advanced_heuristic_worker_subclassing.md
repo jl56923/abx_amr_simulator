@@ -159,60 +159,116 @@ python -m abx_amr_simulator.training.train \
 
 ---
 
-## Critical: Action Index Mapping
+## Critical: String-Based Antibiotic Protocol
 
-**⚠️ Important:** Options must use the environment's antibiotic-to-action-index mapping, not create their own.
+**✅ Simplified Protocol:** Options are no longer responsible for action-index mapping. Instead, they simply return antibiotic name strings.
 
-### Why This Matters
+### The Protocol
 
-The environment defines a canonical mapping of antibiotic names to action indices:
+**Options return antibiotic name strings:**
 ```python
-# From RewardCalculator (authoritative source)
-abx_name_to_index = {
-    'prescribe_A': 0,
-    'prescribe_B': 1,
-    # ... other antibiotics ...
-    'no_treatment': num_antibiotics  # Always LAST index
-}
+def decide(self, observation: Dict[str, Any]) -> np.ndarray:
+    """
+    Return array of antibiotic name strings.
+    
+    Returns:
+        np.ndarray: Shape (num_patients,) with dtype=object.
+                   Each element is an antibiotic name like 'A', 'B', 'no_treatment'
+    """
+    num_patients = len(observation.get('patients', []))
+    return np.full(num_patients, 'A', dtype=object)
 ```
 
-When your option selects an action, it must return an index from this mapping. **Creating your own local mapping will cause action misalignment and select wrong actions.**
+**OptionsWrapper handles index conversion:**
+- Takes your antibiotic name strings ('A', 'B', 'no_treatment', etc.)
+- Converts them to environment action indices using `option_library.abx_name_to_index`
+- Passes indices to the base environment
 
-### How to Do It Correctly
+### Why This Separation
 
-Always access the environment's mapping via `env_state`:
+**Before** (complex, error-prone):
+- Options had to know internal action-index mappings
+- Easy to misalign by creating wrong local mappings
+- Each option author responsible for correct conversion
+
+**Now** (simple, centralized):
+- Options work with human-readable antibiotic names
+- Single conversion layer in OptionsWrapper 
+- All index handling in one place = fewer bugs
+
+### How to Implement
+
+**In your custom option, just use antibiotic name strings:**
 
 ```python
-def decide(self, env_state: Dict[str, Any]) -> np.ndarray:
-    # ✅ CORRECT: Use environment's mapping (single source of truth)
-    option_library = env_state['option_library']
-    abx_name_to_index = option_library.abx_name_to_index
+import numpy as np
+from abx_amr_simulator.hrl import OptionBase
+
+class MyCustomOption(OptionBase):
+    """My option that prescribes based on heuristic logic."""
     
-    # Your decision logic here
-    selected_action = 'prescribe_A'  # or 'no_treatment', etc.
+    REQUIRES_OBSERVATION_ATTRIBUTES = ['prob_infected']
+    REQUIRES_AMR_LEVELS = False
+    REQUIRES_STEP_NUMBER = False
+    PROVIDES_TERMINATION_CONDITION = True
     
-    # Return action index from environment's mapping
-    action_index = abx_name_to_index[selected_action]
-    return np.array([action_index, ...], dtype=np.int32)
+    def __init__(self, target_antibiotic: str):
+        """
+        Args:
+            target_antibiotic: Name of antibiotic to consider (e.g., 'A', 'B')
+        """
+        self.target_antibiotic = target_antibiotic
+    
+    def decide(self, observation: Dict[str, Any]) -> np.ndarray:
+        """Decide to prescribe target antibiotic or not.
+        
+        Returns:
+            np.ndarray: Shape (num_patients,) with antibiotic name strings
+        """
+        patients = observation.get('patients', [])
+        num_patients = len(patients)
+        
+        # Your decision logic using antibiotic NAMES, not indices
+        avg_infection = sum(p.prob_infected_obs for p in patients) / num_patients
+        
+        if avg_infection > 0.5:
+            return np.full(num_patients, self.target_antibiotic, dtype=object)
+        else:
+            return np.full(num_patients, 'no_treatment', dtype=object)
+    
+    def reset(self) -> None:
+        pass
 ```
+
+**That's it! No index mapping needed.** ✅
 
 ### What NOT to Do
 
 ```python
-# ❌ WRONG: Creating local mapping with 'no_treatment' at index 0
-action_keys = ['no_treatment'] + [f'prescribe_{abx}' for abx in abx_list]
-action_to_index = {action: i for i, action in enumerate(action_keys)}
-# This creates: {'no_treatment': 0, 'prescribe_A': 1, ...}
-# But environment expects: {'prescribe_A': 0, 'prescribe_B': 1, ..., 'no_treatment': N}
-# Result: agent selects wrong antibiotics!
+# ❌ DON'T manually convert to indices
+def decide(self, observation):
+    option_lib = observation['option_library']
+    abx_to_idx = option_lib.abx_name_to_index  # Don't use this!
+    idx = abx_to_idx['A']
+    return np.array([idx, idx, ...], dtype=np.int32)  # Wrong!
+
+# ❌ DON'T create your own local mapping
+def decide(self, observation):
+    my_mapping = {'A': 0, 'B': 1, 'no_treatment': 2}
+    return np.array([0, 0, 0], dtype=np.int32)  # Will misalign!
 ```
 
 ### Validation
 
-The `OptionLibrary` validates all options at import time:
-- Checks that option library's `abx_name_to_index` matches environment's
-- Fails loudly with clear error if mappings don't match
-- This prevents silent action misalignment bugs
+The `OptionsWrapper` validates your antibiotic names at step-time:
+- Checks that returned strings are valid antibiotics from the option library
+- Fails loudly if you return an invalid antibiotic name
+- Converts valid names to indices for the environment
+
+This ensures:
+- **Clarity**: Everyone uses same antibiotic names
+- **Safety**: Invalid prescriptions caught immediately
+- **Simplicity**: No manual index conversion needed
 
 ---
 

@@ -30,7 +30,7 @@ class ConcreteTestOption(OptionBase):
 
     def decide(self, env_state):
         num_patients = env_state['num_patients']
-        return np.zeros(num_patients, dtype=np.int32)
+        return np.full(shape=num_patients, fill_value='no_treatment', dtype=object)
     
     def get_referenced_antibiotics(self):
         """Test option returns no specific antibiotics."""
@@ -95,7 +95,7 @@ class TestOptionBaseDecide:
 
         assert isinstance(actions, np.ndarray)
         assert actions.shape == (2,)
-        assert actions.dtype == np.int32
+        assert actions.dtype == object  # Options now return antibiotic name strings
 
     def test_decide_with_different_num_patients(self):
         """Test decide() with different numbers of patients."""
@@ -162,21 +162,17 @@ class TestOptionBaseSubclassExample:
 
         def decide(self, env_state):
             num_patients = env_state['num_patients']
-            # Get antibiotic names from option_library in env_state
+            # Get option_library from env_state to validate antibiotic exists
             option_library = env_state.get('option_library')
             if option_library is None:
                 raise ValueError("option_library not found in env_state")
             
-            abx_name_to_index = option_library.abx_name_to_index
-            antibiotic_names = list(abx_name_to_index.keys())
-            
-            try:
-                action_idx = antibiotic_names.index(self.antibiotic)
-            except ValueError:
+            # Validate antibiotic exists and return its name string
+            if self.antibiotic not in option_library.abx_name_to_index:
                 raise ValueError(
-                    f"Antibiotic '{self.antibiotic}' not in {antibiotic_names}"
+                    f"Antibiotic '{self.antibiotic}' not in {list(option_library.abx_name_to_index.keys())}"
                 )
-            return np.full(num_patients, action_idx, dtype=np.int32)
+            return np.full(num_patients, self.antibiotic, dtype=object)
         
         def get_referenced_antibiotics(self):
             """Return the single antibiotic this option uses."""
@@ -195,7 +191,7 @@ class TestOptionBaseSubclassExample:
         }
         actions = opt.decide(env_state)
 
-        assert np.array_equal(actions, [0, 0, 0])
+        assert np.array_equal(actions, np.array(['A', 'A', 'A'], dtype=object))
 
     def test_block_option_prescribe_different_abx(self):
         """Test BlockOption with different antibiotics."""
@@ -209,7 +205,7 @@ class TestOptionBaseSubclassExample:
         }
         actions = opt_b.decide(env_state)
 
-        assert np.array_equal(actions, [1, 1])
+        assert np.array_equal(actions, np.array(['B', 'B'], dtype=object))
 
     def test_block_option_invalid_antibiotic(self):
         """Test BlockOption with invalid antibiotic."""
