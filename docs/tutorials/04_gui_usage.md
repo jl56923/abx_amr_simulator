@@ -18,7 +18,7 @@ The `abx_amr_simulator` package includes two Streamlit GUI applications:
 Both apps treat your current working directory as the project root and look for
 configs in `./experiments/configs/`.
 
-**Important**: The GUI does **not** support HRL or Optuna workflows—use CLI tutorials for those.
+**Important**: The GUI does **not** support HRL or Optuna workflows. Read through the tutorials on using the CLI for those workflows.
 
 ---
 
@@ -95,7 +95,7 @@ The Experiment Runner provides a simplified interface for basic training workflo
 - **Per-attribute configuration**: Set distribution (constant/gaussian), observation noise/bias, clipping bounds
 
 ### 5. Agent Algorithm
-- **Algorithm**: PPO, A2C (DQN if available)
+- **Algorithm**: PPO, A2C
 - **Network architecture**: MLP policy with configurable hidden layers
 - **Hyperparameters**: Learning rate, batch size, GAE lambda, etc.
 

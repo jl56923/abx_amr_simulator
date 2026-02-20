@@ -48,6 +48,8 @@ my_first_project/
 
 The config scaffolding utility is available as a Python function:
 
+**NOTE:** revise the bash snippet to tell the user to run 'setup_config_folders_with_defaults' from the 'experiments' subfolde,r not from 'my_first_project'.
+
 ```bash
 python -c "from abx_amr_simulator.utils import setup_config_folders_with_defaults; setup_config_folders_with_defaults('.')"
 ```
@@ -108,6 +110,8 @@ This design means:
 
 If you plan to use hierarchical RL (HRL) with option libraries, scaffold the options folder:
 
+**NOTE:** Again, need to tell the user to run this from the 'experiments' subfolder
+
 ```bash
 python -m abx_amr_simulator.hrl.setup_options --target-path .
 ```
@@ -133,13 +137,15 @@ experiments/
 - **option_libraries/** — YAML files defining collections of options (the "library" the manager chooses from)
 - **option_types/** — Default configs and loaders for each option type (block, alternation, heuristic)
 
-You'll learn how to customize option libraries in Tutorial 7.
+You'll learn how to customize option libraries in Tutorial 7. **NOTE** provide link to Tutorial 7, and also the title of it.
 
 ---
 
 ## Step 4: Scaffold Tuning Configs (for Optuna)
 
 If you plan to run hyperparameter tuning with Optuna, scaffold the tuning configs:
+
+**NOTE:** Again, need to tell the user to run this from the 'experiments' subfolder
 
 ```bash
 python -m abx_amr_simulator.training.setup_tuning --target-path .
@@ -158,7 +164,7 @@ experiments/
 - **ppo_tuning_default.yaml** — Optuna search space for PPO hyperparameters
 - **hrl_ppo_tuning_default.yaml** — Optuna search space for HRL-PPO hyperparameters
 
-You'll learn how to use these in Tutorial 4 (Optimization).
+You'll learn how to use these in Tutorial 4 (Optimization). **NOTE** provide link to Tutorial 4, and also the title of it.
 
 ---
 

@@ -367,7 +367,7 @@ This balances reward maximization with consistency across seeds. The `stability_
 
 **Default values**:
 - PPO: `stability_penalty_weight: 0.2` (moderate penalty)
-- HRL: `stability_penalty_weight: 0.3` (slightly higher due to option discovery noise)
+- HRL PPO: `stability_penalty_weight: 0.3` (slightly higher due to option discovery noise)
 
 Each trial logs `mean_reward`, `std_reward`, and `stability_penalty` for debugging.
 

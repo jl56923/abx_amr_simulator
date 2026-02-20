@@ -92,3 +92,5 @@ with open(summary_path, 'r') as f:
     summary = json.load(f)
 print(f'After second run: n_trials={summary["n_trials"]}')
 print(f'Expected: 2, Got: {summary["n_trials"]}')
+print(f'\nFull study_summary.json:')
+print(json.dumps(summary, indent=2))

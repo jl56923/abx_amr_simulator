@@ -36,7 +36,7 @@ my_first_project/
 
 **Configuration Path Resolution:**
 
-The umbrella config (`base_experiment.yaml`) uses a modern format that explicitly declares where to find component configs:
+The umbrella config (`base_experiment.yaml`) uses a format that explicitly declares where to find component configs:
 
 ```yaml
 # Folder locations (relative to umbrella config's directory)
@@ -72,8 +72,8 @@ Formula:
 $$\text{reward} = (1-\lambda) \times \text{individual\_reward} + \lambda \times \text{community\_reward}$$
 
 - **λ = 0.0**: Selfish agent (maximize patient health, ignore AMR) → agents prescribe heavily
-- **λ = 0.5**: Balanced (default)
-- **λ = 1.0**: Altruistic agent (minimize community AMR, ignore patient health) → agents underprescribe
+- **λ = 0.5**: Balanced (gives equal weight to current patient health and community AMR)
+- **λ = 1.0**: Altruistic agent (minimize community AMR levels, ignore current patient health) → agents underprescribe
 
 ### Compare Different Lambda Values
 
@@ -340,7 +340,7 @@ python -m abx_amr_simulator.training.train \
   -p training.run_name=experiment_two_abx_independent
 ```
 
-**What changed**: The agent now sees two independent resistance dynamics. It can develop different prescribing strategies for each antibiotic.
+**What changed**: The agent now sees two different antibiotics, each with independent resistance dynamics. It can develop different prescribing strategies for each antibiotic.
 
 ### Example 3: Two Antibiotics With Moderate Crossresistance
 
@@ -449,7 +449,7 @@ python -m abx_amr_simulator.analysis.evaluative_plots --experiment-prefix sweep_
 
 ## Customization 4: Modify Patient Populations
 
-By default, patients are **homogeneous** (all have the same attributes). You can introduce heterogeneity in two ways: via distributions or by changing which attributes are visible.
+By default, patients are **homogeneous** (all have the same attributes). You can introduce heterogeneity in the patient population in three ways: via distributions, by changing which attributes are visible, or by using a patient generator mixer (see Example 3 below).
 
 ### Understanding the Default Patient Population
 
@@ -464,7 +464,7 @@ seed: null
 distributions:
   prob_infected:
     type: constant
-    value: 0.3
+    value: 0.8
   benefit_value_multiplier:
     type: constant
     value: 1.0
@@ -484,11 +484,11 @@ distributions:
 
 **Key insight**: This creates a **completely homogeneous population** where:
 - All attributes are **constants** (not random distributions)
-- Every patient has 30% infection probability
+- Every patient has 80% infection probability
 - Every patient has 100% treatment benefit (1.0 multiplier)
 - Only `prob_infected` is visible to the agent
 
-This is the simplest case. All patients are identical, so the agent's prescribing strategy should be uniform.
+This is the simplest case. All patients are identical, so the agent's prescribing strategy should be uniform across patients.
 
 ### Example 1: Gaussian Distributions (Heterogeneous Population)
 
@@ -577,7 +577,7 @@ distributions:
     value: 0.1
 ```
 
-This is useful for studying **information asymmetry**: Does the agent struggle without knowing treatment benefit? Compare against the full-visibility experiment to see the impact.
+This is useful for studying **information asymmetry**: Does the agent struggle without knowing the treatment benefit to each patient? Compare against the full-visibility experiment to see the impact.
 
 ### Example 3: Mix Multiple Patient Populations (PatientGeneratorMixer)
 
@@ -637,7 +637,6 @@ antibiotics_AMR_dict:
     permanent_residual_volume: 0.0
     initial_amr_level: 0.0
 
-action_mode: multidiscrete
 include_steps_since_amr_update_in_obs: false
 ```
 
@@ -660,6 +659,7 @@ per_antibiotic_rewards:
 
 marginal_amr_penalty: -0.05           # Higher penalty per unit AMR
 ```
+**NOTE:** Pretty sure that there is no 'marginal_amr_penalty' in the real reward calculator yaml file.
 
 ### Run with Both Custom Subconfigs
 
