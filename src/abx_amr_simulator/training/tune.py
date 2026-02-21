@@ -195,6 +195,26 @@ def load_and_save_hrl_option_library(
     return option_library_config
 
 
+def _normalize_config(config: Any) -> Any:
+    """Recursively normalize a config dict to handle YAML parsing differences.
+    
+    Converts dicts to a canonical form with sorted keys to ensure consistent 
+    comparison regardless of key ordering from YAML parsing.
+    
+    Args:
+        config: Configuration to normalize (dict, list, or scalar)
+    
+    Returns:
+        Normalized config with consistent key ordering
+    """
+    if isinstance(config, dict):
+        return {k: _normalize_config(v) for k, v in sorted(config.items())}
+    elif isinstance(config, list):
+        return [_normalize_config(item) for item in config]
+    else:
+        return config
+
+
 def validate_configs_match_existing(
     current_umbrella_config: Dict[str, Any],
     current_tuning_config: Dict[str, Any],
@@ -239,21 +259,36 @@ def validate_configs_match_existing(
         with open(options_path, 'r') as f:
             saved_option_library_config = yaml.safe_load(f)
     
+    # Normalize both current and saved configs to handle YAML parsing differences
+    # (key ordering can differ but content is identical)
+    normalized_current_umbrella = _normalize_config(current_umbrella_config)
+    normalized_saved_umbrella = _normalize_config(saved_umbrella_config)
+    normalized_current_tuning = _normalize_config(current_tuning_config)
+    normalized_saved_tuning = _normalize_config(saved_tuning_config)
+    normalized_current_options = (
+        _normalize_config(current_option_library_config) 
+        if current_option_library_config is not None else None
+    )
+    normalized_saved_options = (
+        _normalize_config(saved_option_library_config) 
+        if saved_option_library_config is not None else None
+    )
+    
     # Compare configs
     configs_match = True
     mismatches = []
     
-    if current_umbrella_config != saved_umbrella_config:
+    if normalized_current_umbrella != normalized_saved_umbrella:
         configs_match = False
         mismatches.append(("full_agent_env_config.yaml", current_umbrella_config, saved_umbrella_config))
     
-    if current_tuning_config != saved_tuning_config:
+    if normalized_current_tuning != normalized_saved_tuning:
         configs_match = False
         mismatches.append(("tuning_config.yaml", current_tuning_config, saved_tuning_config))
     
     # Check option library if applicable
-    if current_option_library_config is not None or saved_option_library_config is not None:
-        if current_option_library_config != saved_option_library_config:
+    if normalized_current_options is not None or normalized_saved_options is not None:
+        if normalized_current_options != normalized_saved_options:
             configs_match = False
             mismatches.append(("option_library_config.yaml", current_option_library_config, saved_option_library_config))
     
