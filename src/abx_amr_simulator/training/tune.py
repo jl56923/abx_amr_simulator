@@ -215,6 +215,32 @@ def _normalize_config(config: Any) -> Any:
         return config
 
 
+def _remove_derived_fields(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove derived/resolved fields from config for comparison.
+    
+    Fields like 'option_library_path' are computed paths that may differ
+    between environments (local vs. remote) but represent the same logical config.
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Config with derived fields removed
+    """
+    result = {}
+    derived_fields = {'option_library_path'}  # Add more as needed
+    
+    for key, value in config.items():
+        if key in derived_fields:
+            continue
+        if isinstance(value, dict):
+            result[key] = _remove_derived_fields(value)
+        else:
+            result[key] = value
+    
+    return result
+
+
 def validate_configs_match_existing(
     current_umbrella_config: Dict[str, Any],
     current_tuning_config: Dict[str, Any],
@@ -261,8 +287,9 @@ def validate_configs_match_existing(
     
     # Normalize both current and saved configs to handle YAML parsing differences
     # (key ordering can differ but content is identical)
-    normalized_current_umbrella = _normalize_config(current_umbrella_config)
-    normalized_saved_umbrella = _normalize_config(saved_umbrella_config)
+    # Also remove derived fields that may differ between environments
+    normalized_current_umbrella = _normalize_config(_remove_derived_fields(current_umbrella_config))
+    normalized_saved_umbrella = _normalize_config(_remove_derived_fields(saved_umbrella_config))
     normalized_current_tuning = _normalize_config(current_tuning_config)
     normalized_saved_tuning = _normalize_config(saved_tuning_config)
     normalized_current_options = (
