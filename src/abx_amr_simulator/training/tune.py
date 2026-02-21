@@ -245,17 +245,17 @@ def validate_configs_match_existing(
     
     if current_umbrella_config != saved_umbrella_config:
         configs_match = False
-        mismatches.append("full_agent_env_config.yaml")
+        mismatches.append(("full_agent_env_config.yaml", current_umbrella_config, saved_umbrella_config))
     
     if current_tuning_config != saved_tuning_config:
         configs_match = False
-        mismatches.append("tuning_config.yaml")
+        mismatches.append(("tuning_config.yaml", current_tuning_config, saved_tuning_config))
     
     # Check option library if applicable
     if current_option_library_config is not None or saved_option_library_config is not None:
         if current_option_library_config != saved_option_library_config:
             configs_match = False
-            mismatches.append("option_library_config.yaml")
+            mismatches.append(("option_library_config.yaml", current_option_library_config, saved_option_library_config))
     
     if not configs_match:
         print(f"\n{'='*70}")
@@ -263,10 +263,17 @@ def validate_configs_match_existing(
         print(f"{'='*70}")
         print(f"\nYou are attempting to resume optimization run '{run_name}',")
         print(f"but the current configuration does not match the saved configuration.")
-        print(f"\nMismatched files:")
-        for mismatch in mismatches:
-            print(f"  - {mismatch}")
-        print(f"\nSaved configs location: {optimization_dir}")
+        print(f"\nMismatched files and their differences:")
+        print(f"{'-'*70}")
+        
+        for filename, current, saved in mismatches:
+            print(f"\n📄 {filename}")
+            print(f"\n  CURRENT (from command line):")
+            print(f"  {yaml.dump(current, default_flow_style=False, sort_keys=False).rstrip()}")
+            print(f"\n  SAVED (from {optimization_dir}):")
+            print(f"  {yaml.dump(saved, default_flow_style=False, sort_keys=False).rstrip()}")
+            print(f"\n  {'-'*70}")
+        
         print(f"\nThis likely means you changed values in your umbrella config,")
         print(f"tuning config, or options library since starting this optimization.")
         print(f"\nTo proceed, you must either:")
