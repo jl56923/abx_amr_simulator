@@ -1051,9 +1051,9 @@ def main():
     # Determine if this is a new study or a resumed study
     is_resumed_study = n_existing_trials > 0
     
-    # For NEW studies only: check if we've already reached the target number of completed trials
-    # For RESUMED studies: always allow adding n_trials more (configs already validated as matching)
-    if not is_resumed_study and n_completed_trials_with_results >= n_trials:
+    # If we've already reached the target number of completed trials, skip additional trials.
+    # For resumed studies, also ensure the completion registry is updated.
+    if n_completed_trials_with_results >= n_trials:
         print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
         print(f"  Completed trials with results: {n_completed_trials_with_results}")
         print(f"  Target n_trials: {n_trials}")
@@ -1084,13 +1084,17 @@ def main():
         storage_label = storage_path or storage_url
         print(f"✓ Study database at: {storage_label}")
         
-        # Update registry
-        update_registry(
-            registry_path=completion_registry_path,
-            run_name=run_name,
-            timestamp=timestamp
-        )
-        print(f"\n✓ Recorded successful completion in registry: {completion_registry_path}\n")
+        # Update registry (only if missing)
+        completed_prefixes = load_registry(completion_registry_path)
+        if run_name not in completed_prefixes:
+            update_registry(
+                registry_path=completion_registry_path,
+                run_name=run_name,
+                timestamp=timestamp
+            )
+            print(f"\n✓ Recorded successful completion in registry: {completion_registry_path}\n")
+        else:
+            print(f"\n✓ Registry already marked complete: {completion_registry_path}\n")
         
         print(f"Optimization results saved to: {optimization_dir}")
         print(f"  - Study database: {storage_label}")
@@ -1103,9 +1107,11 @@ def main():
         print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
         print(f"  Completed trials with results: {n_completed_trials_with_results}")
         print(f"  Best value so far: {study.best_value:.4f}")
-        # For resumed studies, always add n_trials more
-        remaining_trials = n_trials
-        print(f"  Will run {remaining_trials} additional trial(s) (total will be {n_existing_trials + n_trials})")
+        remaining_trials = max(0, n_trials - n_completed_trials_with_results)
+        print(
+            f"  Will run {remaining_trials} additional trial(s) "
+            f"(target total: {n_trials}, current complete: {n_completed_trials_with_results})"
+        )
     else:
         print(f"✓ Starting new study")
         remaining_trials = n_trials
