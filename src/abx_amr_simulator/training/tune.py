@@ -771,6 +771,12 @@ def main():
         action='store_true',
         help='Run Optuna trial training in a temporary directory and delete outputs after tuning'
     )
+    parser.add_argument(
+        '--tuning-override',
+        action='append',
+        default=[],
+        help='Override tuning config values. Example: --tuning-override optimization.n_trials=10'
+    )
     
     args = parser.parse_args()
     
@@ -908,6 +914,34 @@ def main():
     
     with open(args.tuning_config, 'r') as f:
         tuning_config = yaml.safe_load(f)
+    
+    # Apply tuning config overrides
+    if args.tuning_override:
+        print(f"\nApplying tuning config overrides...")
+        for override_str in args.tuning_override:
+            if '=' not in override_str:
+                print(f"Warning: Ignoring invalid tuning override format '{override_str}' (expected key=value)")
+                continue
+            key, value = override_str.split('=', 1)
+            # Try to parse as number, boolean, or keep as string
+            try:
+                value = int(value)
+            except ValueError:
+                try:
+                    value = float(value)
+                except ValueError:
+                    if value.lower() in ['true', 'false']:
+                        value = value.lower() == 'true'
+            
+            # Apply override using dot notation
+            keys = key.split('.')
+            current = tuning_config
+            for k in keys[:-1]:
+                if k not in current:
+                    current[k] = {}
+                current = current[k]
+            current[keys[-1]] = value
+            print(f"  {key}: {value}")
     
     # Apply overrides to umbrella config
     if subconfig_overrides:
@@ -1052,13 +1086,26 @@ def main():
         elif load_if_exists and os.path.exists(storage_path):
             print(f"\n✓ Found existing study database, will continue: {storage_path}")
 
-    study = optuna.create_study(
-        direction=direction,
-        sampler=sampler,
-        study_name=args.study_name or run_name,
-        storage=storage_url,
-        load_if_exists=load_if_exists
-    )
+    # Create Optuna study with retry logic for Postgres enum creation race condition
+    study = None
+    for attempt in range(3):
+        try:
+            study = optuna.create_study(
+                direction=direction,
+                sampler=sampler,
+                study_name=args.study_name or run_name,
+                storage=storage_url,
+                load_if_exists=load_if_exists
+            )
+            break  # Success
+        except Exception as e:
+            error_str = str(e).lower()
+            if 'studydirection' in error_str and 'unique' in error_str and attempt < 2:
+                # Likely Postgres enum creation race; another worker is creating it
+                print(f"⚠️  Postgres enum creation race detected (attempt {attempt + 1}/3). Retrying in 2 seconds...")
+                time.sleep(2)
+            else:
+                raise
     
     # Report study status
     n_existing_trials = len(study.trials)
@@ -1122,7 +1169,10 @@ def main():
     if is_resumed_study:
         print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
         print(f"  Completed trials with results: {n_completed_trials_with_results}")
-        print(f"  Best value so far: {study.best_value:.4f}")
+        if n_completed_trials_with_results > 0:
+            print(f"  Best value so far: {study.best_value:.4f}")
+        else:
+            print(f"  No completed trials yet (first worker initializing study)")
         remaining_trials = max(0, n_trials - n_completed_trials_with_results)
         print(
             f"  Will run {remaining_trials} additional trial(s) "
