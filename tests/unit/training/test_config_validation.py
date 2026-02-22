@@ -121,6 +121,32 @@ class TestRemoveDerivedFields:
         assert result['algorithm'] == 'PPO'
         assert result['other_field'] == 'value'
     
+    def test_remove_umbrella_config_dir(self):
+        """Test that _umbrella_config_dir is removed."""
+        config = {
+            'algorithm': 'PPO',
+            '_umbrella_config_dir': '/Users/local/path/configs',
+            'other_field': 'value'
+        }
+        result = _remove_derived_fields(config)
+        assert '_umbrella_config_dir' not in result
+        assert result['algorithm'] == 'PPO'
+        assert result['other_field'] == 'value'
+    
+    def test_remove_multiple_derived_fields(self):
+        """Test that all derived fields are removed."""
+        config = {
+            'algorithm': 'HRL_RPPO',
+            '_umbrella_config_dir': '/home/remote/path/configs',
+            'option_library_path': '/some/path/to/library.yaml',
+            'normal_field': 'keep_me'
+        }
+        result = _remove_derived_fields(config)
+        assert '_umbrella_config_dir' not in result
+        assert 'option_library_path' not in result
+        assert result['algorithm'] == 'HRL_RPPO'
+        assert result['normal_field'] == 'keep_me'
+    
     def test_remove_nested_derived_fields(self):
         """Test removal of derived fields in nested structures."""
         config = {
@@ -246,6 +272,68 @@ class TestConfigValidation:
                 yaml.dump({'n_trials': 100}, f)
             
             # Should pass because option_library_path is ignored
+            validate_configs_match_existing(
+                current_umbrella_config=current_config,
+                current_tuning_config={'n_trials': 100},
+                current_option_library_config=None,
+                optimization_dir=tmpdir,
+                run_name='test_run'
+            )
+    
+    def test_validation_passes_ignoring_umbrella_config_dir(self):
+        """Test that _umbrella_config_dir differences are ignored (local vs remote paths)."""
+        # Simulates local macOS path
+        current_config = {
+            'algorithm': 'RecurrentPPO',
+            '_umbrella_config_dir': '/Users/joycelee/Work/Code/project/configs',
+            'learning_rate': 0.0003
+        }
+        
+        # Simulates remote Linux path
+        saved_config = {
+            'algorithm': 'RecurrentPPO',
+            '_umbrella_config_dir': '/home/jl56923/Work/project/configs',
+            'learning_rate': 0.0003
+        }
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, 'full_agent_env_config.yaml'), 'w') as f:
+                yaml.dump(saved_config, f)
+            with open(os.path.join(tmpdir, 'tuning_config.yaml'), 'w') as f:
+                yaml.dump({'n_trials': 100}, f)
+            
+            # Should pass despite different absolute paths (_umbrella_config_dir is ignored)
+            validate_configs_match_existing(
+                current_umbrella_config=current_config,
+                current_tuning_config={'n_trials': 100},
+                current_option_library_config=None,
+                optimization_dir=tmpdir,
+                run_name='test_run'
+            )
+    
+    def test_validation_passes_ignoring_all_derived_fields(self):
+        """Test that all derived fields are ignored during validation."""
+        current_config = {
+            'algorithm': 'HRL_RPPO',
+            '_umbrella_config_dir': '/Users/local/configs',
+            'option_library_path': '/local/path/library.yaml',
+            'learning_rate': 0.0001
+        }
+        
+        saved_config = {
+            'algorithm': 'HRL_RPPO',
+            '_umbrella_config_dir': '/home/remote/configs',
+            'option_library_path': '/remote/path/library.yaml',
+            'learning_rate': 0.0001
+        }
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, 'full_agent_env_config.yaml'), 'w') as f:
+                yaml.dump(saved_config, f)
+            with open(os.path.join(tmpdir, 'tuning_config.yaml'), 'w') as f:
+                yaml.dump({'n_trials': 100}, f)
+            
+            # Should pass because all derived fields are ignored
             validate_configs_match_existing(
                 current_umbrella_config=current_config,
                 current_tuning_config={'n_trials': 100},

@@ -218,8 +218,9 @@ def _normalize_config(config: Any) -> Any:
 def _remove_derived_fields(config: Dict[str, Any]) -> Dict[str, Any]:
     """Remove derived/resolved fields from config for comparison.
     
-    Fields like 'option_library_path' are computed paths that may differ
-    between environments (local vs. remote) but represent the same logical config.
+    Fields like 'option_library_path' and '_umbrella_config_dir' are computed 
+    paths that may differ between environments (local vs. remote) but represent 
+    the same logical config.
     
     Args:
         config: Configuration dictionary
@@ -228,7 +229,7 @@ def _remove_derived_fields(config: Dict[str, Any]) -> Dict[str, Any]:
         Config with derived fields removed
     """
     result = {}
-    derived_fields = {'option_library_path'}  # Add more as needed
+    derived_fields = {'option_library_path', '_umbrella_config_dir'}  # Add more as needed
     
     for key, value in config.items():
         if key in derived_fields:
