@@ -118,6 +118,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
+import time
 
 import optuna
 import yaml
@@ -942,29 +943,43 @@ def main():
     
     # Validate configs match existing if resuming (unless --overwrite-existing-study)
     umbrella_path = os.path.join(optimization_dir, 'full_agent_env_config.yaml')
+    tuning_path = os.path.join(optimization_dir, 'tuning_config.yaml')
     if os.path.exists(umbrella_path) and not args.overwrite_existing_study:
-        print(f"\n{'='*70}")
-        print("VALIDATING CONFIGURATION CONSISTENCY")
-        print(f"{'='*70}")
-        print(f"Existing optimization folder detected: {optimization_dir}")
-        print(f"Checking if current configs match saved configs...\\n")
-        
-        # Load HRL option library if applicable (for validation)
-        temp_option_library_config = load_and_save_hrl_option_library(
-            config=umbrella_config,
-            umbrella_config_path=args.umbrella_config,
-            optimization_dir=tempfile.mkdtemp()  # Temp dir for validation only
-        )
-        
-        # Validate configs match
-        validate_configs_match_existing(
-            current_umbrella_config=umbrella_config,
-            current_tuning_config=tuning_config,
-            current_option_library_config=temp_option_library_config,
-            optimization_dir=optimization_dir,
-            run_name=run_name
-        )
-        print(f"{'='*70}\\n")
+        if args.use_postgres and not os.path.exists(path=tuning_path):
+            print("Waiting for tuning_config.yaml to appear (multi-worker startup)...")
+            for _ in range(10):
+                if os.path.exists(path=tuning_path):
+                    break
+                time.sleep(seconds=1)
+
+        if args.use_postgres and not os.path.exists(path=tuning_path):
+            print(
+                "⚠️  Warning: tuning_config.yaml not found yet. "
+                "Another worker may be saving configs; skipping validation for now."
+            )
+        else:
+            print(f"\n{'='*70}")
+            print("VALIDATING CONFIGURATION CONSISTENCY")
+            print(f"{'='*70}")
+            print(f"Existing optimization folder detected: {optimization_dir}")
+            print(f"Checking if current configs match saved configs...\\n")
+            
+            # Load HRL option library if applicable (for validation)
+            temp_option_library_config = load_and_save_hrl_option_library(
+                config=umbrella_config,
+                umbrella_config_path=args.umbrella_config,
+                optimization_dir=tempfile.mkdtemp()  # Temp dir for validation only
+            )
+            
+            # Validate configs match
+            validate_configs_match_existing(
+                current_umbrella_config=umbrella_config,
+                current_tuning_config=tuning_config,
+                current_option_library_config=temp_option_library_config,
+                optimization_dir=optimization_dir,
+                run_name=run_name
+            )
+            print(f"{'='*70}\n")
     
     # Save resolved configs immediately (before optimization starts)
     config_already_saved = os.path.exists(umbrella_path)
