@@ -83,6 +83,16 @@ def run_postgres(
     pg_version_file = os.path.join(pg_data_dir, "PG_VERSION")
     if not os.path.exists(pg_version_file):
         print(f"Initializing PostgreSQL data directory at {pg_data_dir}...")
+        
+        # macOS-specific: Remove AppleDouble files that can confuse PostgreSQL initdb
+        # These ._* files are created by macOS on external drives and cause "File exists" errors
+        if sys.platform == "darwin":
+            import shutil
+            if os.path.exists(pg_data_dir):
+                print(f"  Cleaning macOS AppleDouble files from {pg_data_dir}...")
+                shutil.rmtree(path=pg_data_dir, ignore_errors=True)
+            os.makedirs(name=pg_data_dir, exist_ok=True)
+        
         subprocess.run(args=["initdb", "-D", pg_data_dir], check=True)
 
     print(f"Starting PostgreSQL server on port {pg_port} using {pg_data_dir}...")

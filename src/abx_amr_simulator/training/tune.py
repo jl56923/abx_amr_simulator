@@ -487,7 +487,7 @@ def run_training_trial(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=3600,  # 1 hour timeout per seed
+                timeout=900,  # 15 minute timeout for LOCAL DEBUGGING ONLY (Feb 22, 2026)
                 cwd=str(package_root)  # Set working directory to package root
             )
             
@@ -523,7 +523,7 @@ def run_training_trial(
             rewards.append(reward)
             
         except subprocess.TimeoutExpired:
-            print(f"Warning: Training timed out for seed {seed}")
+            print(f"Warning: Training timed out after 15 minutes for seed {seed} (debugging timeout)")
             rewards.append(float('-inf'))
         except Exception as e:
             print(f"Warning: Training raised exception for seed {seed}: {e}")
@@ -984,7 +984,7 @@ def main():
             for _ in range(10):
                 if os.path.exists(path=tuning_path):
                     break
-                time.sleep(seconds=1)
+                time.sleep(1)
 
         if args.use_postgres and not os.path.exists(path=tuning_path):
             print(
