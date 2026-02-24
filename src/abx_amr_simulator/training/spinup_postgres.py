@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from abx_amr_simulator.training import postgres_utils
@@ -125,6 +126,7 @@ def main() -> None:
     )
 
     print(f"PostgreSQL ready at localhost:{pg_port}/{db_name}")
+    sys.exit(0)
 
 
 if __name__ == "__main__":
