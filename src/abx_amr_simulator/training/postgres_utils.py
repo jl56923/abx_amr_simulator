@@ -128,13 +128,11 @@ def run_postgres(
             "start"
         ],
         check=False,
-        capture_output=True,
-        text=True
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
     )
     if result.returncode != 0:
         print(f"ERROR: pg_ctl start failed!")
-        print(f"stdout: {result.stdout}")
-        print(f"stderr: {result.stderr}")
         sys.exit(1)
     
     # pg_ctl start initiated successfully - server is starting in background
