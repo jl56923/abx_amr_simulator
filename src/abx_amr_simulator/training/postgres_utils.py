@@ -197,8 +197,12 @@ def ensure_database_exists(pg_port: str, pg_username: str, db_name: str) -> None
                 )
                 if not cursor.fetchone():
                     print(f"Creating database '{db_name}'...")
-                    cursor.execute(query=f"CREATE DATABASE {db_name}")
-                    print(f"✓ Database '{db_name}' created successfully")
+                    try:
+                        cursor.execute(query=f"CREATE DATABASE {db_name}")
+                        print(f"✓ Database '{db_name}' created successfully")
+                    except psycopg2.errors.UniqueViolation:
+                        # Another worker created the database between our check and CREATE
+                        print(f"✓ Database '{db_name}' already exists (created by another worker).")
                 else:
                     print(f"✓ Database '{db_name}' already exists.")
             finally:
