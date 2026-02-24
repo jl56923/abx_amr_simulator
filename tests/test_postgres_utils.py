@@ -26,19 +26,23 @@ def temp_pg_data_dir():
     # Cleanup: stop PostgreSQL and remove data directory
     try:
         # Try to stop any running server in this data directory
-        subprocess.run(
+        result = subprocess.run(
             args=["pg_ctl", "-D", temp_dir, "stop", "-m", "immediate"],
             capture_output=True,
-            timeout=5
+            timeout=10
         )
-    except Exception:
-        pass
+        if result.returncode != 0:
+            print(f"Warning: pg_ctl stop returned {result.returncode}")
+    except subprocess.TimeoutExpired:
+        print(f"Warning: pg_ctl stop timed out")
+    except Exception as e:
+        print(f"Warning: Error stopping PostgreSQL: {e}")
     
     # Remove the directory
     try:
         shutil.rmtree(temp_dir)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: Error removing temp dir {temp_dir}: {e}")
 
 
 @pytest.fixture
