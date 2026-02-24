@@ -487,7 +487,7 @@ def run_training_trial(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=900,  # 15 minute timeout for LOCAL DEBUGGING ONLY (Feb 22, 2026)
+                timeout=None,  # No timeout; rely on SLURM job timeout (e.g., 48 hours)
                 cwd=str(package_root)  # Set working directory to package root
             )
             
@@ -523,7 +523,7 @@ def run_training_trial(
             rewards.append(reward)
             
         except subprocess.TimeoutExpired:
-            print(f"Warning: Training timed out after 15 minutes for seed {seed} (debugging timeout)")
+            print(f"Warning: Training timed out for seed {seed} (SLURM job timeout or system constraint)")
             rewards.append(float('-inf'))
         except Exception as e:
             print(f"Warning: Training raised exception for seed {seed}: {e}")
