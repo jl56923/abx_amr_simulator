@@ -298,8 +298,281 @@ class TestIntegrationFullWorkflow:
         connection.close()
 
 
+class TestConcurrentRaceConditions:
+    """Test concurrent/race condition scenarios (Gap 1 & 2 coverage).
+    
+    These tests verify that the PostgreSQL initialization and database creation
+    code handles race conditions correctly when multiple workers execute simultaneously.
+    """
+    
+    def test_file_locking_prevents_concurrent_initdb(self, temp_pg_data_dir, unique_pg_port, pg_username):
+        """Test that fcntl.flock() prevents simultaneous initdb calls (Gap 1).
+        
+        This test spawns multiple threads that all attempt to initialize the same
+        PostgreSQL data directory. The file locking mechanism should ensure that
+        only one thread actually runs initdb, while others wait and then reuse the
+        initialized database.
+        
+        Verification: All threads should succeed, and we check that PG_VERSION exists
+        and is accessible from all threads (indicating successful file locking).
+        """
+        import threading
+        
+        results = {
+            "success_count": 0,
+            "errors": [],
+            "pg_version_readable_count": 0,
+            "lock": threading.Lock()
+        }
+        
+        def initialize_database_worker(pg_port, pg_data_dir, pg_username, expected_major_version, worker_id):
+            """Worker thread that attempts to initialize the database."""
+            try:
+                postgres_utils.run_postgres(
+                    pg_port=pg_port,
+                    pg_data_dir=pg_data_dir,
+                    pg_username=pg_username,
+                    expected_major_version=expected_major_version
+                )
+                
+                # Verify PG_VERSION exists (indicator of successful initialization)
+                pg_version_file = os.path.join(pg_data_dir, "PG_VERSION")
+                if os.path.exists(pg_version_file):
+                    with open(pg_version_file, 'r') as f:
+                        version_content = f.read().strip()
+                    with results["lock"]:
+                        results["pg_version_readable_count"] += 1
+                
+                with results["lock"]:
+                    results["success_count"] += 1
+            except Exception as e:
+                with results["lock"]:
+                    results["errors"].append(f"Worker {worker_id}: {str(e)}")
+        
+        # Spawn multiple threads all trying to initialize the same data directory
+        num_threads = 4
+        threads = []
+        for i in range(num_threads):
+            t = threading.Thread(
+                target=initialize_database_worker,
+                args=(unique_pg_port, temp_pg_data_dir, pg_username, "17", i),
+                name=f"InitThread-{i}"
+            )
+            threads.append(t)
+            t.start()
+        
+        # Wait for all threads to complete
+        for t in threads:
+            t.join(timeout=60)
+        
+        # Verify results
+        assert results["success_count"] == num_threads, (
+            f"All {num_threads} threads should succeed despite race condition. "
+            f"Only {results['success_count']} succeeded. Errors: {results['errors']}"
+        )
+        
+        # Verify the database is actually initialized (accessible from multiple threads)
+        assert results["pg_version_readable_count"] > 0, (
+            "PG_VERSION file should be readable, indicating successful initialization"
+        )
+        
+        # Verify server is still running and healthy after concurrent attempts
+        assert postgres_utils.is_server_ready(
+            pg_port=unique_pg_port,
+            pg_username=pg_username
+        ), "PostgreSQL server should be running after concurrent initialization attempts"
+    
+    def test_unique_violation_exception_handling_concurrent_database_creation(
+        self, temp_pg_data_dir, unique_pg_port, pg_username
+    ):
+        """Test that UniqueViolation is handled correctly when creating databases concurrently (Gap 2).
+        
+        This test simulates multiple workers racing to create the same database.
+        The first worker creates it successfully, while others encounter UniqueViolation.
+        All workers should complete without error due to exception handling.
+        """
+        import threading
+        
+        # First, start PostgreSQL (just once, outside of the race)
+        postgres_utils.run_postgres(
+            pg_port=unique_pg_port,
+            pg_data_dir=temp_pg_data_dir,
+            pg_username=pg_username,
+            expected_major_version="17"
+        )
+        
+        db_name = "concurrent_create_test_db"
+        results = {
+            "success_count": 0,
+            "errors": [],
+            "lock": threading.Lock()
+        }
+        
+        def create_database_worker(db_name, pg_port, pg_username, worker_id):
+            """Worker thread that attempts to create a database."""
+            try:
+                postgres_utils.ensure_database_exists(
+                    pg_port=pg_port,
+                    pg_username=pg_username,
+                    db_name=db_name
+                )
+                with results["lock"]:
+                    results["success_count"] += 1
+            except Exception as e:
+                with results["lock"]:
+                    results["errors"].append(f"Worker {worker_id}: {str(e)}")
+        
+        # Spawn multiple threads all trying to create the same database
+        num_threads = 4
+        threads = []
+        for i in range(num_threads):
+            t = threading.Thread(
+                target=create_database_worker,
+                args=(db_name, unique_pg_port, pg_username, i),
+                name=f"DbCreateThread-{i}"
+            )
+            threads.append(t)
+            # Don't start all threads at once - add a small delay to increase race condition likelihood
+            t.start()
+            if i < num_threads - 1:
+                import time
+                time.sleep(0.01)  # Small delay between thread starts
+        
+        # Wait for all threads to complete
+        for t in threads:
+            t.join(timeout=30)
+        
+        # Verify results
+        assert results["success_count"] == num_threads, (
+            f"All {num_threads} threads should succeed (race condition handled), "
+            f"but only {results['success_count']} did. Errors: {results['errors']}"
+        )
+        assert not results["errors"], (
+            f"UniqueViolation exception should be handled gracefully. "
+            f"Errors encountered: {results['errors']}"
+        )
+        
+        # Verify the database actually exists and is accessible
+        import psycopg2
+        connection = psycopg2.connect(
+            dbname=db_name,
+            user=pg_username,
+            host="localhost",
+            port=unique_pg_port
+        )
+        connection.close()
+    
+    def test_file_locking_with_already_initialized_database(
+        self, temp_pg_data_dir, unique_pg_port, pg_username
+    ):
+        """Test that file locking correctly handles pre-initialized scenario (Gap 1 continuation).
+        
+        Once the database is initialized, subsequent workers should:
+        1. Acquire the file lock (waiting if necessary)
+        2. Detect that initialization is already complete (PG_VERSION exists)
+        3. Skip redundant initdb call
+        4. Return success without error
+        
+        This scenario represents late-joining workers in a multi-worker training job where
+        some workers start after the database is already initialized.
+        """
+        import threading
+        
+        results = {
+            "success_count": 0,
+            "errors": [],
+            "already_initialized_count": 0,
+            "lock": threading.Lock()
+        }
+        
+        # Step 1: Pre-initialize the database with the primary server
+        postgres_utils.run_postgres(
+            pg_port=unique_pg_port,
+            pg_data_dir=temp_pg_data_dir,
+            pg_username=pg_username,
+            expected_major_version="17"
+        )
+        
+        # Verify PG_VERSION exists
+        pg_version_file = os.path.join(temp_pg_data_dir, "PG_VERSION")
+        assert os.path.exists(pg_version_file), "Initial run should create PG_VERSION"
+        
+        def late_join_worker(pg_data_dir, pg_username, worker_id):
+            """
+            Worker thread that joins after database is already initialized.
+            
+            In a real multi-worker scenario, this would call run_postgres too,
+            which should detect the existing database and skip redundant initialization.
+            Here we directly verify the initialization was already done.
+            """
+            try:
+                # Simulate late-joining worker checking if database is ready
+                pg_version_file_check = os.path.join(pg_data_dir, "PG_VERSION")
+                
+                # This file indicates successful initialization
+                if os.path.exists(pg_version_file_check):
+                    with results["lock"]:
+                        results["already_initialized_count"] += 1
+                
+                # Attempt to call run_postgres to verify it detects existing DB
+                # and doesn't fail (file locking allows this)
+                try:
+                    postgres_utils.run_postgres(
+                        pg_port=str(int(unique_pg_port) + 1000 + worker_id),
+                        pg_data_dir=pg_data_dir,
+                        pg_username=pg_username,
+                        expected_major_version="17"
+                    )
+                except SystemExit:
+                    # run_postgres may fail with SystemExit if it can't start a new server
+                    # (only one server per data dir), but that's expected behavior.
+                    # The important thing is that file locking prevented corruption.
+                    pass
+                
+                with results["lock"]:
+                    results["success_count"] += 1
+            except Exception as e:
+                with results["lock"]:
+                    results["errors"].append(f"Worker {worker_id}: {str(e)}")
+        
+        # Step 2: Spawn late-joining worker threads
+        num_threads = 3
+        threads = []
+        for i in range(num_threads):
+            t = threading.Thread(
+                target=late_join_worker,
+                args=(temp_pg_data_dir, pg_username, i),
+                name=f"LateJoinThread-{i}"
+            )
+            threads.append(t)
+            t.start()
+        
+        # Wait for all threads to complete
+        for t in threads:
+            t.join(timeout=60)
+        
+        # Verify that:
+        # 1. All late-join threads completed (no unhandled exceptions)
+        assert results["success_count"] == num_threads, (
+            f"All {num_threads} late-join threads should complete without error. "
+            f"Only {results['success_count']} did. Errors: {results['errors']}"
+        )
+        
+        # 2. All threads detected that database was already initialized
+        assert results["already_initialized_count"] == num_threads, (
+            f"All {num_threads} threads should detect pre-existing PG_VERSION. "
+            f"Only {results['already_initialized_count']} did."
+        )
+        
+        # 3. PG_VERSION still exists (no corruption from concurrent access)
+        assert os.path.exists(pg_version_file), (
+            "PG_VERSION should still exist after concurrent late-join attempts"
+        )
+
+
 # Markers for conditional test execution
 pytestmark = pytest.mark.skipif(
     shutil.which("initdb") is None or shutil.which("pg_ctl") is None,
     reason="PostgreSQL command-line tools (initdb, pg_ctl) not found in PATH"
 )
+

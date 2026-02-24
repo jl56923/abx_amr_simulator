@@ -94,3 +94,7 @@ private_docs/
 
 # Ignore 'test_outputs/' directory
 test_outputs/
+
+# Ignore workspace/results/ directory (for storing results from training runs and analyses)
+workspace/results/
+workspace/results/*/**
