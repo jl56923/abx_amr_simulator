@@ -1,8 +1,10 @@
 """PostgreSQL lifecycle helpers for Optuna parallel tuning."""
 
+import fcntl
 import os
 import subprocess
 import sys
+import time
 from typing import Optional
 
 try:
@@ -95,27 +97,43 @@ def run_postgres(
     if not os.path.exists(pg_version_file):
         print(f"Initializing PostgreSQL data directory at {pg_data_dir}...")
         
-        # macOS-specific: Remove AppleDouble files that can confuse PostgreSQL initdb
-        # These ._* files are created by macOS on external drives and cause "File exists" errors
-        if sys.platform == "darwin":
-            import shutil
-            if os.path.exists(pg_data_dir):
-                print(f"  Cleaning macOS AppleDouble files from {pg_data_dir}...")
-                shutil.rmtree(path=pg_data_dir, ignore_errors=True)
-            os.makedirs(name=pg_data_dir, exist_ok=True)
+        # Use file locking to prevent race condition: only one worker initializes at a time
+        lock_file = os.path.join(pg_data_dir, ".initdb.lock")
+        os.makedirs(name=pg_data_dir, exist_ok=True)
         
-        result = subprocess.run(args=["initdb", "-D", pg_data_dir], check=False, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"ERROR: initdb failed!")
-            print(f"stdout: {result.stdout}")
-            print(f"stderr: {result.stderr}")
-            sys.exit(1)
-        
-        # Verify initdb actually succeeded by checking for PG_VERSION
-        if not os.path.exists(pg_version_file):
-            print(f"ERROR: initdb did not create PG_VERSION file. Data directory may be corrupted.")
-            print(f"Check directory contents: {os.listdir(pg_data_dir)}")
-            sys.exit(1)
+        with open(lock_file, "w") as f:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # Exclusive lock - blocks until acquired
+                
+                # After acquiring lock, check again if PG_VERSION exists (another worker may have initialized)
+                if os.path.exists(pg_version_file):
+                    print(f"  Another worker initialized the database. Using existing database.")
+                    return
+                
+                # macOS-specific: Remove AppleDouble files that can confuse PostgreSQL initdb
+                # These ._* files are created by macOS on external drives and cause "File exists" errors
+                if sys.platform == "darwin":
+                    import shutil
+                    if os.path.exists(pg_data_dir):
+                        print(f"  Cleaning macOS AppleDouble files from {pg_data_dir}...")
+                        shutil.rmtree(path=pg_data_dir, ignore_errors=True)
+                    os.makedirs(name=pg_data_dir, exist_ok=True)
+                
+                result = subprocess.run(args=["initdb", "-D", pg_data_dir], check=False, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"ERROR: initdb failed!")
+                    print(f"stdout: {result.stdout}")
+                    print(f"stderr: {result.stderr}")
+                    sys.exit(1)
+                
+                # Verify initdb actually succeeded by checking for PG_VERSION
+                if not os.path.exists(pg_version_file):
+                    print(f"ERROR: initdb did not create PG_VERSION file. Data directory may be corrupted.")
+                    print(f"Check directory contents: {os.listdir(pg_data_dir)}")
+                    sys.exit(1)
+                
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)  # Release lock
 
     print(f"Starting PostgreSQL server on port {pg_port} using {pg_data_dir}...")
     result = subprocess.run(
