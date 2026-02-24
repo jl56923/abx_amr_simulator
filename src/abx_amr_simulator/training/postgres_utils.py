@@ -93,10 +93,21 @@ def run_postgres(
                 shutil.rmtree(path=pg_data_dir, ignore_errors=True)
             os.makedirs(name=pg_data_dir, exist_ok=True)
         
-        subprocess.run(args=["initdb", "-D", pg_data_dir], check=True)
+        result = subprocess.run(args=["initdb", "-D", pg_data_dir], check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"ERROR: initdb failed!")
+            print(f"stdout: {result.stdout}")
+            print(f"stderr: {result.stderr}")
+            sys.exit(1)
+        
+        # Verify initdb actually succeeded by checking for PG_VERSION
+        if not os.path.exists(pg_version_file):
+            print(f"ERROR: initdb did not create PG_VERSION file. Data directory may be corrupted.")
+            print(f"Check directory contents: {os.listdir(pg_data_dir)}")
+            sys.exit(1)
 
     print(f"Starting PostgreSQL server on port {pg_port} using {pg_data_dir}...")
-    subprocess.run(
+    result = subprocess.run(
         args=[
             "pg_ctl",
             "-D",
@@ -106,8 +117,15 @@ def run_postgres(
             "start",
             "-w"
         ],
-        check=True
+        check=False,
+        capture_output=True,
+        text=True
     )
+    if result.returncode != 0:
+        print(f"ERROR: pg_ctl start failed!")
+        print(f"stdout: {result.stdout}")
+        print(f"stderr: {result.stderr}")
+        sys.exit(1)
 
 
 def ensure_database_exists(pg_port: str, pg_username: str, db_name: str) -> None:
