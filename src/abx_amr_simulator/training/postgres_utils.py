@@ -98,10 +98,12 @@ def run_postgres(
         print(f"Initializing PostgreSQL data directory at {pg_data_dir}...")
         
         # Use file locking to prevent race condition: only one worker initializes at a time
-        lock_file = os.path.join(pg_data_dir, ".initdb.lock")
-        os.makedirs(name=pg_data_dir, exist_ok=True)
+        # Create lock file in /tmp (outside the data directory) so it doesn't interfere with initdb
+        import tempfile
+        lock_dir = tempfile.gettempdir()
+        lock_file_path = os.path.join(lock_dir, f"pg_initdb_{os.path.basename(pg_data_dir)}.lock")
         
-        with open(lock_file, "w") as f:
+        with open(lock_file_path, "w") as f:
             try:
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # Exclusive lock - blocks until acquired
                 
@@ -110,14 +112,21 @@ def run_postgres(
                     print(f"  Another worker initialized the database. Using existing database.")
                     return
                 
+                # Create directory if it doesn't exist
+                os.makedirs(name=pg_data_dir, exist_ok=True)
+                
                 # macOS-specific: Remove AppleDouble files that can confuse PostgreSQL initdb
                 # These ._* files are created by macOS on external drives and cause "File exists" errors
                 if sys.platform == "darwin":
                     import shutil
-                    if os.path.exists(pg_data_dir):
+                    dot_files = [f for f in os.listdir(pg_data_dir) if f.startswith("._")]
+                    if dot_files:
                         print(f"  Cleaning macOS AppleDouble files from {pg_data_dir}...")
-                        shutil.rmtree(path=pg_data_dir, ignore_errors=True)
-                    os.makedirs(name=pg_data_dir, exist_ok=True)
+                        for dot_file in dot_files:
+                            try:
+                                os.remove(os.path.join(pg_data_dir, dot_file))
+                            except Exception:
+                                pass
                 
                 result = subprocess.run(args=["initdb", "-D", pg_data_dir], check=False, capture_output=True, text=True)
                 if result.returncode != 0:
