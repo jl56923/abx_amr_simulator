@@ -204,6 +204,9 @@ def run_evaluation_episodes(
         done = False
         while not done:
             action, _ = model.predict(obs, deterministic=True)
+            if isinstance(action, np.ndarray):
+                if action.size == 1:
+                    action = int(action.item())
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             
