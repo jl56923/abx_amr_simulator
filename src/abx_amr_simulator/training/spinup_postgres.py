@@ -1,19 +1,30 @@
 """Spin up local PostgreSQL server for Optuna parallel tuning."""
 
+import argparse
 import os
 from pathlib import Path
 
 from abx_amr_simulator.training import postgres_utils
 
 
-def _resolve_pg_data_dir() -> str:
-    """Find writable directory for PostgreSQL data."""
+def _resolve_pg_data_dir(pg_data_dir: str = None) -> str:
+    """Find writable directory for PostgreSQL data.
+    
+    Args:
+        pg_data_dir: If provided, use this directory (highest priority)
+    """
     candidates = []
 
-    pg_data_dir = os.environ.get("PG_DATA_DIR")
+    # Highest priority: explicit argument
     if pg_data_dir:
         candidates.append(pg_data_dir)
 
+    # Next: environment variable
+    pg_data_dir_env = os.environ.get("PG_DATA_DIR")
+    if pg_data_dir_env:
+        candidates.append(pg_data_dir_env)
+
+    # Then: standard temp directories
     tmpdir = os.environ.get("TMPDIR")
     if tmpdir:
         candidates.append(os.path.join(tmpdir, "optuna_pgdata"))
@@ -22,6 +33,7 @@ def _resolve_pg_data_dir() -> str:
     if slurm_tmpdir:
         candidates.append(os.path.join(slurm_tmpdir, "optuna_pgdata"))
 
+    # Finally: fallback locations
     user = os.environ.get("USER", "unknown")
     candidates.append(os.path.join("/scratch", user, "optuna_pgdata"))
     candidates.append(os.path.join("/scratch", "user", user, "optuna_pgdata"))
@@ -31,23 +43,66 @@ def _resolve_pg_data_dir() -> str:
         if not base_dir:
             continue
         base_path = Path(base_dir)
-        base_path.mkdir(parents=True, exist_ok=True)
-        if os.access(base_path, os.W_OK):
-            return str(base_path)
+        try:
+            base_path.mkdir(parents=True, exist_ok=True)
+            if os.access(base_path, os.W_OK):
+                return str(base_path)
+        except (PermissionError, OSError) as e:
+            # Parent directory not writable or doesn't exist; try next candidate
+            continue
 
     raise RuntimeError(
         "No writable directory found for PostgreSQL data. "
-        "Set PG_DATA_DIR, TMPDIR, or SLURM_TMPDIR, or ensure /scratch/<user> or /tmp is writable."
+        "Set --pg-data-dir argument or PG_DATA_DIR environment variable to a writable directory, or ensure one of: "
+        "TMPDIR, SLURM_TMPDIR, /scratch/<user>, or /tmp is writable."
     )
 
 
 def main() -> None:
-    pg_data_dir = _resolve_pg_data_dir()
+    parser = argparse.ArgumentParser(
+        description="Start PostgreSQL server for Optuna parallel tuning"
+    )
+    parser.add_argument(
+        "--pg-data-dir",
+        type=str,
+        default=None,
+        help="PostgreSQL data directory (highest priority). Defaults to PG_DATA_DIR env var or auto-resolved."
+    )
+    parser.add_argument(
+        "--pg-port",
+        type=str,
+        default=None,
+        help="PostgreSQL port. Defaults to PG_PORT env var or 5432."
+    )
+    parser.add_argument(
+        "--pg-username",
+        type=str,
+        default=None,
+        help="PostgreSQL username. Defaults to PG_USERNAME env var or current user."
+    )
+    parser.add_argument(
+        "--db-name",
+        type=str,
+        default=None,
+        help="Database name. Defaults to DB_NAME env var or 'optuna_tuning'."
+    )
+    parser.add_argument(
+        "--pg-major-version",
+        type=str,
+        default=None,
+        help="Expected PostgreSQL major version. Defaults to PG_MAJOR_VERSION env var or '17'."
+    )
+    
+    args = parser.parse_args()
+    
+    # Resolve PostgreSQL data directory with argument taking precedence
+    pg_data_dir = _resolve_pg_data_dir(pg_data_dir=args.pg_data_dir)
 
-    pg_port = os.environ.get("PG_PORT", "5432")
-    pg_username = os.environ.get("PG_USERNAME", os.environ.get("USER", "postgres"))
-    db_name = os.environ.get("DB_NAME", "optuna_tuning")
-    expected_major_version = os.environ.get("PG_MAJOR_VERSION", "17")
+    # Get settings from arguments, environment variables, or defaults
+    pg_port = args.pg_port or os.environ.get("PG_PORT", "5432")
+    pg_username = args.pg_username or os.environ.get("PG_USERNAME", os.environ.get("USER", "postgres"))
+    db_name = args.db_name or os.environ.get("DB_NAME", "optuna_tuning")
+    expected_major_version = args.pg_major_version or os.environ.get("PG_MAJOR_VERSION", "17")
 
     os.environ.setdefault("LANG", "C.UTF-8")
     os.environ.setdefault("LC_ALL", "C.UTF-8")
