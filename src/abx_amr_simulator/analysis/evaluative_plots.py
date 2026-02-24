@@ -112,6 +112,68 @@ def load_config_from_run(run_folder: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def is_hrl_run(config: Dict[str, Any]) -> bool:
+    """Check if config indicates an HRL run."""
+    try:
+        # Check flat structure first (most common after load_config())
+        if "algorithm" in config:
+            algo = config.get("algorithm", "")
+            if "HRL" in str(algo).upper():
+                return True
+        
+        # Check nested structure
+        agent_algo = config.get("agent_algorithm", {})
+        if isinstance(agent_algo, dict):
+            algo = agent_algo.get("algorithm", "")
+            if "HRL" in str(algo).upper():
+                return True
+        
+        return False
+    except Exception:
+        return False
+
+
+def wrap_environment_for_hrl(
+    env: Any,
+    config: Dict[str, Any],
+    run_dir: Path,
+) -> Optional[Any]:
+    """Wrap environment with OptionsWrapper for HRL evaluation.
+    
+    Returns wrapped env if HRL, None if wrapping failed or not HRL.
+    """
+    try:
+        from abx_amr_simulator.hrl import OptionLibraryLoader, OptionsWrapper
+    except ImportError:
+        print(f"      [WARN] Could not import HRL modules; skipping HRL wrapping")
+        return None
+    
+    try:
+        # Try to use resolved option library config first (contains absolute paths)
+        resolved_lib_config_path = run_dir / "full_options_library.yaml"
+        if resolved_lib_config_path.exists():
+            import yaml
+            with open(resolved_lib_config_path, 'r') as f:
+                resolved_config = yaml.safe_load(f)
+            option_lib_path = resolved_config.get("library_config_path")
+        else:
+            # Fall back to regular config
+            option_lib_path = config.get("hrl", {}).get("option_library", None)
+        
+        if not option_lib_path:
+            print(f"      [WARN] No HRL option_library specified in config")
+            return None
+        
+        loader = OptionLibraryLoader()
+        option_library, _ = loader.load_library(library_config_path=option_lib_path, env=env)
+        
+        wrapped_env = OptionsWrapper(env=env, option_library=option_library)
+        return wrapped_env
+    except Exception as e:
+        print(f"      [WARN] Failed to wrap environment for HRL: {e}")
+        return None
+
+
 # ==================== Evaluation ====================
 
 def run_evaluation_episodes(
@@ -462,15 +524,31 @@ def analyze_experiment(
     
     # ===== Part 1: Generate ensemble/single-agent plots =====
     print(f"  Generating {'ensemble' if aggregate_by_seed else 'single-agent'} plots...")
+    
+    # Check if this is an HRL run
+    first_config = models_and_configs[0][2]
+    is_hrl = is_hrl_run(first_config)
+    if is_hrl:
+        print(f"  Detected HRL run; using OptionsWrapper for environment")
+    
     try:
         # Extract just the models
         models = [model for _, model, _, _ in models_and_configs]
         
         # Create environment from first seed's config (all should be identical)
-        _, _, config, _ = models_and_configs[0]
+        _, _, config, run_dir = models_and_configs[0]
         rc = create_reward_calculator(config=config)
         pg = create_patient_generator(config=config)
         env = create_environment(config=config, reward_calculator=rc, patient_generator=pg)
+        
+        # Wrap environment for HRL if needed
+        if is_hrl:
+            wrapped_env = wrap_environment_for_hrl(env=env, config=config, run_dir=run_dir)
+            if wrapped_env is not None:
+                env = wrapped_env
+                print(f"  Environment successfully wrapped for HRL evaluation")
+            else:
+                print(f"  [WARN] HRL wrapping failed; using base environment (may cause shape mismatch)")
         
         # Call ensemble plotting utility
         plot_metrics_ensemble_agents(
@@ -504,6 +582,12 @@ def analyze_experiment(
             pg = create_patient_generator(config=config)
             env = create_environment(config=config, reward_calculator=rc, patient_generator=pg)
             
+            # Wrap environment for HRL if needed
+            if is_hrl:
+                wrapped_env = wrap_environment_for_hrl(env=env, config=config, run_dir=run_dir)
+                if wrapped_env is not None:
+                    env = wrapped_env
+            
             eval_data = run_evaluation_episodes(model=model, env=env, num_episodes=num_eval_episodes)
             all_eval_data.append(eval_data)
             seed_labels.append(f"seed_{seed}" if seed >= 0 else "run")
@@ -517,23 +601,28 @@ def analyze_experiment(
         print(f"  [ERROR] No successful evaluations for {prefix}")
         return False, None, None
     
-    # ===== Part 3: Compute action-attribute associations =====
-    print(f"  Computing action-attribute associations...")
-    antibiotic_names = models_and_configs[0][2].get("environment", {}).get("antibiotic_names", []) if models_and_configs else []
-    
-    action_rows, assoc_rows = compute_action_attribute_associations(
-        all_eval_data=all_eval_data,
-        antibiotic_names=antibiotic_names,
-        num_bins=5,
-    )
-    
-    if action_rows:
-        write_csv_action_drivers(rows=action_rows, out_path=output_dir / "action_drivers.csv")
-        print(f"    Saved action_drivers.csv")
-    
-    if assoc_rows:
-        write_csv_action_attribute_associations(rows=assoc_rows, out_path=output_dir / "action_attribute_associations.csv")
-        print(f"    Saved action_attribute_associations.csv")
+    # ===== Part 3: Compute action-attribute associations (skip for HRL) =====
+    if is_hrl:
+        print(f"  Skipping action-attribute associations for HRL run (actions are option IDs, not antibiotics)")
+        action_rows = []
+        assoc_rows = []
+    else:
+        print(f"  Computing action-attribute associations...")
+        antibiotic_names = models_and_configs[0][2].get("environment", {}).get("antibiotic_names", []) if models_and_configs else []
+        
+        action_rows, assoc_rows = compute_action_attribute_associations(
+            all_eval_data=all_eval_data,
+            antibiotic_names=antibiotic_names,
+            num_bins=5,
+        )
+        
+        if action_rows:
+            write_csv_action_drivers(rows=action_rows, out_path=output_dir / "action_drivers.csv")
+            print(f"    Saved action_drivers.csv")
+        
+        if assoc_rows:
+            write_csv_action_attribute_associations(rows=assoc_rows, out_path=output_dir / "action_attribute_associations.csv")
+            print(f"    Saved action_attribute_associations.csv")
     
     # Save metadata
     metadata = {
