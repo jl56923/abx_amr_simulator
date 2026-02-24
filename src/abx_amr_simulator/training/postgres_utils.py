@@ -66,7 +66,11 @@ def run_postgres(
     pg_username: str,
     expected_major_version: str
 ) -> None:
-    """Start PostgreSQL server or verify existing server is compatible."""
+    """Start PostgreSQL server or verify existing server is compatible.
+    
+    Blocks until server is accepting connections and verified ready.
+    Raises RuntimeError if server fails to start or is incompatible.
+    """
     if is_server_ready(pg_port=pg_port, pg_username=pg_username):
         if is_version_compatible(
             pg_port=pg_port,
@@ -126,46 +130,93 @@ def run_postgres(
         print(f"stdout: {result.stdout}")
         print(f"stderr: {result.stderr}")
         sys.exit(1)
+    
+    # Verify server is actually accepting connections (don't trust pg_ctl -w alone)
+    print(f"Verifying PostgreSQL is accepting connections on port {pg_port}...")
+    max_retries = 30
+    for attempt in range(max_retries):
+        if is_server_ready(pg_port=pg_port, pg_username=pg_username):
+            print(f"PostgreSQL server ready after {attempt} retries")
+            return
+        
+        if attempt < max_retries - 1:
+            print(f"  Waiting for server ({attempt + 1}/{max_retries})...")
+            import time
+            time.sleep(1)
+    
+    raise RuntimeError(f"PostgreSQL failed to accept connections on port {pg_port} after {max_retries * 10} seconds")
 
 
 def ensure_database_exists(pg_port: str, pg_username: str, db_name: str) -> None:
-    """Create database if it doesn't exist."""
-    connection = psycopg2.connect(
-        dbname="postgres",
-        user=pg_username,
-        host="localhost",
-        port=pg_port
-    )
-    connection.autocommit = True
-    cursor = connection.cursor()
-    cursor.execute(
-        query="SELECT 1 FROM pg_database WHERE datname = %s",
-        vars=(db_name,)
-    )
-    if not cursor.fetchone():
-        print(f"Creating database '{db_name}'...")
-        cursor.execute(query=f"CREATE DATABASE {db_name}")
-    else:
-        print(f"Database '{db_name}' already exists.")
-    cursor.close()
-    connection.close()
+    """Create database if it doesn't exist.
+    
+    Retries on transient connection failures.
+    Raises RuntimeError if database creation fails after retries.
+    """
+    import time
+    
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            connection = psycopg2.connect(
+                dbname="postgres",
+                user=pg_username,
+                host="localhost",
+                port=pg_port
+            )
+            connection.autocommit = True
+            cursor = connection.cursor()
+            
+            try:
+                cursor.execute(
+                    query="SELECT 1 FROM pg_database WHERE datname = %s",
+                    vars=(db_name,)
+                )
+                if not cursor.fetchone():
+                    print(f"Creating database '{db_name}'...")
+                    cursor.execute(query=f"CREATE DATABASE {db_name}")
+                    print(f"Database '{db_name}' created successfully")
+                else:
+                    print(f"Database '{db_name}' already exists.")
+            finally:
+                cursor.close()
+            
+            connection.close()
+            return  # Success
+            
+        except psycopg2.OperationalError as e:
+            if attempt < max_retries - 1:
+                print(f"  Connection failed (attempt {attempt + 1}/{max_retries}): {e}")
+                print(f"  Retrying in 1 second...")
+                time.sleep(1)
+            else:
+                raise RuntimeError(f"Failed to create database after {max_retries} attempts: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error creating database: {e}") from e
 
 
 def test_connection(db_name: str, pg_username: str, pg_port: str) -> None:
-    """Test connection to database."""
-    print(f"Testing connection to '{db_name}'...")
-    connection = psycopg2.connect(
-        dbname=db_name,
-        user=pg_username,
-        host="localhost",
-        port=pg_port
-    )
-    cursor = connection.cursor()
-    cursor.execute(query="SELECT version();")
-    print("PostgreSQL version:", cursor.fetchone())
-    cursor.close()
-    connection.close()
-    print("Connection successful.")
+    """Test connection to database.
+    
+    Raises RuntimeError if connection fails.
+    """
+    try:
+        print(f"Testing connection to '{db_name}'...")
+        connection = psycopg2.connect(
+            dbname=db_name,
+            user=pg_username,
+            host="localhost",
+            port=pg_port
+        )
+        cursor = connection.cursor()
+        cursor.execute(query="SELECT version();")
+        version = cursor.fetchone()[0]
+        cursor.close()
+        connection.close()
+        print(f"✓ Connection successful")
+        print(f"  PostgreSQL version: {version.split(',')[0]}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to database '{db_name}': {e}") from e
 
 
 def shutdown_postgres(pg_data_dir: str) -> None:
