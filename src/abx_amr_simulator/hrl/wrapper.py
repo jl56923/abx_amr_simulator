@@ -210,6 +210,10 @@ class OptionsWrapper(gym.Wrapper):
 
         amr_start = self._get_current_amr_levels()
         tracked_patients = []
+        
+        # NEW: Collect primitive-level information for trajectory flattening
+        primitive_actions = []      # List of actions taken at each primitive step
+        primitive_infos = []        # List of info dicts from each primitive step
 
         if self.current_env_obs is None:
             raise RuntimeError("Environment observation not initialized. Call reset() first.")
@@ -240,6 +244,10 @@ class OptionsWrapper(gym.Wrapper):
 
             tracked_patients.extend(env_state["patients"])
             self._update_steps_since_prescribed(actions=actions)
+            
+            # NEW: Store primitive-level action and info for this substep
+            primitive_actions.append(actions)
+            primitive_infos.append(info)
 
             # Accumulate discounted reward
             base_reward_value = float(base_reward)
@@ -263,10 +271,14 @@ class OptionsWrapper(gym.Wrapper):
         self._update_option_history(option_id=manager_action)
         manager_obs = self._build_manager_observation()
 
-        # Build info dict
+        # Build info dict with both macro and primitive-level information
         step_info = {
+            'option_id': manager_action,                    # NEW: Macro-action (option ID)
             'option_name': option.name,
-            'option_duration': substep + 1,  # Actual duration (may be less than k)
+            'option_duration': substep + 1,                 # Actual duration (may be less than k)
+            'macro_action_duration': substep + 1,           # NEW: Explicit duration field
+            'primitive_actions': primitive_actions,         # NEW: List of actions per primitive step
+            'primitive_infos': primitive_infos,             # NEW: List of info dicts per primitive step
         }
         if 'info' in locals() and isinstance(info, dict):
             step_info.update(info)

@@ -118,30 +118,34 @@ def test_step_out_of_range_manager_action_raises() -> None:
 
 
 def test_validate_actions_type_shape_and_range() -> None:
-    env = create_mock_environment(antibiotic_names=["A"])
+    env = create_mock_environment(antibiotic_names=["A", "B"])
     library = _build_library(env=env)
     wrapper = OptionsWrapper(env=env, option_library=library, gamma=0.99)
     wrapper.reset(seed=42)
     num_patients = env.unwrapped.num_patients_per_time_step
 
+    # Test: TypeError when not np.ndarray
     with pytest.raises(TypeError, match="expected np.ndarray"):
-        wrapper._validate_actions(actions=[1, 2], option_name="opt")  # type: ignore[arg-type]
+        wrapper._convert_and_validate_actions(action_strings=["A", "B"], option_name="opt")  # type: ignore[arg-type]
 
+    # Test: ValueError when shape is wrong
     with pytest.raises(ValueError, match="Expected action shape"):
-        wrapper._validate_actions(
-            actions=np.array([0, 1], dtype=np.int32),
+        wrapper._convert_and_validate_actions(
+            action_strings=np.array(["A", "B"], dtype=object),
             option_name="opt",
         )
 
-    with pytest.raises(TypeError, match="Expected integer dtype"):
-        wrapper._validate_actions(
-            actions=np.full(shape=(num_patients,), fill_value=0.5, dtype=np.float32),
+    # Test: TypeError when dtype is wrong (should be string/object, not numeric)
+    with pytest.raises(TypeError, match="Expected string dtype"):
+        wrapper._convert_and_validate_actions(
+            action_strings=np.full(shape=(num_patients,), fill_value=0.5, dtype=np.float32),
             option_name="opt",
         )
 
-    with pytest.raises(ValueError, match="Invalid action indices"):
-        wrapper._validate_actions(
-            actions=np.full(shape=(num_patients,), fill_value=999, dtype=np.int32),
+    # Test: ValueError when invalid antibiotic name
+    with pytest.raises(ValueError, match="invalid antibiotic name"):
+        wrapper._convert_and_validate_actions(
+            action_strings=np.full(shape=(num_patients,), fill_value="invalid", dtype=object),
             option_name="opt",
         )
 

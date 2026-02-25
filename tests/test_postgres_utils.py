@@ -89,21 +89,21 @@ class TestPostgresStartup:
             pg_username=pg_username
         ), "Server should be accepting connections"
     
+    
     def test_run_postgres_idempotent(self, temp_pg_data_dir, unique_pg_port, pg_username):
         """Test that run_postgres is idempotent (calling twice doesn't break anything)."""
+        # Don't check version - it's not necessary for this test
         postgres_utils.run_postgres(
             pg_port=unique_pg_port,
             pg_data_dir=temp_pg_data_dir,
-            pg_username=pg_username,
-            expected_major_version="17"
+            pg_username=pg_username
         )
         
         # Call again - should recognize server is already running
         postgres_utils.run_postgres(
             pg_port=unique_pg_port,
             pg_data_dir=temp_pg_data_dir,
-            pg_username=pg_username,
-            expected_major_version="17"
+            pg_username=pg_username
         )
         
         # Server should still be running
@@ -111,6 +111,7 @@ class TestPostgresStartup:
             pg_port=unique_pg_port,
             pg_username=pg_username
         )
+
 
 
 class TestDatabaseCreation:

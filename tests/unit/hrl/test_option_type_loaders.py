@@ -85,8 +85,8 @@ def test_block_option_decide_returns_single_action():
 
     actions = option.decide(env_state=env_state)
 
-    expected = option_library.abx_name_to_index["A"]
-    assert actions.tolist() == [expected, expected]
+    # decide() returns antibiotic name strings, not indices
+    assert actions.tolist() == ["A", "A"]
 
 
 def test_block_option_supports_no_rx_alias():
@@ -104,8 +104,8 @@ def test_block_option_supports_no_rx_alias():
 
     actions = option.decide(env_state=env_state)
 
-    expected = option_library.abx_name_to_index["no_treatment"]
-    assert actions.tolist() == [expected, expected]
+    # decide() returns antibiotic name strings, not indices
+    assert actions.tolist() == ["no_treatment", "no_treatment"]
 
 
 def test_block_loader_validates_required_keys():
@@ -137,17 +137,18 @@ def test_alternation_option_sequences_actions():
         sequence=["A", "no_treatment", "B"],
     )
 
+    # decide() returns antibiotic name strings, not indices
     env_state = _build_env_state(option_library=option_library, current_step=0)
     actions = option.decide(env_state=env_state)
-    assert actions.tolist() == [option_library.abx_name_to_index["A"]] * 2
+    assert actions.tolist() == ["A", "A"]
 
     env_state = _build_env_state(option_library=option_library, current_step=1)
     actions = option.decide(env_state=env_state)
-    assert actions.tolist() == [option_library.abx_name_to_index["no_treatment"]] * 2
+    assert actions.tolist() == ["no_treatment", "no_treatment"]
 
     env_state = _build_env_state(option_library=option_library, current_step=2)
     actions = option.decide(env_state=env_state)
-    assert actions.tolist() == [option_library.abx_name_to_index["B"]] * 2
+    assert actions.tolist() == ["B", "B"]
 
 
 def test_alternation_resets_on_step_gap():
@@ -171,7 +172,8 @@ def test_alternation_resets_on_step_gap():
     env_state = _build_env_state(option_library=option_library, current_step=2)
     actions = option.decide(env_state=env_state)
 
-    assert actions.tolist() == [option_library.abx_name_to_index["A"]] * 2
+    # decide() returns antibiotic name strings, not indices
+    assert actions.tolist() == ["A", "A"]
 
 
 def test_alternation_loader_validates_sequence():

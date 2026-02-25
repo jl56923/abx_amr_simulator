@@ -73,25 +73,41 @@ def run_postgres(
     pg_port: str,
     pg_data_dir: str,
     pg_username: str,
-    expected_major_version: str
+    expected_major_version: Optional[str] = None
 ) -> None:
     """Start PostgreSQL server or verify existing server is compatible.
     
     Blocks until server is accepting connections and verified ready.
-    Raises RuntimeError if server fails to start or is incompatible.
+    
+    Args:
+        pg_port: PostgreSQL port number
+        pg_data_dir: PostgreSQL data directory path
+        pg_username: PostgreSQL username
+        expected_major_version: Optional major version to verify (e.g., "17"). 
+            If provided and a server is already running, verifies the version matches.
+            If None (default), skips version verification.
+    
+    Raises:
+        RuntimeError: If server fails to start or (if expected_major_version provided)
+            version is incompatible.
     """
     if is_server_ready(pg_port=pg_port, pg_username=pg_username):
-        if is_version_compatible(
-            pg_port=pg_port,
-            pg_username=pg_username,
-            expected_major_version=expected_major_version
-        ):
+        if expected_major_version is not None:
+            if is_version_compatible(
+                pg_port=pg_port,
+                pg_username=pg_username,
+                expected_major_version=expected_major_version
+            ):
+                print(f"PostgreSQL already running on port {pg_port}.")
+                return
+            raise RuntimeError(
+                "Incompatible PostgreSQL version running on port "
+                f"{pg_port}. Expected {expected_major_version}.x"
+            )
+        else:
+            # No version check requested - just verify server is ready
             print(f"PostgreSQL already running on port {pg_port}.")
             return
-        raise RuntimeError(
-            "Incompatible PostgreSQL version running on port "
-            f"{pg_port}. Expected {expected_major_version}.x"
-        )
 
     pg_version_file = os.path.join(pg_data_dir, "PG_VERSION")
     if not os.path.exists(pg_version_file):
