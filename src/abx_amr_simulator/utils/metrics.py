@@ -1778,6 +1778,9 @@ def plot_metrics_ensemble_agents(
         """
         Aggregate list of trajectories into mean, percentiles, and IQM.
         
+        Handles variable-length trajectories by padding shorter ones to the maximum length
+        using their final value (maintains continuity for cumulative metrics and AMR levels).
+        
         Parameters:
         -----------
         trajectories_list : list of lists
@@ -1789,7 +1792,47 @@ def plot_metrics_ensemble_agents(
         --------
         dict with keys: mean, median, p10, p90, p25, p75, iqm, timesteps
         """
-        # Convert to numpy array (trajectories × timesteps)
+        if len(trajectories_list) == 0:
+            raise ValueError("trajectories_list is empty")
+        
+        # Check for consistent trajectory lengths (STRICT ENFORCEMENT)
+        trajectory_lengths = [len(traj) for traj in trajectories_list]
+        unique_lengths = set(trajectory_lengths)
+        
+        if len(unique_lengths) > 1:
+            # MISMATCHED LENGTHS - FAIL LOUDLY
+            min_len = min(trajectory_lengths)
+            max_len = max(trajectory_lengths)
+            length_distribution = {}
+            for length in trajectory_lengths:
+                length_distribution[length] = length_distribution.get(length, 0) + 1
+            
+            error_msg = (
+                f"\n{'='*80}\n"
+                f"ERROR: Trajectory length mismatch detected!\n"
+                f"{'='*80}\n"
+                f"All episodes in abx_amr_simulator environments MUST have exactly the same length.\n"
+                f"Expected: All trajectories have length = max_time_steps\n"
+                f"Found: {len(trajectories_list)} trajectories with {len(unique_lengths)} different lengths\n\n"
+                f"Length distribution:\n"
+            )
+            for length, count in sorted(length_distribution.items()):
+                error_msg += f"  Length {length}: {count} trajectories\n"
+            error_msg += (
+                f"\nMin length: {min_len}\n"
+                f"Max length: {max_len}\n\n"
+                f"Possible causes:\n"
+                f"  1. HRL wrapper: Trajectories collected at manager level (option selections)\n"
+                f"     instead of primitive level (individual timesteps)\n"
+                f"  2. Mixed data from experiments with different max_time_steps settings\n"
+                f"  3. Data corruption or incomplete episode recording\n\n"
+                f"For HRL agents: plot_metrics_ensemble_agents may need modification to handle\n"
+                f"manager-level trajectory granularity vs primitive-level AMR dynamics.\n"
+                f"{'='*80}"
+            )
+            raise ValueError(error_msg)
+        
+        # All trajectories have consistent length - proceed normally
         arr = np.array(trajectories_list)
         
         if apply_cumsum:

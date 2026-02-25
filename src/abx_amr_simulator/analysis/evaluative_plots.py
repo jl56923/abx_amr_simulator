@@ -180,6 +180,7 @@ def run_evaluation_episodes(
     model: Any,
     env: Any,
     num_episodes: int = 50,
+    is_hrl: bool = False,
 ) -> Dict[str, Any]:
     """
     Run evaluation episodes and collect trajectory data.
@@ -204,7 +205,7 @@ def run_evaluation_episodes(
         done = False
         while not done:
             action, _ = model.predict(obs, deterministic=True)
-            if isinstance(action, np.ndarray):
+            if is_hrl and isinstance(action, np.ndarray):
                 if action.size == 1:
                     action = int(action.item())
             obs, reward, terminated, truncated, info = env.step(action)
@@ -591,7 +592,12 @@ def analyze_experiment(
                 if wrapped_env is not None:
                     env = wrapped_env
             
-            eval_data = run_evaluation_episodes(model=model, env=env, num_episodes=num_eval_episodes)
+            eval_data = run_evaluation_episodes(
+                model=model,
+                env=env,
+                num_episodes=num_eval_episodes,
+                is_hrl=is_hrl,
+            )
             all_eval_data.append(eval_data)
             seed_labels.append(f"seed_{seed}" if seed >= 0 else "run")
             

@@ -777,6 +777,18 @@ def main():
         default=[],
         help='Override tuning config values. Example: --tuning-override optimization.n_trials=10'
     )
+    parser.add_argument(
+        '--worker-id',
+        type=int,
+        default=0,
+        help='Worker ID for distributed tuning (0-indexed). When using parallel workers, each worker gets a portion of the total trials.'
+    )
+    parser.add_argument(
+        '--total-workers',
+        type=int,
+        default=1,
+        help='Total number of parallel workers. Used to allocate trials per worker (each gets n_trials // total_workers trials).'
+    )
     
     args = parser.parse_args()
     
@@ -807,6 +819,17 @@ def main():
         print("  2) Remove --overwrite-existing-study from worker commands")
         print("\nUse --overwrite-existing-study only for single-worker SQLite runs.")
         print(f"{'='*70}\n")
+        sys.exit(1)
+    
+    # Validate worker arguments
+    if args.worker_id < 0:
+        print(f"Error: --worker-id must be >= 0, got {args.worker_id}")
+        sys.exit(1)
+    if args.total_workers < 1:
+        print(f"Error: --total-workers must be >= 1, got {args.total_workers}")
+        sys.exit(1)
+    if args.worker_id >= args.total_workers:
+        print(f"Error: --worker-id ({args.worker_id}) must be < --total-workers ({args.total_workers})")
         sys.exit(1)
     
     # Parse parameter overrides
@@ -1165,22 +1188,48 @@ def main():
         print(f"  - Study summary: {os.path.join(optimization_dir, 'study_summary.json')}")
         sys.exit(0)
     
-    # Not yet complete, continue or start optimization
-    if is_resumed_study:
-        print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
-        print(f"  Completed trials with results: {n_completed_trials_with_results}")
-        if n_completed_trials_with_results > 0:
-            print(f"  Best value so far: {study.best_value:.4f}")
+    # Calculate per-worker trial quota for distributed tuning
+    # Each worker runs a specific portion of the total trials
+    trials_per_worker = (n_trials + args.total_workers - 1) // args.total_workers  # Ceiling division
+    worker_trial_start = args.worker_id * trials_per_worker
+    worker_trial_end = min((args.worker_id + 1) * trials_per_worker, n_trials)
+    worker_quota = worker_trial_end - worker_trial_start
+    
+    # In distributed mode, each worker should stop once they've completed their quota,
+    # not based on global trial count
+    if args.total_workers > 1:
+        # For distributed tuning: each worker runs only their quota
+        # Don't adjust based on n_completed_trials_with_results
+        remaining_trials = worker_quota
+        
+        if is_resumed_study:
+            print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
+            print(f"  Completed trials with results: {n_completed_trials_with_results}")
+            if n_completed_trials_with_results > 0:
+                print(f"  Best value so far: {study.best_value:.4f}")
+            print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
+            print(f"  This worker's quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
         else:
-            print(f"  No completed trials yet (first worker initializing study)")
-        remaining_trials = max(0, n_trials - n_completed_trials_with_results)
-        print(
-            f"  Will run {remaining_trials} additional trial(s) "
-            f"(target total: {n_trials}, current complete: {n_completed_trials_with_results})"
-        )
+            print(f"✓ Starting new study")
+            print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
+            print(f"  This worker's quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
     else:
-        print(f"✓ Starting new study")
-        remaining_trials = n_trials
+        # Single-worker mode: use original logic with remaining_trials
+        if is_resumed_study:
+            print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
+            print(f"  Completed trials with results: {n_completed_trials_with_results}")
+            if n_completed_trials_with_results > 0:
+                print(f"  Best value so far: {study.best_value:.4f}")
+            else:
+                print(f"  No completed trials yet (first worker initializing study)")
+            remaining_trials = max(0, n_trials - n_completed_trials_with_results)
+            print(
+                f"  Will run {remaining_trials} additional trial(s) "
+                f"(target total: {n_trials}, current complete: {n_completed_trials_with_results})"
+            )
+        else:
+            print(f"✓ Starting new study")
+            remaining_trials = n_trials
     
     # Create objective function
     objective = create_objective_function(

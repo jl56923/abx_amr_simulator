@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import Dict, Any
 
 import pytest
+import numpy as np
 import yaml
 
 from abx_amr_simulator.analysis.evaluative_plots import (
     is_hrl_run,
     wrap_environment_for_hrl,
+    run_evaluation_episodes,
 )
 from abx_amr_simulator.utils import (
     create_reward_calculator,
@@ -358,3 +360,62 @@ class TestHrlEvaluativePlotIntegration:
         assert step_count >= 1, "Should be able to run at least 1 evaluation step"
         
         wrapped_env.close()
+
+
+class TestRunEvaluationEpisodesActionHandling:
+    """Test action handling for HRL vs non-HRL evaluation episodes."""
+
+    class _DummyModel:
+        def __init__(self, action):
+            self._action = action
+
+        def predict(self, obs, deterministic=True):
+            return self._action, None
+
+    class _HrlEnv:
+        def reset(self):
+            return np.zeros((3,), dtype=float), {}
+
+        def step(self, action):
+            if not isinstance(action, (int, np.integer)):
+                raise TypeError(f"Expected int manager action, got {type(action).__name__}")
+            obs = np.zeros((3,), dtype=float)
+            return obs, 0.0, True, False, {}
+
+    class _NonHrlEnv:
+        def reset(self):
+            return np.zeros((3,), dtype=float), {}
+
+        def step(self, action):
+            if not isinstance(action, np.ndarray):
+                raise TypeError(f"Expected ndarray action, got {type(action).__name__}")
+            obs = np.zeros((3,), dtype=float)
+            return obs, 0.0, True, False, {}
+
+    def test_hrl_coerces_scalar_action(self):
+        """HRL evaluation should coerce scalar ndarray actions to int."""
+        model = self._DummyModel(action=np.array([0], dtype=int))
+        env = self._HrlEnv()
+
+        results = run_evaluation_episodes(
+            model=model,
+            env=env,
+            num_episodes=1,
+            is_hrl=True,
+        )
+
+        assert results["episode_lengths"] == [1]
+
+    def test_non_hrl_preserves_array_action(self):
+        """Non-HRL evaluation should preserve ndarray actions."""
+        model = self._DummyModel(action=np.array([0], dtype=int))
+        env = self._NonHrlEnv()
+
+        results = run_evaluation_episodes(
+            model=model,
+            env=env,
+            num_episodes=1,
+            is_hrl=False,
+        )
+
+        assert results["episode_lengths"] == [1]
