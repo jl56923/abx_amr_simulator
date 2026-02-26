@@ -17,7 +17,7 @@ import os
 import sys
 from pathlib import Path
 import glob
-from stable_baselines3 import PPO, DQN, A2C
+from stable_baselines3 import PPO, A2C
 
 def convert_models_in_results():
     """Find and re-save all best_model.zip files."""
@@ -55,7 +55,7 @@ def convert_models_in_results():
             print(f"  WARNING: Could not read config - {e}, skipping")
             continue
         
-        algorithm_map = {'PPO': PPO, 'DQN': DQN, 'A2C': A2C}
+        algorithm_map = {'PPO': PPO, 'A2C': A2C}
         AgentClass = algorithm_map.get(algorithm, PPO)
         
         try:

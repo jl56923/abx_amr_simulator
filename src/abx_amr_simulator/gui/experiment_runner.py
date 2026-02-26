@@ -8,17 +8,19 @@ from pathlib import Path
 from typing import Dict, Any
 import signal
 import psutil
+import sys
 
 import streamlit as st
 import yaml
 
-# Project root (repo root) for accessing package-bundled default configs
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-# Current working directory for user experiments and results
-CWD = Path.cwd()
+# Package root for fallback to bundled default configs
+PACKAGE_ROOT = Path(__file__).resolve().parents[3]
+# Project root (user workspace) for experiments and results
+PROJECT_ROOT = Path(os.environ.get("ABX_PROJECT_ROOT", Path.cwd())).resolve()
 
 from abx_amr_simulator.utils import load_config, apply_param_overrides
 from abx_amr_simulator.gui.patient_gen_ui_helper import migrate_old_config_to_new, build_attribute_ui_section
+from abx_amr_simulator.gui.config_validation import validate_umbrella_config_references
 
 
 def get_results_directory() -> Path:
@@ -32,17 +34,22 @@ def get_results_directory() -> Path:
     Returns:
         Path: Absolute path to results directory (creates if doesn't exist)
     """
-    results_dir_str = os.environ.get('ABX_RESULTS_DIR', './results')
+    project_root = Path(os.environ.get("ABX_PROJECT_ROOT", Path.cwd())).resolve()
+    results_dir_str = os.environ.get('ABX_RESULTS_DIR', str(project_root / "results"))
     results_dir = Path(results_dir_str).resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
     return results_dir
 
 
-# Try to find configs in current directory first, then fall back to package
-if (CWD / "configs").exists():
-    CONFIG_DIR = CWD / "configs"
+# Try to find configs in project root, then fall back to package defaults
+project_configs_dir = PROJECT_ROOT / "experiments" / "configs"
+legacy_configs_dir = PROJECT_ROOT / "configs"
+if project_configs_dir.exists():
+    CONFIG_DIR = project_configs_dir
+elif legacy_configs_dir.exists():
+    CONFIG_DIR = legacy_configs_dir
 else:
-    CONFIG_DIR = PROJECT_ROOT / "experiments" / "configs"
+    CONFIG_DIR = PACKAGE_ROOT / "experiments" / "configs"
 GENERATED_DIR = CONFIG_DIR / "generated_from_streamlit"
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -59,6 +66,8 @@ def list_config_files():
     
     configs = sorted([f for f in umbrella_dir.glob("*.yaml") if f.is_file()])
     return configs
+
+
 
 
 def get_default_component_configs() -> Dict[str, Path]:
@@ -96,6 +105,8 @@ def main():
     if 'training_pid' not in st.session_state:
         st.session_state['training_pid'] = -1
 
+    results_dir = get_results_directory()
+
     st.sidebar.header("Configuration Source")
     configs = list_config_files()
     
@@ -115,7 +126,18 @@ def main():
     
     selected_name = st.sidebar.selectbox("Base config", config_names, index=default_idx)
     base_config_path = config_paths[selected_name]  # Use the actual full path
+    validation_errors, validation_warnings = validate_umbrella_config_references(base_config_path)
+    for warning in validation_warnings:
+        st.warning(warning)
+    if validation_errors:
+        for error in validation_errors:
+            st.error(error)
+        st.stop()
     config = load_config(str(base_config_path))
+
+    st.sidebar.markdown("**Results directory**")
+    st.sidebar.code(str(results_dir))
+    st.sidebar.caption("Expected layout: my_project/results/")
 
     st.sidebar.markdown("**Run naming**")
     run_name_input = st.sidebar.text_input("Run name prefix", value=config.get("run_name", "streamlit_run"))
@@ -126,7 +148,6 @@ def main():
     additional_episodes = None
     
     if continue_training:
-        results_dir = get_results_directory()
         if results_dir.exists():
             experiments = sorted([f.name for f in results_dir.iterdir() if f.is_dir()], reverse=True)
             if experiments:
@@ -234,7 +255,7 @@ def main():
         label="prob_infected",
         value=True,
         disabled=True,
-        key="observable_attr_prob_infected_locked",
+        key="observable_attr_prob_infected_locked_env",
     )
 
     selected_observables = []
@@ -244,7 +265,7 @@ def main():
             label=attr,
             value=default_checked,
             disabled=continue_training,
-            key=f"observable_attr_{attr}"
+            key=f"observable_attr_env_{attr}"
         )
         if is_checked:
             selected_observables.append(attr)
@@ -464,11 +485,19 @@ def main():
     st.markdown("---")
     st.header("Patient Generator")
 
-    # Load existing config or provide defaults
-    patient_gen_cfg = env_cfg.get("patient_generator", {})
-    
+    # Load existing config or fall back to default patient generator config
+    patient_gen_cfg = config.get("patient_generator", {})
+    default_pg_cfg = {}
+    try:
+        default_pg_path = CONFIG_DIR / "patient_generator" / "default.yaml"
+        with open(default_pg_path, "r") as f:
+            default_pg_cfg = yaml.safe_load(f) or {}
+    except Exception:
+        default_pg_cfg = {}
+
     # Migrate old flat config to new nested format if needed
-    patient_gen_cfg = migrate_old_config_to_new(patient_gen_cfg)
+    patient_gen_cfg = migrate_old_config_to_new(patient_gen_cfg) if patient_gen_cfg else {}
+    default_pg_cfg = migrate_old_config_to_new(default_pg_cfg) if default_pg_cfg else {}
     
     # Observable patient attributes selector
     st.markdown("### Observable Patient Attributes")
@@ -482,7 +511,10 @@ def main():
         "recovery_without_treatment_prob",
     ]
     
-    default_visible_attrs = patient_gen_cfg.get("visible_patient_attributes", ["prob_infected"])
+    default_visible_attrs = patient_gen_cfg.get(
+        "visible_patient_attributes",
+        default_pg_cfg.get("visible_patient_attributes", ["prob_infected"]),
+    )
     default_visible_set = {a for a in default_visible_attrs if a != "prob_infected"}
 
     # prob_infected is always observed
@@ -490,7 +522,7 @@ def main():
         label="prob_infected",
         value=True,
         disabled=True,
-        key="observable_attr_prob_infected_locked",
+        key="observable_attr_prob_infected_locked_pg",
         help="Always observed (required for agent to make decisions)"
     )
 
@@ -501,7 +533,7 @@ def main():
             label=attr,
             value=default_checked,
             disabled=continue_training,
-            key=f"observable_attr_{attr}"
+            key=f"observable_attr_pg_{attr}"
         )
         if is_checked:
             selected_observables.append(attr)
@@ -536,11 +568,15 @@ def main():
     patient_gen_cfg_updated = {}
     for attr_name, attr_info_dict in attribute_info.items():
         attr_cfg = patient_gen_cfg.get(attr_name, {})
-        
-        # Set sensible defaults if not present
+
+        # Fall back to default patient generator config when missing
+        if not attr_cfg:
+            attr_cfg = default_pg_cfg.get(attr_name, {})
+
+        # Last-resort defaults if default config is unavailable
         if not attr_cfg:
             attr_cfg = {
-                'prob_dist': {'type': 'gaussian', 'mu': 0.5, 'sigma': 0.2},
+                'prob_dist': {'type': 'constant', 'value': 1.0},
                 'obs_bias_multiplier': 1.0,
                 'obs_noise_std_dev_fraction': 0.0,
                 'obs_noise_one_std_dev': 0.2 if attr_info_dict['max'] == 1.0 else 1.0,
@@ -812,6 +848,8 @@ def main():
                     "seed": int(seed),
                 })
             config["run_name"] = run_name_input
+            config.setdefault("config_folder_location", "../")
+            config.setdefault("options_folder_location", "../../options")
 
             # Write config
             config_path = write_config(config, run_name_input)
@@ -825,23 +863,25 @@ def main():
             # Build command based on whether continuing training or starting fresh
             if continue_training:
                 cmd = [
-                    sys.executable, "-u", "experiments/train.py",
-                    "--train-from-prior-results", str(results_dir / prior_experiment),
+                    sys.executable, "-u", "-m", "abx_amr_simulator.training.train",
+                    "--train-from-prior-results", str((results_dir / prior_experiment).resolve()),
                     "--additional-training-episodes", str(additional_episodes),
                     "--seed", str(seed)
                 ]
             else:
+                if not config_path.exists():
+                    st.error(f"Config file not found: {config_path}")
+                    return
                 cmd = [
-                    sys.executable, "-u", "experiments/train.py",
-                    "--config", str(config_path.relative_to(PROJECT_ROOT)),
-                    "--seed", str(seed)
+                    sys.executable, "-u", "-m", "abx_amr_simulator.training.train",
+                    "--umbrella-config", str(config_path.resolve()),
+                    "-p", f"training.seed={int(seed)}"
                 ]
             
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             process = subprocess.Popen(
                 cmd,
-                cwd=PROJECT_ROOT,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

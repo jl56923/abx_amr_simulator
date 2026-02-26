@@ -26,13 +26,12 @@ class SimpleBlockOption(OptionBase):
         if option_library is None:
             raise ValueError("option_library not found in env_state")
         abx_name_to_index = option_library.abx_name_to_index
-        antibiotic_names = list(abx_name_to_index.keys())
         
-        try:
-            idx = antibiotic_names.index(self.antibiotic)
-        except ValueError:
-            raise ValueError(f"Antibiotic '{self.antibiotic}' not found")
-        return np.full(shape=num_patients, fill_value=idx, dtype=np.int32)
+        # Validate antibiotic exists
+        if self.antibiotic not in abx_name_to_index:
+            raise ValueError(f"Antibiotic '{self.antibiotic}' not found in environment")
+        
+        return np.full(shape=num_patients, fill_value=self.antibiotic, dtype=object)
 
     def get_referenced_antibiotics(self):
         return [self.antibiotic]
@@ -60,14 +59,11 @@ class BlockOption(OptionBase):
         option_library = env_state.get('option_library')
         if option_library is None:
             raise ValueError("option_library not found in env_state")
-        abx_name_to_index = option_library.abx_name_to_index
-        antibiotic_names = list(abx_name_to_index.keys())
         
-        try:
-            idx = antibiotic_names.index(self.antibiotic)
-        except ValueError:
-            raise ValueError(f"Antibiotic '{{self.antibiotic}}' not found")
-        return np.full(shape=num_patients, fill_value=idx, dtype=np.int32)
+        # Validate antibiotic exists and return its name string
+        if self.antibiotic not in option_library.abx_name_to_index:
+            raise ValueError(f\"Antibiotic '{{self.antibiotic}}' not found\")
+        return np.full(shape=num_patients, fill_value=self.antibiotic, dtype=object)
 
     def get_referenced_antibiotics(self):
         return [self.antibiotic]

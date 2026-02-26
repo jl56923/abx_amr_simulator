@@ -604,3 +604,356 @@ def test_individual_reward_uses_true_delta_amr():
     assert reward_large < reward_small, (
         "Larger delta_visible_amr should yield lower reward due to higher AMR penalty"
     )
+
+
+class TestExpectedRewardCalculation:
+    """Tests for expected reward calculation methods."""
+    
+    def test_expected_individual_reward_no_treatment(self):
+        """Test expected reward for no-treatment action (spontaneous recovery path)."""
+        rc = create_test_reward_calculator(
+            antibiotic_names=['A'],
+            clinical_benefit_reward=10.0,
+            clinical_benefit_probability=0.8,
+            clinical_failure_penalty=-5.0,
+            clinical_failure_probability=0.2,
+        )
+        
+        patient = Patient(
+            prob_infected=0.5,
+            benefit_value_multiplier=1.0,
+            failure_value_multiplier=1.0,
+            benefit_probability_multiplier=1.0,
+            failure_probability_multiplier=1.0,
+            recovery_without_treatment_prob=0.3,
+            infection_status=True,
+            abx_sensitivity_dict={'A': True},
+            prob_infected_obs=0.5,
+            benefit_value_multiplier_obs=1.0,
+            failure_value_multiplier_obs=1.0,
+            benefit_probability_multiplier_obs=1.0,
+            failure_probability_multiplier_obs=1.0,
+            recovery_without_treatment_prob_obs=0.3,
+        )
+        
+        # No-treatment path: uses recovery_without_treatment_prob
+        reward = rc.calculate_expected_individual_reward(
+            patient=patient,
+            antibiotic_name='no_treatment',
+            visible_amr_level=0.0,
+            delta_visible_amr=0.0,
+        )
+        
+        # Should incorporate recovery probability and failure probability
+        assert isinstance(reward, float)
+        assert not np.isnan(reward)
+        # With recovery prob 0.3, should get some benefit; with failure prob 0.2, should lose some
+        assert reward != 0.0
+    
+    def test_expected_individual_reward_with_treatment(self):
+        """Test expected reward for treatment action."""
+        rc = create_test_reward_calculator(
+            antibiotic_names=['A'],
+            clinical_benefit_reward=10.0,
+            clinical_benefit_probability=0.8,
+            clinical_failure_penalty=-5.0,
+            clinical_failure_probability=0.1,
+            adverse_effect_penalty=-2.0,
+            adverse_effect_probability=0.05,
+        )
+        
+        patient = Patient(
+            prob_infected=0.6,
+            benefit_value_multiplier=1.2,
+            failure_value_multiplier=0.9,
+            benefit_probability_multiplier=1.1,
+            failure_probability_multiplier=0.95,
+            recovery_without_treatment_prob=0.2,
+            infection_status=True,
+            abx_sensitivity_dict={'A': True},
+            prob_infected_obs=0.6,
+            benefit_value_multiplier_obs=1.2,
+            failure_value_multiplier_obs=0.9,
+            benefit_probability_multiplier_obs=1.1,
+            failure_probability_multiplier_obs=0.95,
+            recovery_without_treatment_prob_obs=0.2,
+        )
+        
+        # Treatment path: A antibiotic
+        reward = rc.calculate_expected_individual_reward(
+            patient=patient,
+            antibiotic_name='A',
+            visible_amr_level=0.2,  # Some resistance
+            delta_visible_amr=0.05,  # Some AMR increase
+        )
+        
+        assert isinstance(reward, float)
+        assert not np.isnan(reward)
+        # Should account for sensitivity (1-amr=0.8), benefit, adverse effects, AMR penalty
+        assert reward < 0.0 or reward > 0.0  # Could go either way depending on params
+    
+    def test_expected_individual_reward_high_amr(self):
+        """Test expected reward when AMR is high (low sensitivity)."""
+        rc = create_test_reward_calculator(
+            antibiotic_names=['A'],
+            clinical_benefit_reward=10.0,
+            clinical_failure_penalty=-5.0,
+            epsilon=0.1,  # Larger AMR penalty weight
+        )
+        
+        patient = Patient(
+            prob_infected=0.8,
+            benefit_value_multiplier=1.0,
+            failure_value_multiplier=1.0,
+            benefit_probability_multiplier=1.0,
+            failure_probability_multiplier=1.0,
+            recovery_without_treatment_prob=0.1,
+            infection_status=True,
+            abx_sensitivity_dict={'A': True},
+            prob_infected_obs=0.8,
+            benefit_value_multiplier_obs=1.0,
+            failure_value_multiplier_obs=1.0,
+            benefit_probability_multiplier_obs=1.0,
+            failure_probability_multiplier_obs=1.0,
+            recovery_without_treatment_prob_obs=0.1,
+        )
+        
+        # With high AMR (low sensitivity), treatment is less effective
+        reward_high_amr = rc.calculate_expected_individual_reward(
+            patient=patient,
+            antibiotic_name='A',
+            visible_amr_level=0.9,  # Very high resistance
+            delta_visible_amr=0.05,
+        )
+        
+        reward_low_amr = rc.calculate_expected_individual_reward(
+            patient=patient,
+            antibiotic_name='A',
+            visible_amr_level=0.1,  # Low resistance
+            delta_visible_amr=0.05,
+        )
+        
+        # High AMR should produce lower reward (less sensitivity = less benefit)
+        assert reward_high_amr < reward_low_amr
+    
+    def test_expected_individual_reward_probability_clamping(self):
+        """Test that probabilities are clamped to [0,1] internally during calculation."""
+        rc = create_test_reward_calculator(
+            antibiotic_names=['A'],
+            clinical_benefit_probability=0.8,
+            adverse_effect_probability=0.6,
+        )
+        
+        patient = Patient(
+            prob_infected=0.5,
+            benefit_value_multiplier=1.0,
+            failure_value_multiplier=1.0,
+            benefit_probability_multiplier=1.5,  # Will multiply probability
+            failure_probability_multiplier=1.0,
+            recovery_without_treatment_prob=0.5,
+            infection_status=True,
+            abx_sensitivity_dict={'A': True},
+            prob_infected_obs=0.5,
+            benefit_value_multiplier_obs=1.0,
+            failure_value_multiplier_obs=1.0,
+            benefit_probability_multiplier_obs=1.5,
+            failure_probability_multiplier_obs=1.0,
+            recovery_without_treatment_prob_obs=0.5,
+        )
+        
+        # Should not raise; probabilities should be clamped internally
+        reward = rc.calculate_expected_individual_reward(
+            patient=patient,
+            antibiotic_name='A',
+            visible_amr_level=0.3,
+            delta_visible_amr=0.0,
+        )
+        
+        assert isinstance(reward, float)
+        assert not np.isnan(reward)
+        # Clamping should keep reward in reasonable bounds
+        assert -50 < reward < 50
+    
+    def test_expected_individual_reward_invalid_antibiotic(self):
+        """Test error handling for invalid antibiotic name."""
+        rc = create_test_reward_calculator(antibiotic_names=['A'])
+        
+        patient = Patient(
+            prob_infected=0.5,
+            benefit_value_multiplier=1.0,
+            failure_value_multiplier=1.0,
+            benefit_probability_multiplier=1.0,
+            failure_probability_multiplier=1.0,
+            recovery_without_treatment_prob=0.3,
+            infection_status=True,
+            abx_sensitivity_dict={'A': True},
+            prob_infected_obs=0.5,
+            benefit_value_multiplier_obs=1.0,
+            failure_value_multiplier_obs=1.0,
+            benefit_probability_multiplier_obs=1.0,
+            failure_probability_multiplier_obs=1.0,
+            recovery_without_treatment_prob_obs=0.3,
+        )
+        
+        with pytest.raises(ValueError, match="not found"):
+            rc.calculate_expected_individual_reward(
+                patient=patient,
+                antibiotic_name='InvalidDrug',
+                visible_amr_level=0.3,
+                delta_visible_amr=0.0,
+            )
+    
+    def test_calculate_expected_reward_orchestration(self):
+        """Test expected reward calculation orchestration with multiple patients."""
+        rc = create_test_reward_calculator(
+            antibiotic_names=['A', 'B'],
+            lambda_weight=0.5,
+        )
+        
+        patients = [
+            Patient(
+                prob_infected=0.5,
+                benefit_value_multiplier=1.0,
+                failure_value_multiplier=1.0,
+                benefit_probability_multiplier=1.0,
+                failure_probability_multiplier=1.0,
+                recovery_without_treatment_prob=0.3,
+                infection_status=True,
+                abx_sensitivity_dict={'A': True, 'B': False},
+                prob_infected_obs=0.5,
+                benefit_value_multiplier_obs=1.0,
+                failure_value_multiplier_obs=1.0,
+                benefit_probability_multiplier_obs=1.0,
+                failure_probability_multiplier_obs=1.0,
+                recovery_without_treatment_prob_obs=0.3,
+            ),
+            Patient(
+                prob_infected=0.7,
+                benefit_value_multiplier=1.1,
+                failure_value_multiplier=0.9,
+                benefit_probability_multiplier=1.0,
+                failure_probability_multiplier=1.0,
+                recovery_without_treatment_prob=0.2,
+                infection_status=True,
+                abx_sensitivity_dict={'A': False, 'B': True},
+                prob_infected_obs=0.7,
+                benefit_value_multiplier_obs=1.1,
+                failure_value_multiplier_obs=0.9,
+                benefit_probability_multiplier_obs=1.0,
+                failure_probability_multiplier_obs=1.0,
+                recovery_without_treatment_prob_obs=0.2,
+            ),
+        ]
+        
+        # Actions: patient 0 → A, patient 1 → B
+        actions = np.array([1, 2])  # Assuming index 1=A, 2=B
+        
+        visible_amr_levels = {'A': 0.3, 'B': 0.2}
+        delta_visible_amr_per_antibiotic = {'A': 0.05, 'B': 0.04}
+        
+        expected_reward = rc.calculate_expected_reward(
+            patients=patients,
+            actions=actions,
+            antibiotic_names=rc.antibiotic_names,
+            visible_amr_levels=visible_amr_levels,
+            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
+        )
+        
+        assert isinstance(expected_reward, float)
+        assert not np.isnan(expected_reward)
+        # Should be a weighted combination of individual and community rewards
+        assert -100 < expected_reward < 100  # Sanity bounds
+    
+    def test_expected_reward_no_treatment_action(self):
+        """Test expected reward when action is 'no_treatment'."""
+        rc = create_test_reward_calculator(antibiotic_names=['A'])
+        
+        patients = [
+            Patient(
+                prob_infected=0.5,
+                benefit_value_multiplier=1.0,
+                failure_value_multiplier=1.0,
+                benefit_probability_multiplier=1.0,
+                failure_probability_multiplier=1.0,
+                recovery_without_treatment_prob=0.3,
+                infection_status=True,
+                abx_sensitivity_dict={'A': True},
+                prob_infected_obs=0.5,
+                benefit_value_multiplier_obs=1.0,
+                failure_value_multiplier_obs=1.0,
+                benefit_probability_multiplier_obs=1.0,
+                failure_probability_multiplier_obs=1.0,
+                recovery_without_treatment_prob_obs=0.3,
+            ),
+        ]
+        
+        # Action 0 = no_treatment (based on typical indexing)
+        actions = np.array([0])
+        
+        visible_amr_levels = {'A': 0.3}
+        delta_visible_amr_per_antibiotic = {'A': 0.0}  # No AMR increase with no treatment
+        
+        expected_reward = rc.calculate_expected_reward(
+            patients=patients,
+            actions=actions,
+            antibiotic_names=rc.antibiotic_names,
+            visible_amr_levels=visible_amr_levels,
+            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
+        )
+        
+        assert isinstance(expected_reward, float)
+        assert not np.isnan(expected_reward)
+    
+    def test_expected_reward_lambda_weighting(self):
+        """Test that lambda correctly weights community vs individual rewards."""
+        rc_community = create_test_reward_calculator(
+            antibiotic_names=['A'],
+            lambda_weight=1.0,  # All community, no individual
+        )
+        
+        rc_individual = create_test_reward_calculator(
+            antibiotic_names=['A'],
+            lambda_weight=0.0,  # All individual, no community
+        )
+        
+        patients = [
+            Patient(
+                prob_infected=0.5,
+                benefit_value_multiplier=1.0,
+                failure_value_multiplier=1.0,
+                benefit_probability_multiplier=1.0,
+                failure_probability_multiplier=1.0,
+                recovery_without_treatment_prob=0.3,
+                infection_status=True,
+                abx_sensitivity_dict={'A': True},
+                prob_infected_obs=0.5,
+                benefit_value_multiplier_obs=1.0,
+                failure_value_multiplier_obs=1.0,
+                benefit_probability_multiplier_obs=1.0,
+                failure_probability_multiplier_obs=1.0,
+                recovery_without_treatment_prob_obs=0.3,
+            ),
+        ]
+        
+        actions = np.array([1])  # Treat with A
+        visible_amr_levels = {'A': 0.3}
+        delta_visible_amr_per_antibiotic = {'A': 0.05}
+        
+        reward_community = rc_community.calculate_expected_reward(
+            patients=patients,
+            actions=actions,
+            antibiotic_names=rc_community.antibiotic_names,
+            visible_amr_levels=visible_amr_levels,
+            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
+        )
+        
+        reward_individual = rc_individual.calculate_expected_reward(
+            patients=patients,
+            actions=actions,
+            antibiotic_names=rc_individual.antibiotic_names,
+            visible_amr_levels=visible_amr_levels,
+            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
+        )
+        
+        # Should be different due to different weighting
+        assert reward_community != reward_individual

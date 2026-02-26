@@ -17,6 +17,8 @@ def setup_options_folders_with_defaults(target_path: Union[str, Path]) -> Path:
         target_path/options/option_types/block/block_option_loader.py
         target_path/options/option_types/alternation/alternation_option_default_config.yaml
         target_path/options/option_types/alternation/alternation_option_loader.py
+        target_path/options/option_types/heuristic/heuristic_option_default_config.yaml
+        target_path/options/option_types/heuristic/heuristic_option_loader.py
 
     Copies bundled default option configs and loaders from package into user's target directory.
     Useful for initializing new experiment directories with working baseline option libraries.
@@ -41,8 +43,9 @@ def setup_options_folders_with_defaults(target_path: Union[str, Path]) -> Path:
     option_types_dir = options_dir / "option_types"
     block_dir = option_types_dir / "block"
     alternation_dir = option_types_dir / "alternation"
+    heuristic_dir = option_types_dir / "heuristic"
 
-    for directory in [option_libraries_dir, block_dir, alternation_dir]:
+    for directory in [option_libraries_dir, block_dir, alternation_dir, heuristic_dir]:
         directory.mkdir(parents=True, exist_ok=True)
 
     # Get bundled defaults from package
@@ -70,6 +73,15 @@ def setup_options_folders_with_defaults(target_path: Union[str, Path]) -> Path:
     alt_loader_src = defaults_root.joinpath("option_types/alternation/alternation_option_loader.py")
     alt_loader_dst = alternation_dir / "alternation_option_loader.py"
     alt_loader_dst.write_bytes(alt_loader_src.read_bytes())
+
+    # Copy heuristic option files
+    heur_config_src = defaults_root.joinpath("option_types/heuristic/heuristic_option_default_config.yaml")
+    heur_config_dst = heuristic_dir / "heuristic_option_default_config.yaml"
+    heur_config_dst.write_bytes(heur_config_src.read_bytes())
+
+    heur_loader_src = defaults_root.joinpath("option_types/heuristic/heuristic_option_loader.py")
+    heur_loader_dst = heuristic_dir / "heuristic_option_loader.py"
+    heur_loader_dst.write_bytes(heur_loader_src.read_bytes())
 
     return options_dir
 

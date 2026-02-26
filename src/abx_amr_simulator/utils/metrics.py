@@ -644,11 +644,11 @@ def plot_hrl_diagnostics_single_run(model, env, experiment_folder: str, option_l
     
     print(f"\n  Running HRL diagnostics ({num_eval_episodes} episodes)...")
     
-    # Collect trajectories
+    # Collect trajectories (keep manager-level for HRL diagnostics)
     trajectories = []
     for ep in range(num_eval_episodes):
         try:
-            traj = run_episode_and_get_trajectory(model=model, env=env, deterministic=True)
+            traj = run_episode_and_get_trajectory(model=model, env=env, deterministic=True, flatten_hrl=False)
             trajectories.append(traj)
         except Exception as e:
             print(f"    [WARN] Episode {ep} failed: {e}")
@@ -695,29 +695,121 @@ def plot_hrl_diagnostics_single_run(model, env, experiment_folder: str, option_l
     print(f"\n  ✓ All HRL diagnostics complete! Results saved to {figures_folder}")
 
 
-def run_episode_and_get_trajectory(model, env, deterministic=True):
+def _flatten_hrl_trajectory(trajectory):
+    """Flatten HRL (hierarchical) trajectory from manager-level to primitive-level.
+    
+    Converts a trajectory collected at the manager decision level (where each step
+    represents one option execution spanning 10-30 primitive environment steps) into
+    a primitive-level trajectory (where each step represents one environment interaction).
+    
+    This enables ensemble analysis tools to work with HRL agents by normalizing all
+    trajectories to primitive-level granularity.
+    
+    Args:
+        trajectory (dict): Manager-level trajectory with keys:
+            - 'obs': List of manager observations
+            - 'actions': List of manager actions (option IDs)
+            - 'rewards': List of manager rewards (sum over primitive steps)
+            - 'infos': List of manager info dicts, each containing:
+                - 'primitive_actions': list of primitive actions during this option
+                - 'primitive_infos': list of primitive info dicts
+    
+    Returns:
+        dict: Primitive-level trajectory with same keys as input, but flattened:
+            - 'obs': Expanded with intermediate primitive observations
+            - 'actions': Expanded from primitive_actions
+            - 'rewards': Distributed across primitive steps
+            - 'infos': Expanded from primitive_infos
+            - 'macro_action_boundaries': List of indices where each macro-action starts
+    
+    Note:
+        - Rewards are distributed evenly across primitive steps of each macro-action
+        - First observation of episode is preserved; intermediate obs filled from primitives
+        - Final obs of each macro-action taken from manager-level obs
+        - Macro-action boundaries recorded for optional visualization
+    """
+    flattened = {"obs": [trajectory["obs"][0]], "actions": [], "rewards": [], "infos": []}
+    macro_boundaries = [0]  # First boundary always at timestep 0
+    
+    for step_idx, (manager_info, next_obs) in enumerate(zip(trajectory["infos"][1:], trajectory["obs"][1:])):
+        # Extract primitive-level data from manager step
+        primitive_actions = manager_info.get('primitive_actions', [])
+        primitive_infos = manager_info.get('primitive_infos', [])
+        manager_reward = trajectory["rewards"][step_idx]
+        
+        num_primitive_steps = len(primitive_actions)
+        
+        if num_primitive_steps == 0:
+            # Fallback for non-HRL or empty steps (shouldn't happen with OptionsWrapper)
+            flattened["actions"].append(manager_info.get('macro_action', 0))
+            flattened["rewards"].append(manager_reward)
+            flattened["infos"].append(manager_info)
+        else:
+            # Distribute reward evenly across primitive steps
+            reward_per_step = manager_reward / num_primitive_steps
+            
+            # Add primitive actions and rewards
+            for prim_idx, (prim_action, prim_info) in enumerate(zip(primitive_actions, primitive_infos)):
+                flattened["actions"].append(prim_action)
+                flattened["rewards"].append(reward_per_step)
+                flattened["infos"].append(prim_info)
+                
+                # Add observation after this primitive action
+                if prim_idx < len(primitive_infos) - 1:
+                    # Intermediate primitive step: get obs from primitive_info if available
+                    if 'observation' in prim_info:
+                        flattened["obs"].append(prim_info['observation'])
+                    else:
+                        # Placeholder: will be filled with interpolation if needed
+                        flattened["obs"].append(np.zeros_like(trajectory["obs"][0]))
+                else:
+                    # Final primitive step of this macro-action: use manager-level obs
+                    flattened["obs"].append(next_obs)
+            
+            # Record where this macro-action ends (start of next)
+            macro_boundaries.append(len(flattened["actions"]))
+    
+    # Store macro-action boundaries for downstream analysis/visualization
+    flattened["macro_action_boundaries"] = macro_boundaries
+    
+    return flattened
+
+
+def run_episode_and_get_trajectory(model, env, deterministic=True, flatten_hrl=True):
     """Run a single episode with a trained agent and collect full trajectory.
     
     Executes one episode from reset to termination/truncation, recording observations,
     actions, rewards, and info dicts at each timestep. Includes safety fallback
     (10000 steps max) to prevent infinite loops if environment doesn't terminate.
     
+    For HRL environments (OptionsWrapper), can optionally expand manager-level trajectory
+    to primitive-level by flattening macro-actions into constituent primitive steps.
+    
     Args:
         model: Trained stable-baselines3 agent with predict() method (PPO, DQN, A2C).
         env (gym.Env): Gymnasium environment to run episode in.
         deterministic (bool): If True, use deterministic policy (argmax); if False,
             sample from policy distribution. Default: True.
+        flatten_hrl (bool): If True, flatten HRL trajectories to primitive-level for
+            ensemble analysis. If False, keep manager-level trajectory with option
+            metadata for HRL diagnostics. Default: True.
     
     Returns:
         dict: Trajectory dictionary with keys:
-            - 'obs': List of observations (numpy arrays), length = num_steps + 1
-            - 'actions': List of actions (numpy arrays), length = num_steps
-            - 'rewards': List of scalar rewards, length = num_steps
-            - 'infos': List of info dicts, length = num_steps + 1 (includes initial)
+            - 'obs': List of observations (numpy arrays), length varies by flatten_hrl
+            - 'actions': List of actions (numpy arrays), length varies by flatten_hrl
+            - 'rewards': List of scalar rewards, length varies by flatten_hrl
+            - 'infos': List of info dicts, length varies by flatten_hrl (includes initial)
+            - 'macro_action_boundaries': List of indices (only if flatten_hrl=True for HRL)
     
     Example:
-        >>> trajectory = run_episode_and_get_trajectory(model, env, deterministic=True)
-        >>> print(len(trajectory['rewards']))  # Number of timesteps in episode
+        >>> # For ensemble analysis (flattened primitive-level)
+        >>> trajectory = run_episode_and_get_trajectory(model, env, flatten_hrl=True)
+        >>> print(len(trajectory['rewards']))  # 500 primitive steps
+        500
+        >>> # For HRL diagnostics (manager-level with option metadata)
+        >>> trajectory = run_episode_and_get_trajectory(model, env, flatten_hrl=False)
+        >>> print(len(trajectory['rewards']))  # ~50 manager decisions
         50
     """
     obs, info = env.reset()
@@ -771,6 +863,11 @@ def run_episode_and_get_trajectory(model, env, deterministic=True):
     if step_count >= max_steps_fallback:
         print(f"[WARN] Episode reached safety limit of {max_steps_fallback} steps without termination/truncation")
     
+    # Flatten trajectory if HRL and flattening requested
+    is_hrl = any('primitive_actions' in info for info in trajectory['infos'][1:])
+    if is_hrl and flatten_hrl:
+        trajectory = _flatten_hrl_trajectory(trajectory=trajectory)
+    
     return trajectory
 
 
@@ -818,15 +915,15 @@ def plot_metrics_trained_agent(model, env, experiment_folder, deterministic=True
         if not os.path.exists(experiment_figures_folder):
             os.mkdir(experiment_figures_folder)
     
-    # First, create a plot of the AMR response for every antibiotic, for a steady puff sequence of [1, 1, 1, ..., 1].
+    # First, create a plot of the AMR response for every antibiotic, for a steady dose sequence of [1, 1, 1, ..., 1].
     
-    puff_sequence = [1] * 10 + [0] * 10 + [2] * 10
+    dose_sequence = [1] * 10 + [0] * 10 + [2] * 10
     
     for antibiotic_name, AMR_leakyballoon_params in env.unwrapped.antibiotics_AMR_dict.items():
         # Create a leaky balloon instance with the given parameters
         leaky_balloon = AMR_LeakyBalloon(**AMR_leakyballoon_params)
-        leaky_balloon.plot_leaky_balloon_response_to_puff_sequence(
-            puff_sequence,
+        leaky_balloon.plot_leaky_balloon_response_to_dose_sequence(
+            dose_sequence,
             title=f"AMR Response for {antibiotic_name}",
             fname=f"leaky_balloon_response_{antibiotic_name}.png",
             save_plot_folder=experiment_figures_folder,
@@ -1168,9 +1265,9 @@ def plot_metrics_trained_agent(model, env, experiment_folder, deterministic=True
 
 
 def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_folder_name: Optional[str] = "figures"):
-    """Generate publication-quality plots from a direct puff sequence trajectory.
+    """Generate publication-quality plots from a direct dose sequence trajectory.
     
-    Takes a pre-computed trajectory (e.g., from a specific puff sequence or manual strategy)
+    Takes a pre-computed trajectory (e.g., from a specific dose sequence or manual strategy)
     and creates the same diagnostic plots as plot_metrics_trained_agent:
     - Leaky balloon AMR responses (for each antibiotic)
     - AMR levels over time (actual vs. observable)
@@ -1179,7 +1276,7 @@ def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_fol
     - Patient outcome breakdowns
     - Antibiotic prescriptions over time
     
-    This allows visualization of arbitrary puff sequences without requiring a trained agent.
+    This allows visualization of arbitrary dose sequences without requiring a trained agent.
     
     Args:
         trajectory (dict): Trajectory dictionary with keys:
@@ -1220,14 +1317,14 @@ def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_fol
         if not os.path.exists(experiment_figures_folder):
             os.makedirs(experiment_figures_folder)
     
-    # First, create a plot of the AMR response for every antibiotic, for a steady puff sequence of [1, 1, 1, ..., 1].
-    puff_sequence = [1] * 10 + [0] * 10 + [2] * 10
+    # First, create a plot of the AMR response for every antibiotic, for a steady dose sequence of [1, 1, 1, ..., 1].
+    dose_sequence = [1] * 10 + [0] * 10 + [2] * 10
     
     for antibiotic_name, AMR_leakyballoon_params in env.unwrapped.antibiotics_AMR_dict.items():
         # Create a leaky balloon instance with the given parameters
         leaky_balloon = AMR_LeakyBalloon(**AMR_leakyballoon_params)
-        leaky_balloon.plot_leaky_balloon_response_to_puff_sequence(
-            puff_sequence,
+        leaky_balloon.plot_leaky_balloon_response_to_dose_sequence(
+            dose_sequence,
             title=f"AMR Response for {antibiotic_name}",
             fname=f"leaky_balloon_response_{antibiotic_name}.png",
             save_plot_folder=experiment_figures_folder,
@@ -1630,11 +1727,11 @@ def plot_metrics_ensemble_agents(
     antibiotic_names = env.unwrapped.antibiotic_names
     
     # Plot leaky balloon responses once (deterministic, independent of agent)
-    puff_sequence = [1] * 10 + [0] * 10 + [2] * 10
+    dose_sequence = [1] * 10 + [0] * 10 + [2] * 10
     for antibiotic_name, AMR_leakyballoon_params in env.unwrapped.antibiotics_AMR_dict.items():
         leaky_balloon = AMR_LeakyBalloon(**AMR_leakyballoon_params)
-        leaky_balloon.plot_leaky_balloon_response_to_puff_sequence(
-            puff_sequence,
+        leaky_balloon.plot_leaky_balloon_response_to_dose_sequence(
+            dose_sequence,
             title=f"AMR Response for {antibiotic_name}",
             fname=f"leaky_balloon_response_{antibiotic_name}.png",
             save_plot_folder=experiment_figures_folder,
@@ -1778,6 +1875,9 @@ def plot_metrics_ensemble_agents(
         """
         Aggregate list of trajectories into mean, percentiles, and IQM.
         
+        Handles variable-length trajectories by padding shorter ones to the maximum length
+        using their final value (maintains continuity for cumulative metrics and AMR levels).
+        
         Parameters:
         -----------
         trajectories_list : list of lists
@@ -1789,7 +1889,47 @@ def plot_metrics_ensemble_agents(
         --------
         dict with keys: mean, median, p10, p90, p25, p75, iqm, timesteps
         """
-        # Convert to numpy array (trajectories × timesteps)
+        if len(trajectories_list) == 0:
+            raise ValueError("trajectories_list is empty")
+        
+        # Check for consistent trajectory lengths (STRICT ENFORCEMENT)
+        trajectory_lengths = [len(traj) for traj in trajectories_list]
+        unique_lengths = set(trajectory_lengths)
+        
+        if len(unique_lengths) > 1:
+            # MISMATCHED LENGTHS - FAIL LOUDLY
+            min_len = min(trajectory_lengths)
+            max_len = max(trajectory_lengths)
+            length_distribution = {}
+            for length in trajectory_lengths:
+                length_distribution[length] = length_distribution.get(length, 0) + 1
+            
+            error_msg = (
+                f"\n{'='*80}\n"
+                f"ERROR: Trajectory length mismatch detected!\n"
+                f"{'='*80}\n"
+                f"All episodes in abx_amr_simulator environments MUST have exactly the same length.\n"
+                f"Expected: All trajectories have length = max_time_steps\n"
+                f"Found: {len(trajectories_list)} trajectories with {len(unique_lengths)} different lengths\n\n"
+                f"Length distribution:\n"
+            )
+            for length, count in sorted(length_distribution.items()):
+                error_msg += f"  Length {length}: {count} trajectories\n"
+            error_msg += (
+                f"\nMin length: {min_len}\n"
+                f"Max length: {max_len}\n\n"
+                f"Possible causes:\n"
+                f"  1. HRL wrapper: Trajectories collected at manager level (option selections)\n"
+                f"     instead of primitive level (individual timesteps)\n"
+                f"  2. Mixed data from experiments with different max_time_steps settings\n"
+                f"  3. Data corruption or incomplete episode recording\n\n"
+                f"For HRL agents: plot_metrics_ensemble_agents may need modification to handle\n"
+                f"manager-level trajectory granularity vs primitive-level AMR dynamics.\n"
+                f"{'='*80}"
+            )
+            raise ValueError(error_msg)
+        
+        # All trajectories have consistent length - proceed normally
         arr = np.array(trajectories_list)
         
         if apply_cumsum:

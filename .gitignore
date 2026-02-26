@@ -82,3 +82,19 @@ tensorboard/
 
 # Documentation builds
 docs/_build/
+
+# Ignore COPILOT_TODO.md file
+COPILOT_TODO.md
+
+# Ignore .github/ directory
+.github/
+
+# Ignore 'private_docs/' directory
+private_docs/
+
+# Ignore 'test_outputs/' directory
+test_outputs/
+
+# Ignore workspace/results/ directory (for storing results from training runs and analyses)
+workspace/results/
+workspace/results/*/**

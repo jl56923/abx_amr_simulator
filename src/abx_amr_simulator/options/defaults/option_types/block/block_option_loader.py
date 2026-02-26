@@ -25,7 +25,8 @@ class BlockOption(OptionBase):
         
         # No normalization - antibiotic name must match exactly
         try:
-            action_idx = option_library.abx_name_to_index[self.antibiotic]
+            # Just validate that antibiotic exists; return the name string
+            _ = option_library.abx_name_to_index[self.antibiotic]
         except KeyError as exc:
             available = list(option_library.abx_name_to_index.keys())
             raise ValueError(
@@ -34,7 +35,7 @@ class BlockOption(OptionBase):
                 f"Note: Use exactly 'no_treatment' (no variations like 'NO_RX', 'no_treat')."
             ) from exc
 
-        return np.full(shape=num_patients, fill_value=action_idx, dtype=np.int32)
+        return np.full(shape=num_patients, fill_value=self.antibiotic, dtype=object)
 
     def get_referenced_antibiotics(self) -> List[str]:
         """Return the single antibiotic this block option prescribes."""

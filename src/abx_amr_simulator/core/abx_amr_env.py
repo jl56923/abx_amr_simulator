@@ -17,6 +17,7 @@ import sys
 sys.path.append(parent_dir)
 
 from .leaky_balloon import AMR_LeakyBalloon
+from .base_amr_dynamics import AMRDynamicsBase
 from .base_patient_generator import PatientGeneratorBase
 from .base_reward_calculator import RewardCalculatorBase
 from .types import Patient
@@ -33,7 +34,7 @@ class ABXAMREnv(gym.Env):
     - Owns: episode timestep, action/observation spaces, step orchestration
     - Delegates: patient sampling (PatientGenerator), 
                  reward calculation (RewardCalculator),
-                 AMR dynamics (AMR_LeakyBalloon instances)
+                 AMR dynamics (AMRDynamicsBase instances via AMR_LeakyBalloon)
     
     Future refactor notes:
     - PatientGenerator will become per-Locale
@@ -54,13 +55,16 @@ class ABXAMREnv(gym.Env):
                 Must implement .observe(patients) and .obs_dim(num_patients) methods.
                 PatientGenerator owns visibility configuration internally.
                 Pre-initialized externally like RewardCalculator for composability.
-            antibiotics_AMR_dict: Dictionary mapping antibiotic names to parameter dicts for AMR_LeakyBalloon.
+            antibiotics_AMR_dict: Dictionary mapping antibiotic names to parameter dicts for AMRDynamicsBase (default: AMR_LeakyBalloon).
                 Each parameter dict must contain:
                 {'leak': float, 'flatness_parameter': float, 'permanent_residual_volume': float, 'initial_amr_level': float}
             num_patients_per_time_step: Number of patients per time step
             update_visible_AMR_levels_every_n_timesteps: Frequency of visible AMR level updates
             add_noise_to_visible_AMR_levels: Standard deviation of Gaussian noise added to visible AMR levels
-            add_bias_to_visible_AMR_levels: Constant bias added to visible AMR levels
+            add_bias_to_visible_AMR_levels: Constant bias added to visible AMR levels (range: [-1.0, 1.0]).
+                Negative values underestimate true AMR (agent sees lower AMR than true value).
+                Positive values overestimate true AMR (agent sees higher AMR than true value).
+                Resulting visible levels are clipped to [0.0, 1.0] range.
             max_time_steps: Maximum number of steps per episode
             crossresistance_matrix: Optional dict of dicts defining off-diagonal crossresistance ratios. Only non-self entries.
                 Diagonal auto-set to 1.0. Example: {"A": {"B": 0.5}, "B": {"A": 0.01}}
@@ -110,8 +114,10 @@ class ABXAMREnv(gym.Env):
         if add_noise_to_visible_AMR_levels < 0.0:
             raise ValueError("add_noise_to_visible_AMR_levels must be greater than or equal to 0.0.")
         
-        if not (0.0 <= add_bias_to_visible_AMR_levels <= 1.0):
-            raise ValueError("add_bias_to_visible_AMR_levels must be between 0.0 and 1.0.")
+        if not (-1.0 <= add_bias_to_visible_AMR_levels <= 1.0):
+            raise ValueError("add_bias_to_visible_AMR_levels must be between -1.0 and 1.0 (inclusive). "
+                           "Negative values underestimate AMR, positive values overestimate. "
+                           "Resulting visible AMR levels are clipped to [0.0, 1.0].")
 
         # Check that the keys for antibiotics_AMR_dict and reward_calculator match:
         if set(antibiotics_AMR_dict.keys()) != set(reward_calculator.antibiotic_names):
@@ -255,7 +261,7 @@ class ABXAMREnv(gym.Env):
         # Set to True during eval episodes to collect detailed patient data
         self.log_full_patient_attributes: bool = False
         
-        # Default parameters for AMR_LeakyBalloon
+        # Default parameters for AMRDynamicsBase (AMR_LeakyBalloon)
         default_params = {
             'leak': 0.05,
             'flatness_parameter': 1.0,
@@ -264,7 +270,7 @@ class ABXAMREnv(gym.Env):
         }
         
         # Initialize leaky balloon models for each antibiotic using provided parameters with fallback defaults
-        self.amr_balloon_models: Dict[str, AMR_LeakyBalloon] = {}
+        self.amr_balloon_models: Dict[str, AMRDynamicsBase] = {}
         for abx_name in self.antibiotic_names:
             abx_params = antibiotics_AMR_dict[abx_name]
             # Extract parameters with defaults
@@ -667,14 +673,14 @@ class ABXAMREnv(gym.Env):
         """Execute one timestep in the environment.
         
         Applies antibiotic prescriptions to current patient cohort, computes effective
-        puffs (including crossresistance effects), updates AMR leaky balloons, calculates
+        doses (including crossresistance effects), updates AMR leaky balloons, calculates
         rewards, and returns next observation. Terminates when max_time_steps reached.
         
         Execution flow:
         1. Process per-patient prescriptions (mutually exclusive: one antibiotic OR no treatment)
         2. Count prescriptions per antibiotic
-        3. Apply crossresistance matrix to compute effective puffs
-        4. Step each antibiotic's leaky balloon with effective puff
+        3. Apply crossresistance matrix to compute effective doses
+        4. Step each antibiotic's leaky balloon with effective dose
         5. Calculate reward (individual + community components)
         6. Sample new patient cohort for next timestep
         7. Construct observation (patient features + AMR levels)
@@ -694,7 +700,7 @@ class ABXAMREnv(gym.Env):
                 - reward (float): Composite reward for this step
                 - terminated (bool): True if episode naturally ended (always False here)
                 - truncated (bool): True if max_time_steps reached
-                - info (dict): Contains keys:\n                    'prescriptions_per_abx', 'effective_puffs', 'crossresistance_applied',\n                    'actual_amr_levels', 'visible_amr_levels', 'delta_amr_per_antibiotic',\n                    'patient_stats', 'patient_outcomes', 'pts_w_clinical_benefits',\n                    'pts_w_clinical_failures', 'pts_w_adverse_events', 'total_reward',\n                    'individual_reward', 'community_reward', 'mean_individual_reward'
+                - info (dict): Contains keys:\n                    'prescriptions_per_abx', 'effective_doses', 'crossresistance_applied',\n                    'actual_amr_levels', 'visible_amr_levels', 'delta_amr_per_antibiotic',\n                    'patient_stats', 'patient_outcomes', 'pts_w_clinical_benefits',\n                    'pts_w_clinical_failures', 'pts_w_adverse_events', 'total_reward',\n                    'individual_reward', 'community_reward', 'mean_individual_reward'
         
         Example:
             >>> obs, reward, terminated, truncated, info = env.step(action)
@@ -720,24 +726,24 @@ class ABXAMREnv(gym.Env):
             if abx_name != 'no_treatment':
                 antibiotic_prescription_counts[abx_name] += 1
         
-        # Compute effective puffs for each antibiotic considering crossresistance
-        effective_puffs = {}
+        # Compute effective doses for each antibiotic considering crossresistance
+        effective_doses = {}
         crossresistance_applied = {}
         for target_abx in self.antibiotic_names:
-            total_puffs = 0.0
+            total_doses = 0.0
             crossresistance_applied[target_abx] = {}
             for prescriber_abx in self.antibiotic_names:
                 prescriber_count = antibiotic_prescription_counts[prescriber_abx]
                 crossresistance_ratio = self.crossresistance_matrix[prescriber_abx][target_abx]
                 contribution = prescriber_count * crossresistance_ratio
-                total_puffs += contribution
+                total_doses += contribution
                 if contribution > 0:
                     crossresistance_applied[target_abx][prescriber_abx] = contribution
-            effective_puffs[target_abx] = total_puffs
+            effective_doses[target_abx] = total_doses
 
-        # Update AMR balloon models based on effective puffs from crossresistance
+        # Update AMR balloon models based on effective doses from crossresistance
         for abx_name in self.antibiotic_names:
-            self.amr_balloon_models[abx_name].step(effective_puffs[abx_name])
+            self.amr_balloon_models[abx_name].step(effective_doses[abx_name])
         
         # Store previous visible AMR levels BEFORE updating (for temporal delta calculation)
         if self.enable_temporal_features:
@@ -755,17 +761,17 @@ class ABXAMREnv(gym.Env):
                 for deque_window in self.prescription_history[abx_name]:
                     deque_window.append(prescribed_this_step)
         
-        # Pre-compute marginal AMR contribution per antibiotic using effective puffs
+        # Pre-compute marginal AMR contribution per antibiotic using effective doses
         delta_visible_amr_per_antibiotic = {}
         for abx_name in self.antibiotic_names:
             model = self.amr_balloon_models[abx_name]
             
-            # Have to make a copy of the model state, then set the volume to the current visible AMR level, then compute delta volume for counterfactual puffs
+            # Have to make a copy of the model state, then set the volume to the current visible AMR level, then compute delta volume for counterfactual doses
             model_copy = model.copy()
             model_copy.reset(initial_amr_level=self.visible_amr_levels[abx_name])
             
-            # Compute volume with actual number of puffs, then with one less puff.
-            delta_visible_amr = model_copy.get_delta_volume_for_counterfactual_num_puffs_vs_one_less(effective_puffs[abx_name])
+            # Compute volume with actual number of doses, then with one less dose.
+            delta_visible_amr = model_copy.get_delta_volume_for_counterfactual_num_doses_vs_one_less(effective_doses[abx_name])
             delta_visible_amr_per_antibiotic[abx_name] = delta_visible_amr
         
         # Increment time step
@@ -818,7 +824,7 @@ class ABXAMREnv(gym.Env):
             'visible_amr_levels': self.visible_amr_levels.copy(),
             'prescriptions_per_abx': antibiotic_prescription_counts,
             'delta_visible_amr_per_antibiotic': delta_visible_amr_per_antibiotic,
-            'effective_puffs': effective_puffs,
+            'effective_doses': effective_doses,
             'crossresistance_applied': crossresistance_applied,
             'patient_stats': patient_stats,
         }

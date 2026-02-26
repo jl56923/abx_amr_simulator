@@ -1,0 +1,17 @@
+# Default config for heuristic option
+# Heuristic worker prescribes based on expected reward thresholds and uncertainty.
+#
+# duration: number of steps this worker runs before manager can switch (k)
+# action_thresholds: dict mapping action keys -> minimum expected reward to take that action
+#   Keys format: 'prescribe_{antibiotic_name}' or 'no_treatment'
+#   Lower thresholds = more aggressive (prescribe even with modest expected reward)
+#   Higher thresholds = more conservative (only prescribe when very confident)
+# uncertainty_threshold: max uncertainty score before refusing to prescribe (default 2.0)
+#   Interpretation: if uncertainty > threshold, default to no_treatment
+
+duration: 10
+action_thresholds:
+  prescribe_A: 0.5
+  prescribe_B: 0.5
+  no_treatment: 0.0
+uncertainty_threshold: 2.0

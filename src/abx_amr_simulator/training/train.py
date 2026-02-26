@@ -79,7 +79,7 @@ from typing import Dict, Any, Optional, Tuple
 
 import pdb
 
-from stable_baselines3 import PPO, DQN, A2C
+from stable_baselines3 import PPO, A2C
 from sb3_contrib import RecurrentPPO
 
 from abx_amr_simulator.utils import (
@@ -193,28 +193,31 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
     
     # Check algorithm
     algorithm = config.get('algorithm', 'PPO')
-    supported_algorithms = ['PPO', 'DQN', 'A2C', 'HRL_PPO', 'HRL_DQN', 'HRL_RPPO']
+    supported_algorithms = ['PPO', 'RecurrentPPO', 'A2C', 'HRL_PPO', 'HRL_RPPO']
     if algorithm not in supported_algorithms:
         errors.append(f"Unsupported algorithm: '{algorithm}'. Supported: {supported_algorithms}")
     
-    # Check action mode compatibility
-    action_mode = config.get('action_mode', 'multidiscrete')
-    if algorithm == 'DQN' and action_mode != 'discrete':
-        warnings.append(f"DQN typically requires action_mode='discrete', but config has '{action_mode}'")
-    
     # HRL-specific validation
-    if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
-        # Check that option library path exists
+    if algorithm in ['HRL_PPO', 'HRL_RPPO']:
+        # Check that HRL config section exists
+        hrl_config = config.get('hrl', {})
+        
+        # Check that option library is specified
+        option_library_relative = hrl_config.get('option_library')
+        if not option_library_relative:
+            errors.append(f"HRL algorithm '{algorithm}' requires 'hrl.option_library' in config")
+        
+        # Check option library path exists - use resolved path if available, otherwise defer check
         option_library_path = config.get('option_library_path')
-        if not option_library_path:
-            errors.append(f"HRL algorithm '{algorithm}' requires 'option_library_path' in config")
-        elif not os.path.exists(option_library_path):
+        if option_library_path and not os.path.exists(option_library_path):
             errors.append(f"Option library path does not exist: {option_library_path}")
+        # Note: If option_library_path is not yet resolved in config, it will be resolved in main()
+        # and verified there before the environment is created
         
         # Check that option_gamma is specified if using HRL
-        option_gamma = config.get('option_gamma')
+        option_gamma = hrl_config.get('option_gamma')
         if option_gamma is None:
-            warnings.append("HRL algorithm should specify 'option_gamma' in config (discount factor for OptionsWrapper)")
+            warnings.append("HRL algorithm should specify 'hrl.option_gamma' in config (discount factor for OptionsWrapper)")
     
     # Validate best params if loaded
     if loaded_best_params_from:
@@ -233,13 +236,6 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
             missing_params = [p for p in ppo_params if p not in agent_config]
             if missing_params:
                 warnings.append(f"Expected PPO hyperparameters not found in agent_algorithm config: {missing_params}")
-        
-        elif algorithm in ['DQN', 'HRL_DQN']:
-            # Check for DQN-specific hyperparams
-            dqn_params = ['learning_rate', 'buffer_size', 'learning_starts']
-            missing_params = [p for p in dqn_params if p not in agent_config]
-            if missing_params:
-                warnings.append(f"Expected DQN hyperparameters not found in agent_algorithm config: {missing_params}")
         
         print(f"Loaded best parameters from: {loaded_best_params_from}")
         print(f"Target algorithm: {algorithm}")
@@ -328,6 +324,11 @@ def main():
         type=str,
         default='optimization',
         help='Base directory where optimization runs are stored (default: optimization)'
+    )
+    parser.add_argument(
+        '--skip-registry-validation',
+        action='store_true',
+        help='Skip registry validation (do not check if experiment folders still exist). Useful when moving completed experiments to different storage. Still checks if run completed, just does not validate folder existence.'
     )
     args = parser.parse_args()
     
@@ -480,10 +481,8 @@ def main():
         # Map algorithm names to classes
         algorithm_map = {
             'PPO': PPO,
-            'DQN': DQN,
             'A2C': A2C,
             'HRL_PPO': PPO,
-            'HRL_DQN': DQN,
             'HRL_RPPO': RecurrentPPO,
         }
         if algorithm not in algorithm_map:
@@ -514,7 +513,7 @@ def main():
         env.reset(seed=seed)
         
         # Wrap with OptionsWrapper if using HRL
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             from abx_amr_simulator.utils import wrap_environment_for_hrl, save_option_library_config
             print("Wrapping environment with OptionsWrapper for HRL...")
             env = wrap_environment_for_hrl(env, config)
@@ -546,7 +545,7 @@ def main():
         )
         eval_env.reset(seed=seed + 1)
                 # Wrap eval env with OptionsWrapper if using HRL
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             from abx_amr_simulator.utils import wrap_environment_for_hrl
             eval_env = wrap_environment_for_hrl(eval_env, config)
                 # Set up callbacks for continued training
@@ -724,7 +723,7 @@ def main():
         
         # Resolve HRL option library path (if applicable)
         algorithm = config.get('algorithm', 'PPO')
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             hrl_config = config.get('hrl', {})
             option_library_relative = hrl_config.get('option_library')
             if option_library_relative and 'option_library_path' not in config:
@@ -733,6 +732,16 @@ def main():
                 config_dir = Path(args.umbrella_config).parent
                 resolved_path = (config_dir / options_folder / option_library_relative).resolve()
                 config['option_library_path'] = str(resolved_path)
+            
+            # Verify resolved option library path exists
+            option_library_path = config.get('option_library_path')
+            if option_library_path and not os.path.exists(option_library_path):
+                print(f"\n{'='*70}")
+                print("CONFIG VALIDATION ERRORS")
+                print(f"{'='*70}")
+                print(f"❌ Option library path does not exist: {option_library_path}")
+                print(f"{'='*70}\n")
+                sys.exit(1)
         
         # Validate configuration
         validate_training_config(
@@ -795,16 +804,21 @@ def main():
         if args.skip_if_exists:
             # Validate and clean completion registry ONLY when checking skip-if-exists
             # Don't clean the current run_name - it might legitimately not have a folder yet
-            stale_entries = validate_and_clean_registry(
-                completion_registry_path,
-                results_folder,
-                exclude_prefix=run_name  # Don't remove current run from registry
-            )
-            if stale_entries:
-                print(f"\n⚠️  Registry cleanup: Removed {len(stale_entries)} stale entry/entries for deleted experiments:")
-                for entry in stale_entries:
-                    print(f"    - {entry[0]} (timestamp {entry[1]})")
-                print()
+            if not args.skip_registry_validation:
+                stale_entries = validate_and_clean_registry(
+                    completion_registry_path,
+                    results_folder,
+                    exclude_prefix=run_name  # Don't remove current run from registry
+                )
+                if stale_entries:
+                    print(f"\n⚠️  Registry cleanup: Removed {len(stale_entries)} stale entry/entries for deleted experiments:")
+                    for entry in stale_entries:
+                        print(f"    - {entry[0]} (timestamp {entry[1]})")
+                    print()
+            else:
+                stale_entries = []
+                print(f"\n⚠️  Registry validation skipped (--skip-registry-validation flag set)")
+                print(f"Registry will NOT check if experiment folders exist.\n")
             
             completed_prefixes = load_registry(completion_registry_path)
 
@@ -843,7 +857,7 @@ def main():
         
         # Wrap with OptionsWrapper if using HRL
         algorithm = config.get('algorithm', 'PPO')
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             from abx_amr_simulator.utils import wrap_environment_for_hrl, save_option_library_config
             print("Wrapping environment with OptionsWrapper for HRL...")
             env = wrap_environment_for_hrl(env, config)
@@ -872,7 +886,7 @@ def main():
         eval_env.reset(seed=seed + 1) # Different seed for eval env
         
         # Wrap eval env with OptionsWrapper if using HRL
-        if algorithm in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+        if algorithm in ['HRL_PPO', 'HRL_RPPO']:
             from abx_amr_simulator.utils import wrap_environment_for_hrl
             eval_env = wrap_environment_for_hrl(eval_env, config)
         
@@ -932,10 +946,8 @@ def main():
         algorithm = config.get('algorithm', 'PPO')
         algorithm_map = {
             'PPO': PPO,
-            'DQN': DQN,
             'A2C': A2C,
             'HRL_PPO': PPO,
-            'HRL_DQN': DQN,
             'HRL_RPPO': RecurrentPPO,
         }
         AgentClass = algorithm_map.get(algorithm, PPO)

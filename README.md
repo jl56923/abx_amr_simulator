@@ -60,7 +60,7 @@ abx_amr_simulator/
 ### The Leaky Balloon Model
 
 AMR resistance is modeled as a "leaky balloon":
-- **Prescribing = puff**: Inflates balloon (increases resistance)
+- **Prescribing = dose**: Inflates balloon (increases resistance)
 - **No prescribing = leak**: Balloon slowly deflates (resistance decays)
 - **Sigmoid cap**: Resistance bounded in [0, 1]
 

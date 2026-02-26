@@ -6,7 +6,7 @@ Opens both apps in separate browser tabs and monitors for completed experiments
 to automatically switch focus to the viewer.
 
 Usage:
-    abx-amr-simulator-launch-gui                                    # Default: uses workspace/results/
+    abx-amr-simulator-launch-gui                                    # Default: uses project_root/results/
     abx-amr-simulator-launch-gui --results-dir /path/to/results    # Custom results directory
 """
 
@@ -20,14 +20,12 @@ import argparse
 from pathlib import Path
 from threading import Thread
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(os.environ.get("ABX_PROJECT_ROOT", Path.cwd())).resolve()
 RUNNER_PORT = 8501
 VIEWER_PORT = 8502
 
 
-def get_workspace_dir() -> Path:
-    """Find the workspace directory."""
-    return PROJECT_ROOT / "workspace"
+# Removed get_workspace_dir() - entry points should respect user's CWD as project root
 
 
 def start_streamlit_app(script_name: str, port: int, results_dir: str | None = None):
@@ -44,10 +42,11 @@ def start_streamlit_app(script_name: str, port: int, results_dir: str | None = N
     env = os.environ.copy()
     if results_dir:
         env["ABX_RESULTS_DIR"] = results_dir
+    env.setdefault("ABX_PROJECT_ROOT", str(PROJECT_ROOT))
     
     process = subprocess.Popen(
         cmd,
-        cwd=get_workspace_dir(),
+        cwd=Path.cwd(),  # Use current working directory, not package's workspace
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -107,7 +106,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  abx-amr-simulator-launch-gui                                    # Default: uses workspace/results/
+    abx-amr-simulator-launch-gui                                    # Default: uses project_root/results/
   abx-amr-simulator-launch-gui --results-dir /path/to/results    # Custom results directory
         """,
     )
@@ -115,11 +114,17 @@ Examples:
         "--results-dir",
         type=str,
         default=None,
-        help="Absolute path to results directory (default: workspace/results/)",
+        help="Absolute path to results directory (default: project_root/results/)",
     )
     
     args = parser.parse_args()
     
+    # Treat current working directory as the project root.
+    project_root = Path.cwd().resolve()
+    os.environ["ABX_PROJECT_ROOT"] = str(project_root)
+    global PROJECT_ROOT
+    PROJECT_ROOT = project_root
+
     # Determine results directory
     if args.results_dir:
         results_dir = Path(args.results_dir).resolve()
@@ -130,9 +135,8 @@ Examples:
         os.environ["ABX_RESULTS_DIR"] = str(results_dir)
         print(f"✅ Using results directory: {results_dir}")
     else:
-        # Default to workspace/results
-        workspace_dir = get_workspace_dir()
-        results_dir = workspace_dir / "results"
+        # Default to ./results in current working directory
+        results_dir = Path.cwd() / "results"
         results_dir.mkdir(parents=True, exist_ok=True)
         os.environ["ABX_RESULTS_DIR"] = str(results_dir)
         print(f"✅ Using default results directory: {results_dir}")

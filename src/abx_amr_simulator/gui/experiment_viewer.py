@@ -5,10 +5,8 @@ import yaml
 
 import streamlit as st
 
-# Project root (repo root) needed for package-bundled assets
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-# Current working directory for user results
-CWD = Path.cwd()
+# Project root (user workspace) for results and marker files
+PROJECT_ROOT = Path(os.environ.get("ABX_PROJECT_ROOT", Path.cwd())).resolve()
 
 
 def get_results_directory() -> Path:
@@ -22,7 +20,8 @@ def get_results_directory() -> Path:
     Returns:
         Path: Absolute path to results directory (creates if doesn't exist)
     """
-    results_dir_str = os.environ.get('ABX_RESULTS_DIR', './results')
+    project_root = Path(os.environ.get("ABX_PROJECT_ROOT", Path.cwd())).resolve()
+    results_dir_str = os.environ.get('ABX_RESULTS_DIR', str(project_root / "results"))
     results_dir = Path(results_dir_str).resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
     return results_dir
@@ -121,6 +120,9 @@ def main():
     
     # Sidebar: Experiment selection
     st.sidebar.header("Experiment Runs")
+    st.sidebar.markdown("**Results directory**")
+    st.sidebar.code(str(RESULTS_DIR))
+    st.sidebar.caption("Expected layout: my_project/results/")
     
     # Check for newly completed experiment
     latest_from_marker = get_latest_experiment_from_marker()
@@ -139,8 +141,8 @@ def main():
     experiments = get_experiment_folders()
     
     if not experiments:
-        st.warning(f"No experiment folders found in `{RESULTS_DIR.relative_to(PROJECT_ROOT)}`")
-        st.info("Run an experiment using the training app to see results here.")
+        st.warning(f"No experiment folders found in `{RESULTS_DIR}`")
+        st.info("Run a quick experiment in the GUI or use the CLI to generate results in this folder.")
         return
     
     # Filter by name prefix

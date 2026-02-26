@@ -1,8 +1,11 @@
 import math
 import matplotlib.pyplot as plt
 import os
+from typing import ClassVar
+from .base_amr_dynamics import AMRDynamicsBase
+
 #%% Leaky Balloon class definition
-class AMR_LeakyBalloon:
+class AMR_LeakyBalloon(AMRDynamicsBase):
     """
     Soft-bounded AMR accumulator using leaky balloon dynamics.
     
@@ -12,14 +15,18 @@ class AMR_LeakyBalloon:
     
     OWNERSHIP (for future multi-agent refactor):
     - Owns: latent pressure state, leak dynamics, sigmoid transformation
-    - Input: non-negative puff values (from prescriptions)
+    - Input: non-negative dose values (from prescriptions)
     - Output: visible AMR fraction in [permanent_residual_volume, 1.0]
     
     Future multi-agent notes:
     - Instantiated per-antibiotic per-Locale (each locale has independent AMR state)
-    - Puffs come from prescriptions within that locale (or via crossresistance)
+    - Doses come from prescriptions within that locale (or via crossresistance)
     - Multi-locale environments will have separate balloon instances per locale
     """
+    
+    # Unique identifier for this AMR dynamics model
+    NAME: ClassVar[str] = "leaky_balloon"
+    
     def __init__(self, 
                  leak=0.1, 
                  flatness_parameter=1.0, 
@@ -42,7 +49,7 @@ class AMR_LeakyBalloon:
             permanent_residual_volume (float): Minimum AMR level (floor, y-intercept). Must be
                 in [0, 1). Even with zero pressure, AMR remains at this level. Represents
                 baseline resistance that never fully disappears. Default: 0.0 (can decay to zero).
-            initial_amr_level (float): Starting observable AMR level (volume/fraction) before first puff.
+            initial_amr_level (float): Starting observable AMR level (volume/fraction) before first dose.
                 Must be in [permanent_residual_volume, 1.0]. Default: 0.0 (balloon starts at residual).
                 Internally, this is converted to the corresponding latent pressure via inverse sigmoid.
         
@@ -56,7 +63,7 @@ class AMR_LeakyBalloon:
             ...     permanent_residual_volume=0.05,  # 5% baseline resistance
             ...     initial_amr_level=0.3  # Start at 30% resistance
             ... )
-            >>> balloon.step(puffs=2.0)  # Add 2 units of pressure
+            >>> balloon.step(doses=2.0)  # Add 2 units of pressure
             0.45  # Returns visible volume (AMR fraction)
         """
         
@@ -82,8 +89,10 @@ class AMR_LeakyBalloon:
         Computes the latent pressure needed to produce a given volume.
         
         Inverts the sigmoid mapping: volume → pressure.
-        Since normalized_vol = (sigmoid(p) - 0.5) * 2, we solve for p.
-        volume = permanent_residual_volume + (sigmoid(p) - 0.5) * 2
+        The sigmoid is rescaled to fit in [permanent_residual_volume, 1.0].
+        normalized_vol = (volume - residual) / (1 - residual)
+        sigmoid_val = (normalized_vol / 2) + 0.5
+        pressure = -flatness_parameter * log((1 - sigmoid_val) / sigmoid_val)
         
         Args:
             volume (float): Desired visible volume in [permanent_residual_volume, 1.0]
@@ -91,10 +100,13 @@ class AMR_LeakyBalloon:
         Returns:
             float: The latent pressure needed to produce this volume
         """
-        # Remove the permanent residual component
-        normalized_vol = volume - self.permanent_residual_volume
+        # Calculate the available range for rescaling
+        available_range = 1.0 - self.permanent_residual_volume
         
-        # Invert the normalization: sigmoid(p) = normalized_vol / 2 + 0.5
+        # Remove the permanent residual component and rescale to [0, 1]
+        normalized_vol = (volume - self.permanent_residual_volume) / available_range
+        
+        # Invert the rescaled normalization: sigmoid(p) = normalized_vol / 2 + 0.5
         sigmoid_val = normalized_vol / 2.0 + 0.5
         
         # Clamp sigmoid_val to (0, 1) to avoid numerical issues with log
@@ -108,11 +120,11 @@ class AMR_LeakyBalloon:
     def get_volume(self, pressure=None):
         """
         Maps current pressure to volume using a sigmoid function.
-        To ensure Volume = residual when Pressure = 0, we shift the 
-        standard sigmoid result.
+        The sigmoid curve is rescaled to fit within [permanent_residual_volume, 1.0].
+        This ensures a smooth sigmoid shape across the full valid range, not clamped.
         """
         # Standard sigmoid: 1 / (1 + exp(-x/v))
-        # When x=0, sigmoid=0.5. To make the volume start at 0 (before residual),
+        # When x=0, sigmoid=0.5. To make the normalized volume start at 0,
         # we subtract 0.5 and multiply by 2 to keep the range [0, 1].
         if pressure is None:
             pressure = self.pressure
@@ -121,43 +133,50 @@ class AMR_LeakyBalloon:
         sigmoid_val = 1 / (1 + math.exp(exponent))
         
         # Normalized sigmoid that is 0.0 when pressure is 0.0
-        normalized_vol = (sigmoid_val - 0.5) * 2
+        normalized_vol = (sigmoid_val - 0.5) * 2  # ranges [0, 1]
         
-        return self.permanent_residual_volume + normalized_vol
+        # Rescale normalized_vol to fit within the available range [0, 1 - residual]
+        available_range = 1.0 - self.permanent_residual_volume
+        scaled_vol = normalized_vol * available_range
+        
+        # Add residual to get final volume in [residual, 1.0]
+        volume = self.permanent_residual_volume + scaled_vol
+        
+        return volume
 
-    def step(self, puffs):
-        """Update pressure based on puffs and leak, then return new volume.
+    def step(self, doses):
+        """Update pressure based on doses and leak, then return new volume.
         
         Applies the core balloon dynamics:
-        1. Add `puffs` to internal pressure (inflation)
+        1. Add `doses` to internal pressure (inflation)
         2. Apply exponential decay via `leak` multiplier (deflation)
         3. Map updated pressure to visible volume via sigmoid
         
         Args:
-            puffs (float): Non-negative pressure increase this timestep. Typically represents
-                prescription counts (e.g., 5 prescriptions = 5 puffs). Must be >= 0.
+            doses (float): Non-negative pressure increase this timestep. Typically represents
+                prescription counts (e.g., 5 prescriptions = 5 doses). Must be >= 0.
         
         Returns:
-            float: Updated visible volume (AMR fraction) after puffs and leak, in range
+            float: Updated visible volume (AMR fraction) after doses and leak, in range
                 [permanent_residual_volume, 1.0]. This is the AMR level observable in the
                 environment.
         
         Raises:
-            ValueError: If puffs < 0.
+            ValueError: If doses < 0.
         
         Example:
             >>> balloon = AMR_LeakyBalloon(leak=0.1)
-            >>> balloon.step(puffs=3.0)  # Add 3 puffs
+            >>> balloon.step(doses=3.0)  # Add 3 doses
             0.45
-            >>> balloon.step(puffs=0.0)  # No puffs, only leak applies
+            >>> balloon.step(doses=0.0)  # No doses, only leak applies
             0.42  # Volume decreased slightly due to leak
         """
         # Validate input
-        if puffs < 0:
-            raise ValueError("puffs must be non-negative")
+        if doses < 0:
+            raise ValueError("doses must be non-negative")
         
         # 1. Add the new air
-        self.pressure += puffs
+        self.pressure += doses
         
         # 2. Apply the leak (decay)
         # Pressure cannot drop below 0
@@ -166,14 +185,14 @@ class AMR_LeakyBalloon:
         # 3. Calculate and return volume
         return self.get_volume(pressure=self.pressure)
     
-    def _step_no_internal_state_change(self, puffs):
+    def _step_no_internal_state_change(self, doses):
         """
         Computes the volume after a step without changing internal state.
         
-        :param puffs: Number of puffs added in this timestep
+        :param doses: Number of doses added in this timestep
         :return: Volume after the step (float)
         """
-        temp_pressure = self.pressure + puffs
+        temp_pressure = self.pressure + doses
         temp_pressure = max(0.0, temp_pressure - self.leak)
         
         # Calculate volume based on temporary pressure
@@ -185,7 +204,15 @@ class AMR_LeakyBalloon:
         
         Args:
             initial_amr_level (float): AMR level to reset to, in [permanent_residual_volume, 1.0]
+        
+        Raises:
+            ValueError: If initial_amr_level is outside valid bounds
         """
+        if not (self.permanent_residual_volume <= initial_amr_level <= 1.0):
+            raise ValueError(
+                f"initial_amr_level must be in [{self.permanent_residual_volume}, 1.0], "
+                f"got {initial_amr_level}"
+            )
         self.pressure = self._inverse_sigmoid(initial_amr_level)
     
     def copy(self):
@@ -203,9 +230,9 @@ class AMR_LeakyBalloon:
         
         Example:
             >>> balloon = AMR_LeakyBalloon(leak=0.1)
-            >>> balloon.step(puffs=2.0)
+            >>> balloon.step(doses=2.0)
             >>> copy_balloon = balloon.copy()
-            >>> copy_balloon.step(puffs=1.0)  # Copy evolves independently
+            >>> copy_balloon.step(doses=1.0)  # Copy evolves independently
             >>> # Original balloon pressure unchanged
         """
         # Get the current visible volume to use as initial_amr_level for the new instance
@@ -223,28 +250,28 @@ class AMR_LeakyBalloon:
         # (both computed from same visible volume via inverse sigmoid)
         return new_balloon
         
-    def get_delta_volume_for_counterfactual_num_puffs_vs_one_less(self, num_counterfactual_puffs):
+    def get_delta_volume_for_counterfactual_num_doses_vs_one_less(self, num_counterfactual_doses):
         """
-        Computes the change in volume if the number of puffs were
+        Computes the change in volume if the number of doses were
         increased by one compared to a given number.
         
-        :param num_counterfactual_puffs: Base number of puffs
+        :param num_counterfactual_doses: Base number of doses
         :return: Delta volume (float)
         """
-        vol_with_puffs = self._step_no_internal_state_change(num_counterfactual_puffs)
-        vol_with_one_less = self._step_no_internal_state_change(num_counterfactual_puffs - 1)
+        vol_with_doses = self._step_no_internal_state_change(num_counterfactual_doses)
+        vol_with_one_less = self._step_no_internal_state_change(num_counterfactual_doses - 1)
         
-        return vol_with_puffs - vol_with_one_less
+        return vol_with_doses - vol_with_one_less
     
-    def print_volume_response(self, puff_sequence):
-        """Print the leaky balloon response to a given puff sequence."""
+    def print_volume_response(self, dose_sequence):
+        """Print the leaky balloon response to a given dose sequence."""
         
         # Create an empty string to hold the output
-        output_str = "Timestep\tPuffs\tVolume\n"
+        output_str = "Timestep\tDoses\tVolume\n"
         
-        for t, puffs in enumerate(puff_sequence):
-            volume = self.step(puffs=puffs)
-            output_str += f"{t}\t{puffs}\t{volume:.4f}\n"
+        for t, doses in enumerate(dose_sequence):
+            volume = self.step(doses=doses)
+            output_str += f"{t}\t{doses}\t{volume:.4f}\n"
             
         print(output_str)
     
@@ -280,16 +307,16 @@ class AMR_LeakyBalloon:
         # At the end, close the plot to free memory
         plt.close()
     
-    def plot_leaky_balloon_response_to_puff_sequence(self, puff_sequence, title, fname=None, save_plot_folder=None, show_plot=False, width=10, height=6):
+    def plot_leaky_balloon_response_to_dose_sequence(self, dose_sequence, title, fname=None, save_plot_folder=None, show_plot=False, width=10, height=6):
         """
-        Plot the leaky balloon response to a given puff sequence.
+        Plot the leaky balloon response to a given dose sequence.
         """
         plt.figure(figsize=(width, height))
         ax1 = plt.subplot(2, 1, 1)
         
         volumes = []
-        for puffs in puff_sequence:
-            volume = self.step(puffs=puffs)
+        for doses in dose_sequence:
+            volume = self.step(doses=doses)
             volumes.append(volume)
             
         plt.plot(volumes, label=title)
@@ -301,11 +328,11 @@ class AMR_LeakyBalloon:
         plt.grid()
         
         ax2 = plt.subplot(2, 1, 2, sharex=ax1)
-        plt.bar(range(len(puff_sequence)), puff_sequence, color='orange')
+        plt.bar(range(len(dose_sequence)), dose_sequence, color='orange')
         plt.xlabel("Time Step")
         plt.ylabel("Doses")
         plt.title("Dose Sequence")
-        plt.ylim(0, max(puff_sequence) + 1)
+        plt.ylim(0, max(dose_sequence) + 1)
         plt.grid()
         
         # Add this line here

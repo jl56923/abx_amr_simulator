@@ -5,7 +5,21 @@ their compatibility with the environment before training starts.
 """
 
 from typing import Dict, Any, List
+import numpy as np
 from abx_amr_simulator.hrl.base_option import OptionBase
+
+# Lazy import to avoid circular dependencies
+_BlockOption = None
+def _get_block_option_class():
+    """Lazy load BlockOption class to avoid circular imports."""
+    global _BlockOption
+    if _BlockOption is None:
+        try:
+            from abx_amr_simulator.options.defaults.option_types.block.block_option_loader import BlockOption
+            _BlockOption = BlockOption
+        except ImportError:
+            _BlockOption = type(None)  # Sentinel value,if BlockOption not available
+    return _BlockOption
 
 
 class OptionLibrary:
@@ -152,6 +166,40 @@ class OptionLibrary:
                 "Environment has no antibiotics configured (abx_name_to_index is empty)."
             )
 
+        # Validate action mapping consistency and no_treatment index position
+        reward_calculator = env.unwrapped.reward_calculator
+        if 'no_treatment' not in reward_calculator.abx_name_to_index:
+            raise ValueError(
+                "RewardCalculator mapping missing 'no_treatment'. "
+                "This action must be present and mapped to the last index."
+            )
+        if 'no_treatment' not in self.abx_name_to_index:
+            raise ValueError(
+                "OptionLibrary mapping missing 'no_treatment'. "
+                "This action must be present and mapped to the last index."
+            )
+
+        expected_no_treatment_index = len(reward_calculator.abx_name_to_index) - 1
+        if reward_calculator.abx_name_to_index['no_treatment'] != expected_no_treatment_index:
+            raise ValueError(
+                "RewardCalculator must map 'no_treatment' to the last action index. "
+                f"Expected {expected_no_treatment_index}, got "
+                f"{reward_calculator.abx_name_to_index['no_treatment']}."
+            )
+        if self.abx_name_to_index['no_treatment'] != expected_no_treatment_index:
+            raise ValueError(
+                "OptionLibrary must map 'no_treatment' to the last action index. "
+                f"Expected {expected_no_treatment_index}, got "
+                f"{self.abx_name_to_index['no_treatment']}."
+            )
+
+        if self.abx_name_to_index != reward_calculator.abx_name_to_index:
+            raise ValueError(
+                "OptionLibrary action mapping must match RewardCalculator mapping. "
+                "Ensure options use env_state['option_library'].abx_name_to_index "
+                "or env_state['reward_calculator'].abx_name_to_index consistently."
+            )
+
         # Extract patient attributes from patient generator
         try:
             provided_patient_attrs = set(patient_generator.visible_patient_attributes)
@@ -159,6 +207,12 @@ class OptionLibrary:
             raise ValueError(
                 f"PatientGenerator must have visible_patient_attributes list. "
                 f"Got error: {e}"
+            )
+
+        if "prob_infected" not in provided_patient_attrs:
+            raise ValueError(
+                "PatientGenerator must include 'prob_infected' in visible_patient_attributes. "
+                "All options require this attribute."
             )
 
         # Validate each option
@@ -213,7 +267,6 @@ class OptionLibrary:
                         f"but environment doesn't provide amr_balloon_models. "
                         f"Ensure environment is ABXAMREnv with AMR tracking enabled."
                     )
-
             # Check 4: Step number requirement
             if option.REQUIRES_STEP_NUMBER:
                 has_step = hasattr(env.unwrapped, 'current_time_step')
@@ -228,6 +281,129 @@ class OptionLibrary:
             if option.PROVIDES_TERMINATION_CONDITION:
                 # For future use; just log for now
                 pass
+            
+            # Check 6: Semantic validation - verify observation-reading options return 'no_treatment' strings
+            # when prob_infected=0.0 (clear signal to not prescribe)
+            # Only validate observation-reading options (those that require patient attributes)
+            if option.REQUIRES_OBSERVATION_ATTRIBUTES:
+                # For observation-reading options, verify semantic correctness
+                # by testing behavior on low-infection scenarios
+                try:
+                    test_no_rx_env_state = self._build_test_env_state(
+                        env=env,
+                        patient_generator=patient_generator,
+                        force_no_treatment_scenario=True,
+                    )
+                    no_rx_actions = option.decide(env_state=test_no_rx_env_state)
+                    
+                    # For deterministic options, all test patients should select no_treatment
+                    if all(action == no_rx_actions[0] for action in no_rx_actions):
+                        # Deterministic behavior detected - verify it returns 'no_treatment' string
+                        if no_rx_actions[0] != 'no_treatment':
+                            raise ValueError(
+                                f"Option '{option_name}' SEMANTIC ERROR: When prob_infected=0.0 "
+                                f"(should clearly select no_treatment), option returned '{no_rx_actions[0]}' "
+                                f"but should return 'no_treatment'. "
+                                f"Fix: Return 'no_treatment' string for no-treatment decisions, "
+                                f"not an antibiotic name or index."
+                            )
+                except ValueError as e:
+                    # Re-raise semantic validation errors (these are important bugs to catch)
+                    raise
+                except Exception as e:
+                    # For other errors (assertions, side effects, etc.), don't fail validation
+                    # These will be caught at runtime when the option is actually used
+                    pass
+        
+        # After validation, inject full observable attribute list into options that support it
+        # (e.g., HeuristicWorker needs this for uncertainty scoring)
+        visible_attrs_list = list(patient_generator.visible_patient_attributes)
+        for option_name, option in self.options.items():
+            if hasattr(option, 'set_observable_attributes'):
+                option.set_observable_attributes(visible_attrs_list)
+
+    def _build_test_env_state(
+        self,
+        env: Any,
+        patient_generator: Any,
+        force_no_treatment_scenario: bool = False,
+    ) -> Dict[str, Any]:
+        """Build synthetic env_state for runtime validation testing.
+        
+        Creates a minimal but valid env_state dict that options can use to make decisions.
+        Used during validation to test that options return valid action indices with correct
+        semantic mapping.
+        
+        Args:
+            env: The ABXAMREnv instance.
+            patient_generator: The PatientGenerator instance.
+            force_no_treatment_scenario: If True, create patients with prob_infected=0.0
+                to create an "obvious no_treatment" scenario for semantic validation.
+                If False, create patients with varied attributes for general testing.
+        
+        Returns:
+            Dict with env_state keys required by options:
+                - 'patients': List of patient dicts
+                - 'num_patients': Number of patients
+                - 'current_amr_levels': Dict of current AMR levels
+                - 'reward_calculator': RewardCalculator instance
+                - 'patient_generator': PatientGenerator instance
+                - 'option_library': Self reference
+                - 'use_relative_uncertainty': Boolean flag
+                - 'current_step': Current step number (dummy value)
+                - 'max_steps': Episode length (dummy value)
+        """
+        # Create test patients matching the environment's num_patients_per_time_step
+        num_test_patients = env.unwrapped.num_patients_per_time_step
+        visible_attrs = patient_generator.visible_patient_attributes
+        
+        test_patients = []
+        for i in range(num_test_patients):
+            patient = {}
+            for attr in visible_attrs:
+                if force_no_treatment_scenario:
+                    # Set prob_infected to 0.0 to force no_treatment choice
+                    if attr == 'prob_infected':
+                        patient[attr] = 0.0
+                    elif attr.endswith('_multiplier'):
+                        patient[attr] = 1.0  # Neutral multipliers
+                    elif attr == 'recovery_without_treatment_prob':
+                        patient[attr] = 0.9  # High natural recovery (doesn't matter with prob_infected=0)
+                    else:
+                        patient[attr] = 0.5  # Generic mid-range value
+                else:
+                    # Create varied patient attributes for general testing
+                    if attr == 'prob_infected':
+                        # Vary infection probability across patients
+                        patient[attr] = min(0.3 + (i * 0.3), 0.9)  # 0.3, 0.6, 0.9 (capped at 0.9)
+                    elif attr.endswith('_multiplier'):
+                        patient[attr] = 0.8 + (i * 0.2)  # 0.8, 1.0, 1.2, ...
+                    elif attr == 'recovery_without_treatment_prob':
+                        patient[attr] = 0.1 + (i * 0.1)  # 0.1, 0.2, 0.3, ...
+                    else:
+                        patient[attr] = 0.5  # Generic mid-range value
+                        patient[attr] = 0.5  # Default
+            
+            test_patients.append(patient)
+        
+        # Get current AMR levels (use zeros for simplicity - makes prescribing more attractive)
+        antibiotic_names = [abx for abx in self.abx_name_to_index.keys() if abx != 'no_treatment']
+        current_amr_levels = {abx: 0.0 for abx in antibiotic_names}
+        
+        # Build env_state dict
+        env_state = {
+            'patients': test_patients,
+            'num_patients': num_test_patients,
+            'current_amr_levels': current_amr_levels,
+            'reward_calculator': env.unwrapped.reward_calculator,
+            'patient_generator': patient_generator,
+            'option_library': self,
+            'use_relative_uncertainty': True,  # Default to relative
+            'current_step': 0,  # Dummy value
+            'max_steps': 100,  # Dummy value
+        }
+        
+        return env_state
 
     def list_options(self) -> List[str]:
         """Return ordered list of option names."""

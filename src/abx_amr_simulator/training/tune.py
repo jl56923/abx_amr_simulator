@@ -114,9 +114,11 @@ import os
 import sys
 import tempfile
 import subprocess
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
+import time
 
 import optuna
 import yaml
@@ -157,7 +159,7 @@ def load_and_save_hrl_option_library(
     """
     algorithm = config.get('algorithm', 'PPO')
     
-    if algorithm not in ['HRL_PPO', 'HRL_DQN', 'HRL_RPPO']:
+    if algorithm not in ['HRL_PPO', 'HRL_RPPO']:
         return None
     
     # Resolve option library path (same logic as train.py)
@@ -192,6 +194,53 @@ def load_and_save_hrl_option_library(
     print(f"✓ Saved option_library_config.yaml")
     
     return option_library_config
+
+
+def _normalize_config(config: Any) -> Any:
+    """Recursively normalize a config dict to handle YAML parsing differences.
+    
+    Converts dicts to a canonical form with sorted keys to ensure consistent 
+    comparison regardless of key ordering from YAML parsing.
+    
+    Args:
+        config: Configuration to normalize (dict, list, or scalar)
+    
+    Returns:
+        Normalized config with consistent key ordering
+    """
+    if isinstance(config, dict):
+        return {k: _normalize_config(v) for k, v in sorted(config.items())}
+    elif isinstance(config, list):
+        return [_normalize_config(item) for item in config]
+    else:
+        return config
+
+
+def _remove_derived_fields(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove derived/resolved fields from config for comparison.
+    
+    Fields like 'option_library_path' and '_umbrella_config_dir' are computed 
+    paths that may differ between environments (local vs. remote) but represent 
+    the same logical config.
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Config with derived fields removed
+    """
+    result = {}
+    derived_fields = {'option_library_path', '_umbrella_config_dir'}  # Add more as needed
+    
+    for key, value in config.items():
+        if key in derived_fields:
+            continue
+        if isinstance(value, dict):
+            result[key] = _remove_derived_fields(value)
+        else:
+            result[key] = value
+    
+    return result
 
 
 def validate_configs_match_existing(
@@ -238,23 +287,39 @@ def validate_configs_match_existing(
         with open(options_path, 'r') as f:
             saved_option_library_config = yaml.safe_load(f)
     
+    # Normalize both current and saved configs to handle YAML parsing differences
+    # (key ordering can differ but content is identical)
+    # Also remove derived fields that may differ between environments
+    normalized_current_umbrella = _normalize_config(_remove_derived_fields(current_umbrella_config))
+    normalized_saved_umbrella = _normalize_config(_remove_derived_fields(saved_umbrella_config))
+    normalized_current_tuning = _normalize_config(current_tuning_config)
+    normalized_saved_tuning = _normalize_config(saved_tuning_config)
+    normalized_current_options = (
+        _normalize_config(current_option_library_config) 
+        if current_option_library_config is not None else None
+    )
+    normalized_saved_options = (
+        _normalize_config(saved_option_library_config) 
+        if saved_option_library_config is not None else None
+    )
+    
     # Compare configs
     configs_match = True
     mismatches = []
     
-    if current_umbrella_config != saved_umbrella_config:
+    if normalized_current_umbrella != normalized_saved_umbrella:
         configs_match = False
-        mismatches.append("full_agent_env_config.yaml")
+        mismatches.append(("full_agent_env_config.yaml", current_umbrella_config, saved_umbrella_config))
     
-    if current_tuning_config != saved_tuning_config:
+    if normalized_current_tuning != normalized_saved_tuning:
         configs_match = False
-        mismatches.append("tuning_config.yaml")
+        mismatches.append(("tuning_config.yaml", current_tuning_config, saved_tuning_config))
     
     # Check option library if applicable
-    if current_option_library_config is not None or saved_option_library_config is not None:
-        if current_option_library_config != saved_option_library_config:
+    if normalized_current_options is not None or normalized_saved_options is not None:
+        if normalized_current_options != normalized_saved_options:
             configs_match = False
-            mismatches.append("option_library_config.yaml")
+            mismatches.append(("option_library_config.yaml", current_option_library_config, saved_option_library_config))
     
     if not configs_match:
         print(f"\n{'='*70}")
@@ -262,10 +327,17 @@ def validate_configs_match_existing(
         print(f"{'='*70}")
         print(f"\nYou are attempting to resume optimization run '{run_name}',")
         print(f"but the current configuration does not match the saved configuration.")
-        print(f"\nMismatched files:")
-        for mismatch in mismatches:
-            print(f"  - {mismatch}")
-        print(f"\nSaved configs location: {optimization_dir}")
+        print(f"\nMismatched files and their differences:")
+        print(f"{'-'*70}")
+        
+        for filename, current, saved in mismatches:
+            print(f"\n📄 {filename}")
+            print(f"\n  CURRENT (from command line):")
+            print(f"  {yaml.dump(current, default_flow_style=False, sort_keys=False).rstrip()}")
+            print(f"\n  SAVED (from {optimization_dir}):")
+            print(f"  {yaml.dump(saved, default_flow_style=False, sort_keys=False).rstrip()}")
+            print(f"\n  {'-'*70}")
+        
         print(f"\nThis likely means you changed values in your umbrella config,")
         print(f"tuning config, or options library since starting this optimization.")
         print(f"\nTo proceed, you must either:")
@@ -358,7 +430,8 @@ def run_training_trial(
     seeds: List[int],
     subconfig_overrides: Dict[str, str],
     base_param_overrides: Dict[str, Any],
-    results_dir: str
+    results_dir: str,
+    trial_run_prefix: str
 ) -> List[float]:
     """Run training for multiple seeds with suggested hyperparameters.
     
@@ -385,6 +458,7 @@ def run_training_trial(
         param_overrides = {**base_param_overrides, **suggested_params}
         param_overrides['training.seed'] = seed
         param_overrides['training.total_num_training_episodes'] = truncated_episodes
+        param_overrides['training.run_name'] = f"{trial_run_prefix}_seed{seed}"
         
         # Optimize evaluation for tuning: do ONE final evaluation to get reward metric
         # Set eval_freq to trigger only at the very end (truncated_episodes + 1 ensures one eval at end)
@@ -413,7 +487,7 @@ def run_training_trial(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=3600,  # 1 hour timeout per seed
+                timeout=None,  # No timeout; rely on SLURM job timeout (e.g., 48 hours)
                 cwd=str(package_root)  # Set working directory to package root
             )
             
@@ -449,7 +523,7 @@ def run_training_trial(
             rewards.append(reward)
             
         except subprocess.TimeoutExpired:
-            print(f"Warning: Training timed out for seed {seed}")
+            print(f"Warning: Training timed out for seed {seed} (SLURM job timeout or system constraint)")
             rewards.append(float('-inf'))
         except Exception as e:
             print(f"Warning: Training raised exception for seed {seed}: {e}")
@@ -500,7 +574,8 @@ def create_objective_function(
     subconfig_overrides: Dict[str, str],
     base_param_overrides: Dict[str, Any],
     results_dir: str,
-    base_seed: int
+    base_seed: int,
+    tuning_run_name: str
 ):
     """Create Optuna objective function closure.
     
@@ -543,6 +618,7 @@ def create_objective_function(
         trial_seeds = [base_seed + trial.number * 1000 + i for i in range(n_seeds_per_trial)]
         
         # Run training for all seeds
+        trial_run_prefix = f"{tuning_run_name}_trial{trial.number}"
         rewards = run_training_trial(
             umbrella_config_path=umbrella_config_path,
             suggested_params=suggested_params,
@@ -550,7 +626,8 @@ def create_objective_function(
             seeds=trial_seeds,
             subconfig_overrides=subconfig_overrides,
             base_param_overrides=base_param_overrides,
-            results_dir=results_dir
+            results_dir=results_dir,
+            trial_run_prefix=trial_run_prefix
         )
         
         # Filter out failed trials (-inf)
@@ -689,6 +766,29 @@ def main():
         default=None,
         help='Directory where training results should be created during tuning trials (temporary). If not specified, uses system temp directory.'
     )
+    parser.add_argument(
+        '--discard-trial-results',
+        action='store_true',
+        help='Run Optuna trial training in a temporary directory and delete outputs after tuning'
+    )
+    parser.add_argument(
+        '--tuning-override',
+        action='append',
+        default=[],
+        help='Override tuning config values. Example: --tuning-override optimization.n_trials=10'
+    )
+    parser.add_argument(
+        '--worker-id',
+        type=int,
+        default=0,
+        help='Worker ID for distributed tuning (0-indexed). When using parallel workers, each worker gets a portion of the total trials.'
+    )
+    parser.add_argument(
+        '--total-workers',
+        type=int,
+        default=1,
+        help='Total number of parallel workers. Used to allocate trials per worker (each gets n_trials // total_workers trials).'
+    )
     
     args = parser.parse_args()
     
@@ -719,6 +819,17 @@ def main():
         print("  2) Remove --overwrite-existing-study from worker commands")
         print("\nUse --overwrite-existing-study only for single-worker SQLite runs.")
         print(f"{'='*70}\n")
+        sys.exit(1)
+    
+    # Validate worker arguments
+    if args.worker_id < 0:
+        print(f"Error: --worker-id must be >= 0, got {args.worker_id}")
+        sys.exit(1)
+    if args.total_workers < 1:
+        print(f"Error: --total-workers must be >= 1, got {args.total_workers}")
+        sys.exit(1)
+    if args.worker_id >= args.total_workers:
+        print(f"Error: --worker-id ({args.worker_id}) must be < --total-workers ({args.total_workers})")
         sys.exit(1)
     
     # Parse parameter overrides
@@ -827,6 +938,34 @@ def main():
     with open(args.tuning_config, 'r') as f:
         tuning_config = yaml.safe_load(f)
     
+    # Apply tuning config overrides
+    if args.tuning_override:
+        print(f"\nApplying tuning config overrides...")
+        for override_str in args.tuning_override:
+            if '=' not in override_str:
+                print(f"Warning: Ignoring invalid tuning override format '{override_str}' (expected key=value)")
+                continue
+            key, value = override_str.split('=', 1)
+            # Try to parse as number, boolean, or keep as string
+            try:
+                value = int(value)
+            except ValueError:
+                try:
+                    value = float(value)
+                except ValueError:
+                    if value.lower() in ['true', 'false']:
+                        value = value.lower() == 'true'
+            
+            # Apply override using dot notation
+            keys = key.split('.')
+            current = tuning_config
+            for k in keys[:-1]:
+                if k not in current:
+                    current[k] = {}
+                current = current[k]
+            current[keys[-1]] = value
+            print(f"  {key}: {value}")
+    
     # Apply overrides to umbrella config
     if subconfig_overrides:
         print(f"\nApplying subconfig overrides...")
@@ -861,29 +1000,43 @@ def main():
     
     # Validate configs match existing if resuming (unless --overwrite-existing-study)
     umbrella_path = os.path.join(optimization_dir, 'full_agent_env_config.yaml')
+    tuning_path = os.path.join(optimization_dir, 'tuning_config.yaml')
     if os.path.exists(umbrella_path) and not args.overwrite_existing_study:
-        print(f"\n{'='*70}")
-        print("VALIDATING CONFIGURATION CONSISTENCY")
-        print(f"{'='*70}")
-        print(f"Existing optimization folder detected: {optimization_dir}")
-        print(f"Checking if current configs match saved configs...\\n")
-        
-        # Load HRL option library if applicable (for validation)
-        temp_option_library_config = load_and_save_hrl_option_library(
-            config=umbrella_config,
-            umbrella_config_path=args.umbrella_config,
-            optimization_dir=tempfile.mkdtemp()  # Temp dir for validation only
-        )
-        
-        # Validate configs match
-        validate_configs_match_existing(
-            current_umbrella_config=umbrella_config,
-            current_tuning_config=tuning_config,
-            current_option_library_config=temp_option_library_config,
-            optimization_dir=optimization_dir,
-            run_name=run_name
-        )
-        print(f"{'='*70}\\n")
+        if args.use_postgres and not os.path.exists(path=tuning_path):
+            print("Waiting for tuning_config.yaml to appear (multi-worker startup)...")
+            for _ in range(10):
+                if os.path.exists(path=tuning_path):
+                    break
+                time.sleep(1)
+
+        if args.use_postgres and not os.path.exists(path=tuning_path):
+            print(
+                "⚠️  Warning: tuning_config.yaml not found yet. "
+                "Another worker may be saving configs; skipping validation for now."
+            )
+        else:
+            print(f"\n{'='*70}")
+            print("VALIDATING CONFIGURATION CONSISTENCY")
+            print(f"{'='*70}")
+            print(f"Existing optimization folder detected: {optimization_dir}")
+            print(f"Checking if current configs match saved configs...\\n")
+            
+            # Load HRL option library if applicable (for validation)
+            temp_option_library_config = load_and_save_hrl_option_library(
+                config=umbrella_config,
+                umbrella_config_path=args.umbrella_config,
+                optimization_dir=tempfile.mkdtemp()  # Temp dir for validation only
+            )
+            
+            # Validate configs match
+            validate_configs_match_existing(
+                current_umbrella_config=umbrella_config,
+                current_tuning_config=tuning_config,
+                current_option_library_config=temp_option_library_config,
+                optimization_dir=optimization_dir,
+                run_name=run_name
+            )
+            print(f"{'='*70}\n")
     
     # Save resolved configs immediately (before optimization starts)
     config_already_saved = os.path.exists(umbrella_path)
@@ -925,11 +1078,15 @@ def main():
         sampler = optuna.samplers.TPESampler()
     
     # Determine results directory for training trials
-    if args.results_dir:
+    trial_results_dir_to_cleanup = None
+    if args.discard_trial_results:
+        results_dir = tempfile.mkdtemp(prefix='optuna_trials_')
+        trial_results_dir_to_cleanup = results_dir
+    elif args.results_dir:
         results_dir = args.results_dir
     else:
-        # Create temporary directory for trial results
-        results_dir = tempfile.mkdtemp(prefix='optuna_trials_')
+        results_dir = os.path.join(optimization_dir, 'trial_runs')
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
     
     # Get base seed from umbrella config
     base_seed = umbrella_config.get('training', {}).get('seed', 42)
@@ -952,22 +1109,127 @@ def main():
         elif load_if_exists and os.path.exists(storage_path):
             print(f"\n✓ Found existing study database, will continue: {storage_path}")
 
-    study = optuna.create_study(
-        direction=direction,
-        sampler=sampler,
-        study_name=args.study_name or run_name,
-        storage=storage_url,
-        load_if_exists=load_if_exists
-    )
+    # Create Optuna study with retry logic for Postgres enum creation race condition
+    study = None
+    for attempt in range(3):
+        try:
+            study = optuna.create_study(
+                direction=direction,
+                sampler=sampler,
+                study_name=args.study_name or run_name,
+                storage=storage_url,
+                load_if_exists=load_if_exists
+            )
+            break  # Success
+        except Exception as e:
+            error_str = str(e).lower()
+            if 'studydirection' in error_str and 'unique' in error_str and attempt < 2:
+                # Likely Postgres enum creation race; another worker is creating it
+                print(f"⚠️  Postgres enum creation race detected (attempt {attempt + 1}/3). Retrying in 2 seconds...")
+                time.sleep(2)
+            else:
+                raise
     
     # Report study status
     n_existing_trials = len(study.trials)
-    if n_existing_trials > 0:
-        print(f"✓ Loaded existing study with {n_existing_trials} completed trial(s)")
-        print(f"  Best value so far: {study.best_value:.4f}")
-        print(f"  Will run {n_trials} additional trial(s)")
+    n_completed_trials_with_results = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    
+    # Determine if this is a new study or a resumed study
+    is_resumed_study = n_existing_trials > 0
+    
+    # If we've already reached the target number of completed trials, skip additional trials.
+    # For resumed studies, also ensure the completion registry is updated.
+    if n_completed_trials_with_results >= n_trials:
+        print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
+        print(f"  Completed trials with results: {n_completed_trials_with_results}")
+        print(f"  Target n_trials: {n_trials}")
+        print(f"\n✓ Study has already reached the target! Skipping additional trials.\n")
+        
+        # Print results
+        print(f"{'='*70}")
+        print("OPTIMIZATION ALREADY COMPLETE")
+        print(f"{'='*70}")
+        print(f"Best value: {study.best_value:.4f}")
+        print(f"Best trial: {study.best_trial.number}")
+        print(f"Total trials completed: {n_completed_trials_with_results}")
+        print(f"Best parameters:")
+        for key, value in study.best_params.items():
+            print(f"  {key}: {value}")
+        print(f"{'='*70}\n")
+        
+        # Save results
+        save_best_params(
+            study=study,
+            tuning_config=tuning_config,
+            optimization_dir=optimization_dir
+        )
+
+        if trial_results_dir_to_cleanup:
+            shutil.rmtree(trial_results_dir_to_cleanup, ignore_errors=True)
+        
+        storage_label = storage_path or storage_url
+        print(f"✓ Study database at: {storage_label}")
+        
+        # Update registry (only if missing)
+        completed_prefixes = load_registry(completion_registry_path)
+        if run_name not in completed_prefixes:
+            update_registry(
+                registry_path=completion_registry_path,
+                run_name=run_name,
+                timestamp=timestamp
+            )
+            print(f"\n✓ Recorded successful completion in registry: {completion_registry_path}\n")
+        else:
+            print(f"\n✓ Registry already marked complete: {completion_registry_path}\n")
+        
+        print(f"Optimization results saved to: {optimization_dir}")
+        print(f"  - Study database: {storage_label}")
+        print(f"  - Best params: {os.path.join(optimization_dir, 'best_params.json')}")
+        print(f"  - Study summary: {os.path.join(optimization_dir, 'study_summary.json')}")
+        sys.exit(0)
+    
+    # Calculate per-worker trial quota for distributed tuning
+    # Each worker runs a specific portion of the total trials
+    trials_per_worker = (n_trials + args.total_workers - 1) // args.total_workers  # Ceiling division
+    worker_trial_start = args.worker_id * trials_per_worker
+    worker_trial_end = min((args.worker_id + 1) * trials_per_worker, n_trials)
+    worker_quota = worker_trial_end - worker_trial_start
+    
+    # In distributed mode, each worker should stop once they've completed their quota,
+    # not based on global trial count
+    if args.total_workers > 1:
+        # For distributed tuning: each worker runs only their quota
+        # Don't adjust based on n_completed_trials_with_results
+        remaining_trials = worker_quota
+        
+        if is_resumed_study:
+            print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
+            print(f"  Completed trials with results: {n_completed_trials_with_results}")
+            if n_completed_trials_with_results > 0:
+                print(f"  Best value so far: {study.best_value:.4f}")
+            print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
+            print(f"  This worker's quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
+        else:
+            print(f"✓ Starting new study")
+            print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
+            print(f"  This worker's quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
     else:
-        print(f"✓ Starting new study")
+        # Single-worker mode: use original logic with remaining_trials
+        if is_resumed_study:
+            print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
+            print(f"  Completed trials with results: {n_completed_trials_with_results}")
+            if n_completed_trials_with_results > 0:
+                print(f"  Best value so far: {study.best_value:.4f}")
+            else:
+                print(f"  No completed trials yet (first worker initializing study)")
+            remaining_trials = max(0, n_trials - n_completed_trials_with_results)
+            print(
+                f"  Will run {remaining_trials} additional trial(s) "
+                f"(target total: {n_trials}, current complete: {n_completed_trials_with_results})"
+            )
+        else:
+            print(f"✓ Starting new study")
+            remaining_trials = n_trials
     
     # Create objective function
     objective = create_objective_function(
@@ -976,17 +1238,18 @@ def main():
         subconfig_overrides=subconfig_overrides,
         base_param_overrides=param_overrides,
         results_dir=results_dir,
-        base_seed=base_seed
+        base_seed=base_seed,
+        tuning_run_name=run_name
     )
     
     # Run optimization
-    print(f"\nStarting optimization with {n_trials} trials...")
+    print(f"\nStarting optimization with {remaining_trials} trials...")
     print(f"Direction: {direction}")
     print(f"Sampler: {sampler_name}")
     print(f"Seeds per trial: {optimization_config.get('n_seeds_per_trial', 3)}")
     print(f"Truncated episodes: {optimization_config.get('truncated_episodes', 50)}\n")
     
-    study.optimize(objective, n_trials=n_trials)
+    study.optimize(objective, n_trials=remaining_trials)
     
     # Print results
     print(f"\n{'='*70}")
@@ -1006,6 +1269,9 @@ def main():
         tuning_config=tuning_config,
         optimization_dir=optimization_dir
     )
+
+    if trial_results_dir_to_cleanup:
+        shutil.rmtree(trial_results_dir_to_cleanup, ignore_errors=True)
     
     storage_label = storage_path or storage_url
     print(f"✓ Study database saved to: {storage_label}")

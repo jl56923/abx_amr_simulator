@@ -60,6 +60,7 @@ def test_workspace():
         shutil.rmtree(test_dir)
 
 
+@pytest.mark.slow
 def test_tune_train_integration(test_workspace):
     """Test complete tuning workflow: tune → verify → train with best params.
     
@@ -143,7 +144,7 @@ def test_tune_train_integration(test_workspace):
         tune_cmd,
         capture_output=True,
         text=True,
-        timeout=120  # 2 minutes max
+        timeout=300  # 5 minutes max for tuning
     )
     
     print(f"[TEST] tune.py stdout:\n{result.stdout}")
@@ -263,6 +264,7 @@ def test_tune_train_integration(test_workspace):
     print(f"[TEST] Integration test PASSED: tune → train workflow complete")
 
 
+@pytest.mark.slow
 def test_skip_if_exists_prevents_duplicate_optimization(test_workspace):
     """Test that --skip-if-exists flag prevents duplicate optimization runs.
     

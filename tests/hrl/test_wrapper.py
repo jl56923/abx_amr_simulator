@@ -13,13 +13,13 @@ class SimpleOption(OptionBase):
     REQUIRES_OBSERVATION_ATTRIBUTES = []
     REQUIRES_AMR_LEVELS = False
 
-    def __init__(self, name: str, action_value: int, k: int = 5):
+    def __init__(self, name: str, action_value: str, k: int = 5):
         super().__init__(name=name, k=k)
         self.action_value = action_value
 
     def decide(self, env_state):
         num_patients = env_state['num_patients']
-        return np.full(shape=num_patients, fill_value=self.action_value, dtype=np.int32)
+        return np.full(shape=num_patients, fill_value=self.action_value, dtype=object)
     
     def get_referenced_antibiotics(self):
         """Test option returns no specific antibiotics."""
@@ -206,7 +206,7 @@ class TestOptionsWrapperStep:
         """Test step with valid manager action."""
         env = create_test_environment()
         lib = OptionLibrary(env=env)
-        lib.add_option(SimpleOption(name='opt1', action_value=0, k=2))
+        lib.add_option(SimpleOption(name='opt1', action_value='no_treatment', k=2))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
         wrapper.reset()
@@ -224,7 +224,7 @@ class TestOptionsWrapperStep:
         """Test that step executes option for k substeps."""
         env = create_test_environment()
         lib = OptionLibrary(env=env)
-        lib.add_option(SimpleOption(name='opt1', action_value=0, k=3))
+        lib.add_option(SimpleOption(name='opt1', action_value='no_treatment', k=3))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
         wrapper.reset()
@@ -248,7 +248,7 @@ class TestOptionsWrapperStep:
         """Test that step accumulates rewards with discounting."""
         env = create_test_environment()
         lib = OptionLibrary(env=env)
-        lib.add_option(SimpleOption(name='opt1', action_value=0, k=3))
+        lib.add_option(SimpleOption(name='opt1', action_value='no_treatment', k=3))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
         wrapper.reset()
@@ -275,7 +275,7 @@ class TestOptionsWrapperStep:
         """Test step with invalid manager action."""
         env = create_test_environment()
         lib = OptionLibrary(env=env)
-        lib.add_option(SimpleOption(name='opt1', action_value=0))
+        lib.add_option(SimpleOption(name='opt1', action_value='no_treatment'))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
         wrapper.reset()
@@ -287,7 +287,7 @@ class TestOptionsWrapperStep:
         """Test that step stops if episode terminates."""
         env = create_test_environment()
         lib = OptionLibrary(env=env)
-        lib.add_option(SimpleOption(name='opt1', action_value=0, k=10))
+        lib.add_option(SimpleOption(name='opt1', action_value='no_treatment', k=10))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
         wrapper.reset()
@@ -348,7 +348,7 @@ class TestOptionsWrapperActionValidation:
             REQUIRES_AMR_LEVELS = False
             
             def decide(self, env_state):
-                return np.array(object=[0])  # Wrong shape (1,) instead of (2,)
+                return np.array(['A'])  # Wrong shape (1,) instead of (2,)
             
             def get_referenced_antibiotics(self):
                 return []
@@ -371,7 +371,7 @@ class TestOptionsWrapperActionValidation:
             REQUIRES_AMR_LEVELS = False
             
             def decide(self, env_state):
-                return np.array(object=[0, 99], dtype=np.int32)  # 99 out of range
+                return np.array(['Invalid', 'BadABX'], dtype=object)  # Invalid antibiotic names
             
             def get_referenced_antibiotics(self):
                 return []
@@ -408,7 +408,7 @@ class TestOptionsWrapperBuildsEnvState:
                 assert env_state['num_patients'] == 2
                 assert len(env_state['patients']) == 2
 
-                return np.zeros(shape=env_state['num_patients'], dtype=np.int32)
+                return np.full(shape=env_state['num_patients'], fill_value='no_treatment', dtype=object)
             
             def get_referenced_antibiotics(self):
                 return []

@@ -35,7 +35,8 @@ class AlternationOption(OptionBase):
         action_name = self.sequence[self._sequence_index]
 
         try:
-            action_idx = option_library.abx_name_to_index[action_name]
+            # Just validate that antibiotic exists; return the name string
+            _ = option_library.abx_name_to_index[action_name]
         except KeyError as exc:
             available = list(option_library.abx_name_to_index.keys())
             raise ValueError(
@@ -47,7 +48,7 @@ class AlternationOption(OptionBase):
         self._sequence_index = (self._sequence_index + 1) % len(self.sequence)
         self._last_seen_step = current_step
 
-        return np.full(shape=num_patients, fill_value=action_idx, dtype=np.int32)
+        return np.full(shape=num_patients, fill_value=action_name, dtype=object)
 
     def reset(self) -> None:
         self._sequence_index = 0

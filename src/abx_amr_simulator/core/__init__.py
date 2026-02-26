@@ -7,6 +7,7 @@ from .types import Patient
 from .patient_generator import PatientGenerator, PatientGeneratorMixer
 from .base_patient_generator import PatientGeneratorBase
 from .base_reward_calculator import RewardCalculatorBase
+from .base_amr_dynamics import AMRDynamicsBase
 
 
 def validate_compatibility(pg: PatientGeneratorBase, rc: RewardCalculatorBase) -> None:
@@ -49,5 +50,6 @@ __all__ = [
     'Patient',
     'PatientGeneratorBase',
     'RewardCalculatorBase',
+    'AMRDynamicsBase',
     'validate_compatibility',
 ]

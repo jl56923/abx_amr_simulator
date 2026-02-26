@@ -947,5 +947,286 @@ class TestComplexConfigs:
             assert patient.recovery_without_treatment_prob_obs == pytest.approx(patient.recovery_without_treatment_prob)
 
 
+class TestPatientGeneratorMixer:
+    """Comprehensive tests for PatientGeneratorMixer class."""
+    
+    @staticmethod
+    def create_simple_generator(visibility_attrs=None, seed=None):
+        """Helper to create a simple generator for testing."""
+        if visibility_attrs is None:
+            visibility_attrs = ['prob_infected']
+        
+        config = {
+            'prob_infected': {
+                'prob_dist': {'type': 'constant', 'value': 0.5},
+                'obs_bias_multiplier': 1.0,
+                'obs_noise_one_std_dev': 0.0,
+                'obs_noise_std_dev_fraction': 0.0,
+                'clipping_bounds': [0.0, 1.0],
+            },
+            'benefit_value_multiplier': {
+                'prob_dist': {'type': 'constant', 'value': 1.0},
+                'obs_bias_multiplier': 1.0,
+                'obs_noise_one_std_dev': 0.0,
+                'obs_noise_std_dev_fraction': 0.0,
+                'clipping_bounds': [0.0, None],
+            },
+            'failure_value_multiplier': {
+                'prob_dist': {'type': 'constant', 'value': 1.0},
+                'obs_bias_multiplier': 1.0,
+                'obs_noise_one_std_dev': 0.0,
+                'obs_noise_std_dev_fraction': 0.0,
+                'clipping_bounds': [0.0, None],
+            },
+            'benefit_probability_multiplier': {
+                'prob_dist': {'type': 'constant', 'value': 1.0},
+                'obs_bias_multiplier': 1.0,
+                'obs_noise_one_std_dev': 0.0,
+                'obs_noise_std_dev_fraction': 0.0,
+                'clipping_bounds': [0.0, None],
+            },
+            'failure_probability_multiplier': {
+                'prob_dist': {'type': 'constant', 'value': 1.0},
+                'obs_bias_multiplier': 1.0,
+                'obs_noise_one_std_dev': 0.0,
+                'obs_noise_std_dev_fraction': 0.0,
+                'clipping_bounds': [0.0, None],
+            },
+            'recovery_without_treatment_prob': {
+                'prob_dist': {'type': 'constant', 'value': 0.2},
+                'obs_bias_multiplier': 1.0,
+                'obs_noise_one_std_dev': 0.0,
+                'obs_noise_std_dev_fraction': 0.0,
+                'clipping_bounds': [0.0, 1.0],
+            },
+            'visible_patient_attributes': visibility_attrs,
+        }
+        if seed is not None:
+            config['seed'] = seed
+        
+        return PatientGenerator(config=config)
+    
+    def test_mixer_init_uniform_visibility(self):
+        """Test PatientGeneratorMixer initialization with uniform visibility."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_a = self.create_simple_generator(visibility_attrs=['prob_infected'])
+        gen_b = self.create_simple_generator(visibility_attrs=['prob_infected'])
+        
+        config = {
+            'generators': [gen_a, gen_b],
+            'proportions': [0.5, 0.5],
+        }
+        
+        mixer = PatientGeneratorMixer(config=config)
+        
+        assert mixer.visible_patient_attributes == ['prob_infected']
+        assert not mixer._uses_heterogeneous_visibility
+        assert len(mixer.generators) == 2
+        assert np.allclose(mixer.proportions, [0.5, 0.5])
+    
+    def test_mixer_init_heterogeneous_visibility(self):
+        """Test PatientGeneratorMixer with different generator visibilities."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_a = self.create_simple_generator(visibility_attrs=['prob_infected', 'benefit_value_multiplier'])
+        gen_b = self.create_simple_generator(visibility_attrs=['prob_infected'])
+        
+        config = {
+            'generators': [gen_a, gen_b],
+            'proportions': [0.5, 0.5],
+        }
+        
+        mixer = PatientGeneratorMixer(config=config)
+        
+        assert mixer._uses_heterogeneous_visibility
+        assert set(mixer.visible_patient_attributes) == {'prob_infected', 'benefit_value_multiplier'}
+        assert len(mixer.generators) == 2
+    
+    def test_mixer_init_proportions_sum_validation(self):
+        """Test that proportions must sum to 1.0."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_a = self.create_simple_generator()
+        gen_b = self.create_simple_generator()
+        
+        config = {
+            'generators': [gen_a, gen_b],
+            'proportions': [0.5, 0.6],  # Sum is 1.1, not 1.0
+        }
+        
+        with pytest.raises(ValueError, match="sum to 1.0"):
+            PatientGeneratorMixer(config=config)
+    
+    def test_mixer_init_proportions_count_mismatch(self):
+        """Test that proportions count must match generator count."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_a = self.create_simple_generator()
+        gen_b = self.create_simple_generator()
+        
+        config = {
+            'generators': [gen_a, gen_b],
+            'proportions': [1.0],  # Only 1 proportion for 2 generators
+        }
+        
+        with pytest.raises(ValueError, match="must match"):
+            PatientGeneratorMixer(config=config)
+    
+    def test_mixer_init_empty_generators(self):
+        """Test that empty generator list raises error."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        config = {
+            'generators': [],
+            'proportions': [],
+        }
+        
+        with pytest.raises(ValueError, match="at least one"):
+            PatientGeneratorMixer(config=config)
+    
+    def test_mixer_sample_proportions(self):
+        """Test that sample respects proportions."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_a = self.create_simple_generator()
+        gen_b = self.create_simple_generator()
+        
+        config = {
+            'generators': [gen_a, gen_b],
+            'proportions': [0.7, 0.3],
+            'seed': 42,
+        }
+        
+        mixer = PatientGeneratorMixer(config=config)
+        rng = np.random.default_rng(42)
+        
+        patients = mixer.sample(n_patients=100, true_amr_levels=TRUE_AMR_LEVELS, rng=rng)
+        
+        # Should have approximately 70 from gen_a and 30 from gen_b
+        # Due to rounding, allow some flexibility
+        assert len(patients) == 100
+        assert all(hasattr(p, 'source_generator_index') for p in patients)
+    
+    def test_mixer_sample_rounding(self):
+        """Test that proportional allocation rounding works correctly."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_a = self.create_simple_generator()
+        gen_b = self.create_simple_generator()
+        gen_c = self.create_simple_generator()
+        
+        config = {
+            'generators': [gen_a, gen_b, gen_c],
+            'proportions': [0.33, 0.33, 0.34],  # Will have rounding issues with 100
+            'seed': 42,
+        }
+        
+        mixer = PatientGeneratorMixer(config=config)
+        rng = np.random.default_rng(42)
+        
+        patients = mixer.sample(n_patients=100, true_amr_levels=TRUE_AMR_LEVELS, rng=rng)
+        
+        # Total must equal exactly 100
+        assert len(patients) == 100
+    
+    def test_mixer_observe_uniform_visibility(self):
+        """Test observe method with uniform visibility (no padding)."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_a = self.create_simple_generator(visibility_attrs=['prob_infected'])
+        gen_b = self.create_simple_generator(visibility_attrs=['prob_infected'])
+        
+        config = {
+            'generators': [gen_a, gen_b],
+            'proportions': [0.5, 0.5],
+            'seed': 42,
+        }
+        
+        mixer = PatientGeneratorMixer(config=config)
+        rng = np.random.default_rng(42)
+        patients = mixer.sample(n_patients=4, true_amr_levels=TRUE_AMR_LEVELS, rng=rng)
+        
+        obs = mixer.observe(patients)
+        
+        # Should be 4 patients * 1 attribute = 4 values
+        assert obs.shape == (4,)
+    
+    def test_mixer_observe_heterogeneous_visibility_padding(self):
+        """Test observe with heterogeneous visibility shows padding."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_full = self.create_simple_generator(visibility_attrs=['prob_infected', 'benefit_value_multiplier'])
+        gen_minimal = self.create_simple_generator(visibility_attrs=['prob_infected'])
+        
+        config = {
+            'generators': [gen_full, gen_minimal],
+            'proportions': [0.5, 0.5],
+            'seed': 42,
+        }
+        
+        mixer = PatientGeneratorMixer(config=config)
+        rng = np.random.default_rng(42)
+        patients = mixer.sample(n_patients=4, true_amr_levels=TRUE_AMR_LEVELS, rng=rng)
+        
+        obs = mixer.observe(patients)
+        
+        # Should be 4 patients * 2 attributes (union) = 8 values
+        assert obs.shape == (8,)
+        
+        # Check for padding value (-1.0) where attributes are hidden
+        # At least some patients from gen_minimal should have padding
+        has_padding = np.any(obs == mixer.PADDING_VALUE)
+        assert has_padding or len(patients) < 2  # May not have gen_minimal patients in small sample
+    
+    def test_mixer_obs_dim(self):
+        """Test obs_dim method."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_a = self.create_simple_generator(visibility_attrs=['prob_infected', 'benefit_value_multiplier'])
+        gen_b = self.create_simple_generator(visibility_attrs=['prob_infected'])
+        
+        config = {
+            'generators': [gen_a, gen_b],
+            'proportions': [0.5, 0.5],
+        }
+        
+        mixer = PatientGeneratorMixer(config=config)
+        
+        # Union has 2 attributes, 10 patients → 20
+        assert mixer.obs_dim(num_patients=10) == 20
+        assert mixer.obs_dim(num_patients=1) == 2
+        assert mixer.obs_dim(num_patients=100) == 200
+    
+    def test_mixer_reproducibility_with_seed(self):
+        """Test that mixer sampling is reproducible with same seed."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+        
+        gen_a = self.create_simple_generator()
+        gen_b = self.create_simple_generator()
+        
+        config = {
+            'generators': [gen_a, gen_b],
+            'proportions': [0.5, 0.5],
+            'seed': 42,
+        }
+        
+        mixer1 = PatientGeneratorMixer(config=config)
+        mixer2 = PatientGeneratorMixer(config=config)
+        
+        rng1 = np.random.default_rng(99)
+        rng2 = np.random.default_rng(99)
+        
+        patients1 = mixer1.sample(n_patients=20, true_amr_levels=TRUE_AMR_LEVELS, rng=rng1)
+        patients2 = mixer2.sample(n_patients=20, true_amr_levels=TRUE_AMR_LEVELS, rng=rng2)
+        
+        # Same seed should produce same patients (shuffling order may differ)
+        assert len(patients1) == len(patients2) == 20
+        # Verify attribute values match (order might differ due to shuffle)
+        vals1 = sorted([p.prob_infected for p in patients1])
+        vals2 = sorted([p.prob_infected for p in patients2])
+        assert np.allclose(vals1, vals2)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

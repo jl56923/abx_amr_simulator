@@ -841,7 +841,7 @@ def analyze_hrl_single_run(run_dir: Path, max_eval_episodes: int = 5) -> Dict[st
         )
         from abx_amr_simulator.hrl import OptionLibraryLoader
         from abx_amr_simulator.utils.metrics import plot_hrl_diagnostics_single_run
-        from stable_baselines3 import PPO, DQN, A2C
+        from stable_baselines3 import PPO, A2C
     except ImportError as e:
         return {"error": f"Failed to import required modules: {e}"}
     
@@ -911,8 +911,6 @@ def analyze_hrl_single_run(run_dir: Path, max_eval_episodes: int = 5) -> Dict[st
         
         if "HRL_PPO" in algo_name:
             model_class = PPO
-        elif "HRL_DQN" in algo_name:
-            model_class = DQN
         else:
             model_class = PPO  # Default
         

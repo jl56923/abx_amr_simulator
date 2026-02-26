@@ -8,12 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- AMR dynamics abstraction: `AMRDynamicsBase` abstract base class enabling custom resistance models
+  - `AMRDynamicsBase` ABC with `step()` and `reset()` abstract methods for extensibility
+  - `AMR_LeakyBalloon` now inherits from `AMRDynamicsBase` with enhanced `reset()` input validation
+  - `NAME` class constant for dynamics model identification
+  - Comprehensive test suite for ABC contract validation (bounds, determinism, state initialization)
 - Temporal features support in ABXAMREnv: optional prescription history tracking and AMR deltas in observations via `enable_temporal_features` and `temporal_windows` config parameters.
 - MBPO core components and training loop scaffolding:
   - `DynamicsModel` for learning environment dynamics with MultiDiscrete action support
   - `TrajectoryReplayEnv` for replaying synthetic trajectories during PPO training
   - `MBPOAgent` with real-data collection, model training, synthetic rollouts, and replay training
   - Unit tests covering DynamicsModel, TrajectoryReplayEnv, and MBPOAgent core behaviors
+
+### Changed
+- **BREAKING**: HRL options refactored to use string-based antibiotic protocol
+  - `OptionBase.decide()` now returns `np.ndarray` with dtype=object containing antibiotic name strings (e.g., 'A', 'B', 'no_treatment') instead of integer action indices
+  - `OptionsWrapper` now handles conversion from antibiotic name strings to environment action indices
+  - Validation moved from init-time to step-time with clearer error messages for invalid antibiotic names
+  - All concrete option implementations updated: `BlockOption`, `AlternationOption`, `HeuristicWorker`
+  - Simplifies option development: users work with human-readable names, no manual index mapping needed
+  - All 89 HRL tests updated and passing with new protocol
+  - Documentation updated: `docs/api_reference/option_abc.md` and `docs/tutorials/10_advanced_heuristic_worker_subclassing.md`
+- `ABXAMREnv.amr_balloon_models` type hint updated from `Dict[str, AMR_LeakyBalloon]` to `Dict[str, AMRDynamicsBase]` for better extensibility
 
 ## [0.1.0] - 2026-02-01
 

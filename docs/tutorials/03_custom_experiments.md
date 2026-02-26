@@ -1,30 +1,61 @@
-# Tutorial 2: Custom Experiments
+# Tutorial 3: Custom Experiments
 
 **Goal**: Learn to modify the config/subconfig files to run your own experiments. Learn how to tune the reward function, configure AMR dynamics, run parameter sweeps, and customize patient populations.
 
-**Prerequisites**: Completed Tutorial 1 (Basic Training Workflow)
+**Prerequisites**: Completed Tutorial 1 (Basic Training Workflow) and Tutorial 2 (Config Scaffolding)
 
 ---
 
 ## Overview: The Configuration Hierarchy
 
-Before diving into customization, understand how configurations are organized. This is what you should see immediately after running 
+Before diving into customization, understand how configurations are organized. After completing Tutorial 2 (Config Scaffolding), your `my_first_project/experiments/` directory contains:
 
 ```
-configs/
-├── umbrella_configs/
-│   └── base_experiment.yaml          # References subconfigs + training params
-├── environment/
-│   └── default.yaml                  # Default environment (1 patient per time step, 2 antibiotics)
-├── reward_calculator/
-│   └── default.yaml                  # Default reward calculator
-├── patient_generator/
-│   └── default.yaml                  # Homogeneous population (all constants/same values)
-└── agent_algorithm/
-    ├── default.yaml                  # PPO
-    ├── ppo.yaml                      # PPO
-    └── a2c.yaml                      # A2C
+my_first_project/
+├── experiments/
+│   └── configs/
+│       ├── umbrella_configs/
+│       │   └── base_experiment.yaml          # References subconfigs + training params
+│       ├── environment/
+│       │   └── default.yaml                  # Default environment (1 patient per time step, 2 antibiotics)
+│       ├── reward_calculator/
+│       │   └── default.yaml                  # Default reward calculator
+│       ├── patient_generator/
+│       │   └── default.yaml                  # Homogeneous population (all constants/same values)
+│       └── agent_algorithm/
+           ├── default.yaml                  # PPO (default algorithm)
+           ├── ppo.yaml                      # PPO
+           ├── a2c.yaml                      # A2C
+           ├── hrl_ppo.yaml                  # Hierarchical RL with PPO
+           ├── hrl_rppo.yaml                 # Hierarchical RL with Recurrent PPO
+           ├── mbpo.yaml                     # Model-Based PPO
+           └── recurrent_ppo.yaml            # Recurrent PPO
+├── results/          # Created automatically during training
+└── optimization/     # Created automatically during tuning
 ```
+
+**Configuration Path Resolution:**
+
+The umbrella config (`base_experiment.yaml`) uses a format that explicitly declares where to find component configs:
+
+```yaml
+# Folder locations (relative to umbrella config's directory)
+config_folder_location: ../
+options_folder_location: ../../options
+
+# Component configurations (relative to config_folder_location)
+environment: environment/default.yaml
+reward_calculator: reward_calculator/default.yaml
+patient_generator: patient_generator/default.yaml
+agent_algorithm: agent_algorithm/default.yaml
+```
+
+This design means:
+- `config_folder_location: ../` resolves from `experiments/configs/umbrella_configs/` → `experiments/configs/`
+- Component paths like `environment: environment/default.yaml` are then relative to `config_folder_location`
+- Final resolved path: `experiments/configs/environment/default.yaml`
+
+**Customization Workflow:**
 
 The default subconfig files contain values that are appropriate to run a simple experiment by using 'base_experiment.yaml' file. Each subconfig file contains a dictionary of parameters that are required to initialize the objects required to create the full ABXAMREnv instance and the agent that will explore the ABXAMREnv environment. The 'PatientGenerator' and 'RewardCalculator' objects are created separately, and then passed in to the ABXAMREnv. Please refer to the docstrings for the initializers for each of these classes for more information.
 
@@ -41,14 +72,10 @@ Formula:
 $$\text{reward} = (1-\lambda) \times \text{individual\_reward} + \lambda \times \text{community\_reward}$$
 
 - **λ = 0.0**: Selfish agent (maximize patient health, ignore AMR) → agents prescribe heavily
-- **λ = 0.5**: Balanced (default)
-- **λ = 1.0**: Altruistic agent (minimize community AMR, ignore patient health) → agents underprescribe
+- **λ = 0.5**: Balanced (gives equal weight to current patient health and community AMR)
+- **λ = 1.0**: Altruistic agent (minimize community AMR levels, ignore current patient health) → agents underprescribe
 
 ### Compare Different Lambda Values
-
-COPILOT: Revise this example, I want to show the user that they can use the base_experiment.yaml and override it with either revised reward_calculator yaml files w/ a range of lambda values, or they can use a param override directly.
-
-COPILOT: Also, the 'training' params are not correct, please go examine one of the real 'base_experiment.yaml' files to correct what the training params should look like in the umbrella configs.
 
 You have two approaches: create separate reward calculator subconfig files, or override the parameter directly from the CLI. Here's both:
 
@@ -57,23 +84,27 @@ You have two approaches: create separate reward calculator subconfig files, or o
 Run three training jobs with different lambda values using direct parameter overrides:
 
 ```bash
+# From my_first_project/ directory
+# Verify your location first:
+pwd  # Should show: .../my_first_project
+
 # Clinical-focused agent (minimize patient failures)
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   -p reward_calculator.lambda_weight=0.0 \
   -p training.run_name=lambda_sweep_clinical_only_seed42 \
   -p training.seed=42
 
 # Balanced agent (λ = 0.5)
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   -p reward_calculator.lambda_weight=0.5 \
   -p training.run_name=lambda_sweep_balanced_seed42 \
   -p training.seed=42
 
 # AMR-focused agent (minimize community resistance)
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   -p reward_calculator.lambda_weight=1.0 \
   -p training.run_name=lambda_sweep_amr_only_seed42 \
   -p training.seed=42
@@ -84,6 +115,7 @@ python -m abx_amr_simulator.training.train \
 You may also choose to create separate reward calculator configs and modify them individually; this option allows you to full customize how the RewardCalculator is initialized:
 
 ```bash
+# From my_first_project/experiments/ directory
 # Create three lambda-specific reward calculator configs
 cat > configs/reward_calculator/lambda_0.0.yaml << 'EOF'
 lambda_weight: 0.0  # Only consider individual clinical benefit
@@ -137,27 +169,29 @@ seed: 42
 EOF
 ```
 
-Now run with subconfig overrides:
+Now run with subconfig overrides (from `my_first_project/` directory):
 
 ```bash
 # Clinical-focused
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s reward_calculator-subconfig=configs/reward_calculator/lambda_0.0.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s reward_calculator-subconfig=$(pwd)/experiments/configs/reward_calculator/lambda_0.0.yaml \
   -p training.run_name=lambda_sweep_individual_clinical_only
 
 # Balanced
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s reward_calculator-subconfig=configs/reward_calculator/lambda_0.5.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s reward_calculator-subconfig=$(pwd)/experiments/configs/reward_calculator/lambda_0.5.yaml \
   -p training.run_name=lambda_sweep_balanced
 
 # AMR-focused
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s reward_calculator-subconfig=configs/reward_calculator/lambda_1.0.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s reward_calculator-subconfig=$(pwd)/experiments/configs/reward_calculator/lambda_1.0.yaml \
   -p training.run_name=lambda_sweep_community_amr_only
 ```
+
+**Note**: The `-s` flag requires absolute paths for subconfig files. Using `$(pwd)` ensures paths are absolute.
 
 ### Analyze the Trade-off
 
@@ -189,14 +223,14 @@ python -m abx_amr_simulator.analysis.evaluative_plots \
 
 Results with aggregation by seed are saved to `analysis_output/lambda_sweep_individual_clinical_only/evaluation/ensemble/` with ensemble statistics across seeds. (Note that the timestamp is excluded; this differs from what happens if you run abx_amr_simulator.analysis.evaluative_plots on a single experiment run, where the output will be saved in `analysis_output/lambda_sweep_individual_clinical_only_<TIMESTAMP>/evaluation/plots/`)
 
-**Want more detailed Python analysis?** See Tutorial 4 for examples of programmatically loading models and extracting custom metrics. For most users, the CLI analysis tools provide everything needed to understand the lambda trade-off.
+**Want more detailed Python analysis?** For most users, the CLI analysis tools provide everything needed to understand the lambda trade-off. For advanced programmatic analysis, see Tutorial 12 (Component Subclassing).
 
 ---
 
 ## Customization 2: Configure AMR Dynamics (Leaky Balloon)
 
 The ABXAMREnv instance 
-The AMR dynamics are modeled as a **leaky balloon**: prescriptions add "puff" (resistance), time adds "leak" (recovery).
+The AMR dynamics are modeled as a **leaky balloon**: prescriptions add "dose" (resistance), time adds "leak" (recovery).
 
 **View the default environment config**:
 
@@ -239,13 +273,14 @@ include_steps_since_amr_update_in_obs: false
 **Before running an experiment**, visualize the leaky balloon's response to understand the dynamics:
 
 ```bash
+# From my_first_project/ directory
 python -m abx_amr_simulator.utils.visualization.visualize_environment_behavior \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s environment-subconfig=configs/environment/steep_amr.yaml
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s environment-subconfig=$(pwd)/experiments/configs/environment/steep_amr.yaml
 ```
 
 This generates plots showing:
-- How AMR levels respond to different puff sequences
+- How AMR levels respond to different dose sequences
 - Sample random trajectories with observations and rewards
 - Saved to `visualization_outputs/`
 
@@ -253,8 +288,8 @@ After understanding the dynamics, run the training experiment:
 
 ```bash
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s environment-subconfig=configs/environment/steep_amr.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s environment-subconfig=$(pwd)/experiments/configs/environment/steep_amr.yaml \
   -p training.run_name=experiment_steep_amr
 ```
 
@@ -296,18 +331,16 @@ action_mode: multidiscrete
 include_steps_since_amr_update_in_obs: false
 ```
 
-COPILOT: does 'visualize_environment_behavior' plot the leaky ballons for an environment yaml if there are multiple antibiotics? If it doesn't, it should be revised so that it does.
-
-Run it:
+Run it (from `my_first_project/` directory):
 
 ```bash
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s environment-subconfig=environment/two_abx_no_crossresistance.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s environment-subconfig=$(pwd)/experiments/configs/environment/two_abx_no_crossresistance.yaml \
   -p training.run_name=experiment_two_abx_independent
 ```
 
-**What changed**: The agent now sees two independent resistance dynamics. It can develop different prescribing strategies for each antibiotic.
+**What changed**: The agent now sees two different antibiotics, each with independent resistance dynamics. It can develop different prescribing strategies for each antibiotic.
 
 ### Example 3: Two Antibiotics With Moderate Crossresistance
 
@@ -346,12 +379,12 @@ observation_mode: partial
 include_steps_since_amr_update_in_obs: false
 ```
 
-Run it:
+Run it (from `my_first_project/` directory):
 
 ```bash
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s environment-subconfig=environment/two_abx_crossresistance.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s environment-subconfig=$(pwd)/experiments/configs/environment/two_abx_crossresistance.yaml \
   -p training.run_name=experiment_two_abx_crossresistance
 ```
 
@@ -367,11 +400,16 @@ Create a shell script `run_sweep.sh`:
 
 ```bash
 #!/bin/bash
+# Run from my_first_project/ directory
 
 # Define sweep parameters
 LAMBDAS=(0.0 0.3 0.5 0.7 1.0)
 PATIENT_TYPES=("default" "high_risk")
 SEEDS=(1 2 3)
+
+# Get absolute paths once
+UMBRELLA=$(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml
+CONFIG_DIR=$(pwd)/experiments/configs
 
 for lambda in "${LAMBDAS[@]}"; do
   for patient_type in "${PATIENT_TYPES[@]}"; do
@@ -381,9 +419,9 @@ for lambda in "${LAMBDAS[@]}"; do
       echo "Starting: $run_name"
       
       python -m abx_amr_simulator.training.train \
-        --config configs/umbrella_configs/base_experiment.yaml \
+        --umbrella-config $UMBRELLA \
         -p reward_calculator.lambda_weight=$lambda \
-        -s patient_generator-subconfig=patient_generator/${patient_type}.yaml \
+        -s patient_generator-subconfig=${CONFIG_DIR}/patient_generator/${patient_type}.yaml \
         -p training.seed=$seed \
         -p training.run_name=$run_name
     done
@@ -411,7 +449,7 @@ python -m abx_amr_simulator.analysis.evaluative_plots --experiment-prefix sweep_
 
 ## Customization 4: Modify Patient Populations
 
-By default, patients are **homogeneous** (all have the same attributes). You can introduce heterogeneity in two ways: via distributions or by changing which attributes are visible.
+By default, patients are **homogeneous** (all have the same attributes). You can introduce heterogeneity in the patient population in three ways: via distributions, by changing which attributes are visible, or by using a patient generator mixer (see Example 3 below).
 
 ### Understanding the Default Patient Population
 
@@ -426,7 +464,7 @@ seed: null
 distributions:
   prob_infected:
     type: constant
-    value: 0.3
+    value: 0.8
   benefit_value_multiplier:
     type: constant
     value: 1.0
@@ -446,11 +484,11 @@ distributions:
 
 **Key insight**: This creates a **completely homogeneous population** where:
 - All attributes are **constants** (not random distributions)
-- Every patient has 30% infection probability
+- Every patient has 80% infection probability
 - Every patient has 100% treatment benefit (1.0 multiplier)
 - Only `prob_infected` is visible to the agent
 
-This is the simplest case. All patients are identical, so the agent's prescribing strategy should be uniform.
+This is the simplest case. All patients are identical, so the agent's prescribing strategy should be uniform across patients.
 
 ### Example 1: Gaussian Distributions (Heterogeneous Population)
 
@@ -489,12 +527,12 @@ distributions:
     value: 0.1
 ```
 
-Run it:
+Run it (from `my_first_project/` directory):
 
 ```bash
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s patient_generator-subconfig=patient_generator/heterogeneous.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s patient_generator-subconfig=$(pwd)/experiments/configs/patient_generator/heterogeneous.yaml \
   -p training.run_name=experiment_heterogeneous_patients
 ```
 
@@ -539,7 +577,7 @@ distributions:
     value: 0.1
 ```
 
-This is useful for studying **information asymmetry**: Does the agent struggle without knowing treatment benefit? Compare against the full-visibility experiment to see the impact.
+This is useful for studying **information asymmetry**: Does the agent struggle without knowing the treatment benefit to each patient? Compare against the full-visibility experiment to see the impact.
 
 ### Example 3: Mix Multiple Patient Populations (PatientGeneratorMixer)
 
@@ -556,12 +594,12 @@ components:
     config: patient_generator/high_risk.yaml
 ```
 
-Run it:
+Run it (from `my_first_project/` directory):
 
 ```bash
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s patient_generator-subconfig=patient_generator/mixed_populations.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s patient_generator-subconfig=$(pwd)/experiments/configs/patient_generator/mixed_populations.yaml \
   -p training.run_name=experiment_mixed_populations
 ```
 
@@ -599,7 +637,6 @@ antibiotics_AMR_dict:
     permanent_residual_volume: 0.0
     initial_amr_level: 0.0
 
-action_mode: multidiscrete
 include_steps_since_amr_update_in_obs: false
 ```
 
@@ -622,26 +659,27 @@ per_antibiotic_rewards:
 
 marginal_amr_penalty: -0.05           # Higher penalty per unit AMR
 ```
+**NOTE:** Pretty sure that there is no 'marginal_amr_penalty' in the real reward calculator yaml file.
 
 ### Run with Both Custom Subconfigs
 
 You can customize any subconfig (environment, reward_calculator, patient_generator, agent_algorithm) and mix-and-match them:
 
 ```bash
-python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -o environment_subconfig=environment/custom_small.yaml \
-  -o reward_calculator_subconfig=reward_calculator/conservative.yaml \
-  -o training.run_name=experiment_small_conservative
+# From my_first_project/ directory\npython -m abx_amr_simulator.training.train \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s environment-subconfig=$(pwd)/experiments/configs/environment/custom_small.yaml \
+  -p training.run_name=experiment_small_conservative
 ```
 
 **Note**: You can use shorthand flags: `-p` for `--param-override` and `-s` for `--subconfig-override`:
 
 ```bash
+# From my_first_project/ directory
 python -m abx_amr_simulator.training.train \
-  --config configs/umbrella_configs/base_experiment.yaml \
-  -s environment-subconfig=environment/custom_small.yaml \
-  -s reward_calculator-subconfig=reward_calculator/conservative.yaml \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s environment-subconfig=$(pwd)/experiments/configs/environment/custom_small.yaml \
+  -s reward_calculator-subconfig=$(pwd)/experiments/configs/reward_calculator/conservative.yaml \
   -p training.run_name=experiment_small_conservative
 ```
 
@@ -674,19 +712,16 @@ Double-check the parameter name in the original config file.
 
 ### Config path not found
 
-If you get a "file not found" error when pointing to a subconfig, use the full path:
+**Important**: The `--umbrella-config` flag and `-s` subconfig overrides require **absolute paths**. The recommended pattern is to use `$(pwd)` to build absolute paths:
 
 ```bash
-# Instead of:
-python -m abx_amr_simulator.training.train --config configs/umbrella_configs/base_experiment.yaml \
-  -s environment-subconfig=environment/custom_small.yaml
-
-# Use full absolute path:
-python -m abx_amr_simulator.training.train --config /absolute/path/to/configs/umbrella_configs/base_experiment.yaml \
-  -s environment-subconfig=/absolute/path/to/configs/environment/custom_small.yaml
+# From my_first_project/ directory - CORRECT approach:
+python -m abx_amr_simulator.training.train \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
+  -s environment-subconfig=$(pwd)/experiments/configs/environment/custom_small.yaml
 ```
 
-Or use relative paths from the directory where you're running the command. This is especially useful if you're running training from a different working directory.
+**Why absolute paths?** This ensures the config loader can reliably find files regardless of your current working directory. Using `$(pwd)` dynamically constructs the absolute path.
 
 ### Command-line shorthand
 
@@ -696,16 +731,19 @@ You can use short flags instead of long ones:
 
 Example:
 ```bash
+# From my_project/ directory
 # Instead of:
-python -m abx_amr_simulator.training.train --config base_experiment.yaml \
+python -m abx_amr_simulator.training.train \
+  --config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   --param-override training.run_name=my_run \
-  --subconfig-override environment-subconfig=environment/custom.yaml \
+  --subconfig-override environment-subconfig=$(pwd)/experiments/configs/environment/custom.yaml \
   --param-override reward_calculator.lambda_weight=0.8
 
 # Type:
-python -m abx_amr_simulator.training.train --config base_experiment.yaml \
+python -m abx_amr_simulator.training.train \
+  --umbrella-config $(pwd)/experiments/configs/umbrella_configs/base_experiment.yaml \
   -p training.run_name=my_run \
-  -s environment-subconfig=environment/custom.yaml \
+  -s environment-subconfig=$(pwd)/experiments/configs/environment/custom.yaml \
   -p reward_calculator.lambda_weight=0.8
 ```
 
@@ -716,10 +754,10 @@ python -m abx_amr_simulator.training.train --config base_experiment.yaml \
 ✅ You've customized and experimented with different configurations!
 
 **Next steps**:
-- **Tutorial 3**: Analyze your results with diagnostic and evaluative plots
+- **Tutorial 4**: Optimize hyperparameters with Optuna
 - Compare different configurations and identify optimal settings
 - Run larger parameter sweeps to find Pareto frontiers (clinical benefit vs. AMR)
-- **Tutorial 4**: Use the Python API for programmatic analysis
+- **Tutorial 5**: Use the Streamlit GUI for interactive experiment management
 
 ---
 
