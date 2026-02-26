@@ -1199,17 +1199,25 @@ def main():
     # not based on global trial count
     if args.total_workers > 1:
         # For distributed tuning: each worker runs only their quota
-        # Don't adjust based on n_completed_trials_with_results
-        remaining_trials = worker_quota
-        
+        # When resuming, adjust for already-completed trials to avoid overshoot
         if is_resumed_study:
+            # Calculate how many trials globally are still needed to reach target
+            remaining_globally = max(0, n_trials - n_completed_trials_with_results)
+            # Each worker should only run trials if there are still trials to complete
+            # Distribute remaining work among all workers
+            remaining_per_worker = (remaining_globally + args.total_workers - 1) // args.total_workers
+            remaining_trials = min(worker_quota, remaining_per_worker)
+            
             print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
             print(f"  Completed trials with results: {n_completed_trials_with_results}")
             if n_completed_trials_with_results > 0:
                 print(f"  Best value so far: {study.best_value:.4f}")
             print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
-            print(f"  This worker's quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
+            print(f"  Original worker quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
+            print(f"  Remaining globally: {remaining_globally} trials")
+            print(f"  This worker will run: {remaining_trials} trials")
         else:
+            remaining_trials = worker_quota
             print(f"✓ Starting new study")
             print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
             print(f"  This worker's quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
