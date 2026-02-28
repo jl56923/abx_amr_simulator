@@ -1,28 +1,32 @@
-# Default HRL-PPO hyperparameter tuning configuration.
+# Default HRL RecurrentPPO hyperparameter tuning configuration.
 #
 # This tuning config defines the search space and optimization settings for
-# hierarchical RL agents using PPO at the manager level. Use with tune.py to
-# find optimal hyperparameters for the manager policy.
+# hierarchical RL agents using RecurrentPPO at the manager level. Use with tune.py
+# to find optimal hyperparameters for the manager policy with LSTM memory.
 #
-# Compatible algorithms: HRL_PPO, HRL_RPPO
+# Compatible algorithms: HRL_RPPO
 #
 # Example usage:
 #   python -m abx_amr_simulator.training.tune \
 #     --umbrella-config /path/to/hrl_experiment.yaml \
-#     --tuning-config /path/to/hrl_ppo_tuning_default.yaml \
-#     --run-name hrl_tuning_baseline
+#     --tuning-config /path/to/hrl_rppo_tuning_default.yaml \
+#     --run-name hrl_rppo_tuning_baseline
+#
+# Key differences from HRL-PPO tuning:
+# - LSTM-based manager policy requires more conservative learning rates
+# - Shorter rollout lengths in option-steps (maintains 4:1 feedforward:recurrent ratio)
+# - Dual recurrence challenges: LSTM memory + temporal abstraction from options
+# - Designed for POMDP settings where manager must integrate partial/delayed observations
 #
 # Key differences from standard PPO tuning:
 # - Manager operates in option space (discrete action: select option)
 # - Temporal abstraction changes effective discount factor
-# - Observation space includes front-edge patient features and AMR levels
-# - Learning signal may be sparser (macro-actions take multiple steps)
+# - n_steps measured in OPTION-STEPS, not environment steps
+# - Learning signal may be sparser (macro-actions + LSTM memory requirements)
 #
-# Search space covers manager-specific hyperparameters:
-# - learning_rate: May benefit from lower values (sparser feedback)
-# - n_steps: Effective rollout length in option-steps (not env-steps)
-# - gamma: Discount factor for macro-rewards (aggregated over option duration)
-# - option_gamma: Discount factor within option execution (used by OptionsWrapper)
+# When to use this config:
+# - Any scenario with delayed/noisy AMR observations and HRL recurrent agents
+# - Situations requiring both temporal abstraction and memory
 
 optimization:
   # Number of trials to run (each trial tests one hyperparameter combination)
@@ -34,8 +38,10 @@ optimization:
   n_seeds_per_trial: 3
   
   # Reduced episode count for fast tuning trials
-  # HRL may need slightly longer trials to show meaningful learning
-  truncated_episodes: 75
+  # HRL RecurrentPPO collects fewer option-steps per rollout than HRL PPO
+  # With ~20-step options: 32 option-steps ≈ 640 env-steps per rollout
+  # 50 episodes × 640 steps ≈ 32k env-steps, sufficient for learning signal
+  truncated_episodes: 50
   
   # Optimization objective ('maximize' for reward, 'minimize' for loss)
   direction: maximize
@@ -48,7 +54,8 @@ optimization:
   # λ=0.0: Pure mean optimization (maximize average reward, ignore variance)
   # λ=0.1-0.3: Balanced (prefer consistent learning with slight reward trade-off)
   # λ=0.5+: Conservative (strongly penalize inconsistent seeds)
-  # HRL default slightly higher than PPO (0.3 vs 0.2) to account for option discovery noise
+  # HRL default slightly higher than flat PPO (0.3 vs 0.2) to account for option discovery noise
+  # RecurrentPPO matches this since HRL dynamics dominate over recurrence effects
   stability_penalty_weight: 0.3
   
   # TPE sampler configuration (optional; all values can be auto-inferred)
@@ -70,21 +77,36 @@ optimization:
 
 search_space:
   # Learning rate: Step size for manager policy updates
-  # Log scale recommended; may benefit from conservative values due to sparser signal
+  # Log scale recommended; conservative range for LSTM + temporal abstraction
+  # Range matches recurrent_ppo upper bound (5e-4) but keeps HRL lower bound (5e-6)
   learning_rate:
     type: float
     low: 5.0e-6
     high: 5.0e-4
     log: true
-  
+
   # Rollout length: Number of macro-actions (option selections) per rollout
-  # Note: This is in option-steps, not environment steps
-  # Lower values may be appropriate (fewer macro-decisions per episode)
+  # CRITICAL: n_steps is in OPTION-STEPS, NOT environment steps!
+  #
+  # Scaling rationale (feedforward:recurrent = 4:1):
+  # - HRL PPO: 64-1024 option-steps (baseline)
+  # - HRL RPPO: 32-256 option-steps (1/4 of HRL PPO range)
+  #
+  # Each option executes for ~10-30 steps (typical option library design).
+  # Average option duration across all options: ~20 steps.
+  #
+  # Environment steps collected per update = n_steps_tuning × avg_option_duration
+  # Current tuning range [32, 256] covers:
+  #   - Low:   32 option-steps × 20 ≈ 640 env-steps
+  #   - High: 256 option-steps × 20 ≈ 5,120 env-steps
+  #
+  # This is comparable to recurrent_ppo's [64, 512] env-steps range, maintaining
+  # the 4:1 feedforward:recurrent ratio while accounting for temporal abstraction.
   n_steps:
     type: int
-    low: 64
-    high: 1024
-    step: 64
+    low: 32             # Scaled from HRL PPO baseline by 4:1 ratio
+    high: 256           # Scaled from HRL PPO baseline by 4:1 ratio
+    step: 32            # Matches range granularity
   
   # Manager gamma: Discount factor for macro-rewards (option-level)
   # Typically high (manager makes strategic long-term choices)
@@ -101,35 +123,31 @@ search_space:
     high: 0.99
   
   # Entropy coefficient: Bonus for manager policy entropy (encourages option diversity)
-  # May want higher values to explore different option sequences
+  # Higher values = more exploration across option space
   ent_coef:
     type: categorical
-    choices: [0.0, 0.01, 0.05, 0.1]
+    choices: [0.01, 0.05, 0.1, 0.2, 0.3]
   
   # Clip range: Maximum policy change per update (PPO-specific)
-  # Conservative values appropriate for hierarchical policies
+  # Lower values = more conservative updates
   clip_range:
     type: float
     low: 0.1
     high: 0.3
   
-  # Batch size: Number of macro-action samples per gradient update
-  # Should match manager's effective rollout length
-  batch_size:
-    type: categorical
-    choices: [16, 32, 64, 128]
-  
   # Number of gradient update epochs per rollout
-  # HRL may benefit from more thorough updates (fewer samples per rollout)
+  # Higher values = more thorough learning but risk overfitting
+  # Range extends higher than flat PPO (5-15 vs 3-10) for sparser signals
   n_epochs:
     type: int
     low: 5
     high: 15
     step: 1
   
-  # Option gamma: Discount factor used within option execution by OptionsWrapper
-  # Controls how future rewards within an option are weighted
-  # Typically high (options span multiple steps)
+  # Option gamma: Discount factor used within option execution
+  # Applies to reward accumulation while option is active
+  # Typically high (options execute for multiple steps)
+  # This is passed to OptionsWrapper, not directly to the manager PPO agent
   option_gamma:
     type: float
     low: 0.95

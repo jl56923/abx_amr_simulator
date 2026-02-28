@@ -698,6 +698,109 @@ def save_best_params(
     print(f"✓ Saved tuning config to: {tuning_config_path}")
 
 
+def infer_tpe_config(
+    tuning_config: Dict[str, Any],
+    cli_args: argparse.Namespace,
+    n_trials: int
+) -> Dict[str, Any]:
+    """Intelligently infer TPE sampler configuration for parallel tuning.
+    
+    Implements three-tier precedence:
+    1. CLI arguments (highest priority) - explicit user overrides
+    2. YAML tuning config tpe_config section - per-experiment tuning
+    3. Intelligent defaults - auto-inferred from parallelism level
+    
+    Args:
+        tuning_config: Loaded tuning YAML config dict
+        cli_args: Parsed command-line arguments containing:
+            - num_workers (int or None)
+            - n_startup_trials (int or None)
+            - constant_liar (str: 'auto', 'on', 'off')
+        n_trials: Total number of Optuna trials in this study
+    
+    Returns:
+        Dict with keys:
+            - n_startup_trials (int): Number of random trials before TPE learning
+            - constant_liar (bool): Whether to use constant_liar strategy
+            - num_workers (int): Number of parallel workers (for logging)
+    
+    Logic:
+        1. Determine num_workers from CLI > WORKERS env var > default 1
+        2. Extract TPE config from YAML (tpe_config section) or use None values
+        3. Infer n_startup_trials:
+           - If explicitly set (CLI or YAML): use that value
+           - Otherwise: auto-infer as min(num_workers, max(5, n_trials // 4))
+        4. Decide on constant_liar:
+           - If 'off': false
+           - If 'on': true
+           - If 'auto' (default): enable if parallelism ratio (num_workers / n_trials) > 0.15
+        5. Override with any CLI args that were explicitly provided
+    
+    Parallelism Ratios (for constant_liar decision):
+        - <5%: Very low parallelism, sequential TPE works well
+        - 5-15%: Low parallelism, constant_liar not needed
+        - 15-30% (sweet spot): Moderate parallelism, constant_liar beneficial
+        - >30%: High parallelism, constant_liar strongly recommended
+    """
+    # ========== TIER 1: Determine num_workers ==========
+    # CLI overrides all other sources
+    if cli_args.num_workers is not None:
+        num_workers = cli_args.num_workers
+    else:
+        # Fall back to WORKERS environment variable
+        workers_env = os.environ.get('WORKERS')
+        if workers_env is not None:
+            try:
+                num_workers = int(workers_env)
+            except ValueError:
+                print(f"Warning: WORKERS env var is not integer ('{workers_env}'), using default 1")
+                num_workers = 1
+        else:
+            num_workers = 1
+    
+    # ========== TIER 2: Extract TPE config from YAML ==========
+    optimization_config = tuning_config.get('optimization', {})
+    tpe_config_from_yaml = optimization_config.get('tpe_config', {})
+    
+    yaml_n_startup_trials = tpe_config_from_yaml.get('n_startup_trials', None)
+    yaml_constant_liar = tpe_config_from_yaml.get('constant_liar', 'auto')
+    
+    # ========== TIER 3: Infer intelligent defaults ==========
+    # Auto-infer n_startup_trials if not explicitly set
+    if cli_args.n_startup_trials is not None:
+        # CLI override takes highest priority
+        n_startup_trials = cli_args.n_startup_trials
+    elif yaml_n_startup_trials is not None:
+        # YAML config specifies explicit value
+        n_startup_trials = yaml_n_startup_trials
+    else:
+        # Auto-infer: balance between exploration and exploitation
+        # min(num_workers, max(5, n_trials // 4))
+        # - max(5, ...): Ensure at least 5 random trials for diversity
+        # - n_trials // 4: Use 25% of trials for exploration
+        # - min(num_workers, ...): Don't let startup exceed worker count
+        n_startup_trials = min(num_workers, max(5, n_trials // 4))
+    
+    # Decide on constant_liar strategy
+    if cli_args.constant_liar != 'auto':
+        # CLI override ('on' or 'off')
+        use_constant_liar = cli_args.constant_liar == 'on'
+    elif yaml_constant_liar == 'auto':
+        # Auto-infer based on parallelism ratio
+        parallelism_ratio = num_workers / n_trials if n_trials > 0 else 0
+        # Enable if > 15% parallelism (workers approaching trial count)
+        use_constant_liar = parallelism_ratio > 0.15
+    else:
+        # YAML specifies explicit value ('on' or 'off')
+        use_constant_liar = yaml_constant_liar == 'on'
+    
+    return {
+        'n_startup_trials': n_startup_trials,
+        'constant_liar': use_constant_liar,
+        'num_workers': num_workers,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description='Tune RL agent hyperparameters using Optuna')
     parser.add_argument(
@@ -788,6 +891,25 @@ def main():
         type=int,
         default=1,
         help='Total number of parallel workers. Used to allocate trials per worker (each gets n_trials // total_workers trials).'
+    )
+    parser.add_argument(
+        '--num-workers',
+        type=int,
+        default=None,
+        help='Number of parallel workers running this study. Used to intelligently configure TPE sampler. If not provided, reads from WORKERS environment variable and falls back to 1.'
+    )
+    parser.add_argument(
+        '--n-startup-trials',
+        type=int,
+        default=None,
+        help='Number of random trials before TPE begins learning. Overrides value from tuning config YAML. Default: auto-inferred from n_trials and num_workers.'
+    )
+    parser.add_argument(
+        '--constant-liar',
+        type=str,
+        choices=['auto', 'on', 'off'],
+        default='auto',
+        help='Whether to use constant_liar strategy for TPE sampler in parallel settings. auto=enable if parallelism > 15%%, on=always enable, off=always disable. Overrides value from tuning config YAML.'
     )
     
     args = parser.parse_args()
@@ -1068,14 +1190,44 @@ def main():
     
     # Create Optuna sampler
     if sampler_name == 'TPE':
-        sampler = optuna.samplers.TPESampler()
+        # Intelligently configure TPE for parallel execution
+        tpe_config = infer_tpe_config(
+            tuning_config=tuning_config,
+            cli_args=args,
+            n_trials=n_trials
+        )
+        
+        # Log TPE configuration decisions
+        print(f"\n{'='*70}")
+        print(f"TPE Sampler Configuration (n_trials={n_trials}):")
+        print(f"{'='*70}")
+        print(f"  Parallel workers:          {tpe_config['num_workers']}")
+        print(f"  Parallelism ratio:         {tpe_config['num_workers'] / n_trials:.1%}")
+        print(f"  Random startup trials:     {tpe_config['n_startup_trials']}")
+        print(f"  Constant-liar strategy:    {'on' if tpe_config['constant_liar'] else 'off'}")
+        print(f"{'='*70}\n")
+        
+        # Create TPESampler with inferred configuration
+        sampler = optuna.samplers.TPESampler(
+            n_startup_trials=tpe_config['n_startup_trials'],
+            constant_liar=tpe_config['constant_liar']
+        )
     elif sampler_name == 'Random':
         sampler = optuna.samplers.RandomSampler()
     elif sampler_name == 'CMAES':
         sampler = optuna.samplers.CmaEsSampler()
     else:
         print(f"Warning: Unknown sampler '{sampler_name}', using TPE")
-        sampler = optuna.samplers.TPESampler()
+        # Intelligently configure TPE for parallel execution
+        tpe_config = infer_tpe_config(
+            tuning_config=tuning_config,
+            cli_args=args,
+            n_trials=n_trials
+        )
+        sampler = optuna.samplers.TPESampler(
+            n_startup_trials=tpe_config['n_startup_trials'],
+            constant_liar=tpe_config['constant_liar']
+        )
     
     # Determine results directory for training trials
     trial_results_dir_to_cleanup = None
@@ -1199,17 +1351,25 @@ def main():
     # not based on global trial count
     if args.total_workers > 1:
         # For distributed tuning: each worker runs only their quota
-        # Don't adjust based on n_completed_trials_with_results
-        remaining_trials = worker_quota
-        
+        # When resuming, adjust for already-completed trials to avoid overshoot
         if is_resumed_study:
+            # Calculate how many trials globally are still needed to reach target
+            remaining_globally = max(0, n_trials - n_completed_trials_with_results)
+            # Each worker should only run trials if there are still trials to complete
+            # Distribute remaining work among all workers
+            remaining_per_worker = (remaining_globally + args.total_workers - 1) // args.total_workers
+            remaining_trials = min(worker_quota, remaining_per_worker)
+            
             print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
             print(f"  Completed trials with results: {n_completed_trials_with_results}")
             if n_completed_trials_with_results > 0:
                 print(f"  Best value so far: {study.best_value:.4f}")
             print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
-            print(f"  This worker's quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
+            print(f"  Original worker quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
+            print(f"  Remaining globally: {remaining_globally} trials")
+            print(f"  This worker will run: {remaining_trials} trials")
         else:
+            remaining_trials = worker_quota
             print(f"✓ Starting new study")
             print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
             print(f"  This worker's quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")

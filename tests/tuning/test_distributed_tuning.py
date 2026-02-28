@@ -224,6 +224,241 @@ class TestArgumentValidation:
             assert worker_id < total_workers
 
 
+class TestDistributedTuningResumption:
+    """
+    Test distributed tuning resumption logic.
+    
+    When resuming a study that was interrupted:
+    1. Calculate remaining work globally: remaining_globally = n_trials - n_completed_trials
+    2. Distribute remaining work among workers: remaining_per_worker = ceil(remaining_globally / total_workers)
+    3. Each worker runs: min(worker_quota, remaining_per_worker)
+    
+    This prevents overshoot when restarting interrupted multi-worker studies.
+    """
+    
+    def calculate_remaining_trials_for_worker(self, n_trials, total_workers, worker_id, 
+                                            n_completed_trials_with_results):
+        """
+        Replicate the resumption logic from the fixed tune.py.
+        
+        Args:
+            n_trials: Total target number of trials
+            total_workers: Number of parallel workers
+            worker_id: 0-indexed worker ID
+            n_completed_trials_with_results: Number of trials already completed
+        
+        Returns:
+            Number of trials this worker should run on resumption
+        """
+        trials_per_worker = (n_trials + total_workers - 1) // total_workers
+        worker_trial_start = worker_id * trials_per_worker
+        worker_trial_end = min((worker_id + 1) * trials_per_worker, n_trials)
+        worker_quota = worker_trial_end - worker_trial_start
+        
+        # Resumption logic (from fixed tune.py)
+        remaining_globally = max(0, n_trials - n_completed_trials_with_results)
+        remaining_per_worker = (remaining_globally + total_workers - 1) // total_workers
+        remaining_trials = min(worker_quota, remaining_per_worker)
+        
+        return remaining_trials
+    
+    def test_fresh_study_all_workers_fully_active(self):
+        """
+        Fresh study (n_completed=0): all workers should run their full quotas.
+        """
+        n_trials = 48
+        total_workers = 6
+        n_completed = 0
+        
+        total_remaining = 0
+        for worker_id in range(total_workers):
+            remaining = self.calculate_remaining_trials_for_worker(
+                n_trials, total_workers, worker_id, n_completed
+            )
+            total_remaining += remaining
+        
+        # Should equal n_trials (no overshoot on fresh study)
+        assert total_remaining == n_trials
+    
+    def test_partially_completed_study_resumption(self):
+        """
+        Study 25% complete (12 out of 48 trials done):
+        Remaining 36 trials should be distributed among 6 workers.
+        Each worker should run ceil(36/6) = 6 more trials.
+        """
+        n_trials = 48
+        total_workers = 6
+        n_completed = 12
+        
+        total_remaining = 0
+        for worker_id in range(total_workers):
+            remaining = self.calculate_remaining_trials_for_worker(
+                n_trials, total_workers, worker_id, n_completed
+            )
+            total_remaining += remaining
+            # Each worker should run 6 trials (ceil(36/6) = 6)
+            assert remaining == 6, f"Worker {worker_id} should run 6 trials, got {remaining}"
+        
+        # Total should be 36 remaining, NOT 48
+        assert total_remaining == 36
+        assert total_remaining == n_trials - n_completed
+    
+    def test_almost_complete_study_resumption(self):
+        """
+        Study 97.9% complete (47 out of 48 trials done):
+        Remaining 1 trial: ceil(1/6) = 1, so each worker gets up to 1 trial.
+        In practice, only the first worker will actually pull and complete it,
+        but the algorithm allocates 1 to each.
+        """
+        n_trials = 48
+        total_workers = 6
+        n_completed = 47
+        
+        total_remaining = 0
+        remaining_by_worker = []
+        for worker_id in range(total_workers):
+            remaining = self.calculate_remaining_trials_for_worker(
+                n_trials, total_workers, worker_id, n_completed
+            )
+            remaining_by_worker.append(remaining)
+            total_remaining += remaining
+        
+        # remaining_per_worker = ceil(1/6) = 1
+        # Each worker's quota allows at least 1 trial (8 trials per worker)
+        # So each worker gets min(8, 1) = 1
+        # Total = 6 (but in practice only 1 will be pulled from shared study)
+        assert total_remaining == 6
+        for worker_id in range(total_workers):
+            assert remaining_by_worker[worker_id] == 1
+    
+    def test_fully_complete_study_resumption(self):
+        """
+        Study 100% complete (48 out of 48 trials done):
+        All workers should run 0 additional trials.
+        """
+        n_trials = 48
+        total_workers = 6
+        n_completed = 48
+        
+        total_remaining = 0
+        for worker_id in range(total_workers):
+            remaining = self.calculate_remaining_trials_for_worker(
+                n_trials, total_workers, worker_id, n_completed
+            )
+            total_remaining += remaining
+            assert remaining == 0
+        
+        assert total_remaining == 0
+    
+    def test_prevents_original_overshoot_bug(self):
+        """
+        Verify the fix prevents the original bug where resuming would
+        cause all workers to run their full quotas again.
+        
+        Original bug: 6 workers × 8 trials = 48 trials (CORRECT)
+        But if 30/48 completed and we restart:
+          - Bug: 6 workers still try to run 8 each = 30 + 48 = 78 total
+          - Fix: Each worker runs only ceil(18/6) = 3 more = 30 + 18 = 48 total
+        """
+        n_trials = 48
+        total_workers = 6
+        n_completed = 30  # 62.5% complete
+        
+        # Original quota per worker (without resumption logic)
+        trials_per_worker = (n_trials + total_workers - 1) // total_workers  # 8
+        
+        # With bug: all workers would run their full quota
+        buggy_total = n_trials  # 6 workers × 8 = 48
+        # But globally: n_completed (30) + 48 new = 78 WRONG
+        
+        # With fix: workers only run remaining work
+        total_with_fix = 0
+        for worker_id in range(total_workers):
+            remaining = self.calculate_remaining_trials_for_worker(
+                n_trials, total_workers, worker_id, n_completed
+            )
+            total_with_fix += remaining
+        
+        # Fixed version should run only 18 more = 30 + 18 = 48 CORRECT
+        assert total_with_fix == 18
+        assert n_completed + total_with_fix == n_trials
+    
+    def test_uneven_worker_quotas_on_resumption(self):
+        """
+        With 50 trials and 6 workers (uneven split):
+        - Worker quotas: [9, 9, 8, 8, 8, 8]
+        - If 20 completed, remaining 30 distributed as [5, 5, 5, 5, 5, 5]
+        - Each worker should run min(quota, 5)
+        """
+        n_trials = 50
+        total_workers = 6
+        n_completed = 20
+        
+        remaining_globally = n_trials - n_completed  # 30
+        
+        total_remaining = 0
+        for worker_id in range(total_workers):
+            # Get worker's original quota
+            trials_per_worker = (n_trials + total_workers - 1) // total_workers  # 9
+            worker_trial_start = worker_id * trials_per_worker
+            worker_trial_end = min((worker_id + 1) * trials_per_worker, n_trials)
+            worker_quota = worker_trial_end - worker_trial_start
+            
+            # Calculate remaining for this worker
+            remaining = self.calculate_remaining_trials_for_worker(
+                n_trials, total_workers, worker_id, n_completed
+            )
+            total_remaining += remaining
+            
+            # Each worker should get ceil(30/6) = 5, capped by their quota
+            expected = min(worker_quota, 5)
+            assert remaining == expected, \
+                f"Worker {worker_id}: quota={worker_quota}, expected {expected}, got {remaining}"
+        
+        assert total_remaining == remaining_globally
+    
+    def test_multiple_resumptions_idempotent(self):
+        """
+        Resuming multiple times should give same result.
+        
+        Scenario: Stop/resume at 12, 24, 36 completed.
+        Each time, calculate what workers should run.
+        """
+        n_trials = 48
+        total_workers = 6
+        checkpoints = [12, 24, 36, 48]
+        
+        for i, n_completed in enumerate(checkpoints):
+            total_remaining = 0
+            for worker_id in range(total_workers):
+                remaining = self.calculate_remaining_trials_for_worker(
+                    n_trials, total_workers, worker_id, n_completed
+                )
+                total_remaining += remaining
+            
+            # At each checkpoint, the fix should correctly calculate remaining
+            expected_remaining = max(0, n_trials - n_completed)
+            assert total_remaining == expected_remaining, \
+                f"Checkpoint {i} (completed={n_completed}): expected {expected_remaining}, got {total_remaining}"
+    
+    def test_single_worker_resumption(self):
+        """
+        Single worker mode shouldn't trigger distributed logic,
+        but test it anyway for completeness.
+        """
+        n_trials = 48
+        total_workers = 1
+        n_completed = 24
+        
+        remaining = self.calculate_remaining_trials_for_worker(
+            n_trials, total_workers, 0, n_completed
+        )
+        
+        # Should run 24 more trials
+        assert remaining == 24
+        assert remaining == n_trials - n_completed
+
+
 class TestWorkerQuotaAtScale:
     """Test quota calculation at realistic scales."""
     

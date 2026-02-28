@@ -1,23 +1,26 @@
-# Default PPO hyperparameter tuning configuration.
+# Default RecurrentPPO hyperparameter tuning configuration.
 #
 # This tuning config defines the search space and optimization settings for
-# standard PPO agents (non-HRL). Use with tune.py to find optimal hyperparameters.
+# RecurrentPPO agents (LSTM-based policy for POMDP environments). Use with tune.py
+# to find optimal hyperparameters for recurrent architectures.
 #
-# Compatible algorithms: PPO, A2C
+# Compatible algorithms: RecurrentPPO
 #
 # Example usage:
 #   python -m abx_amr_simulator.training.tune \
 #     --umbrella-config /path/to/base_experiment.yaml \
-#     --tuning-config /path/to/ppo_tuning_default.yaml \
-#     --run-name ppo_tuning_baseline
+#     --tuning-config /path/to/recurrent_ppo_tuning_default.yaml \
+#     --run-name rppo_tuning_baseline
 #
-# Search space covers the most impactful PPO hyperparameters:
-# - learning_rate: Controls policy update step size
-# - n_steps: Rollout length (affects sample efficiency vs variance)
-# - gamma: Discount factor (affects long-term vs short-term rewards)
-# - gae_lambda: Generalized Advantage Estimation parameter
-# - ent_coef: Entropy coefficient (encourages exploration)
-# - clip_range: PPO clipping parameter (limits policy change per update)
+# Key differences from standard PPO tuning:
+# - LSTM-based policy requires more conservative learning rates for training stability
+# - Shorter rollout lengths (n_steps) for effective LSTM memory management
+# - Maintains 4:1 ratio vs feedforward PPO (recurrent uses ~1/4 rollout length)
+# - Designed for POMDP settings: delayed observations, noisy AMR, partial visibility
+#
+# When to use this config:
+# - Any scenario with delayed/noisy AMR observations and recurrent agents
+# - Partial observability or history-dependent decision-making
 
 optimization:
   # Number of trials to run (each trial tests one hyperparameter combination)
@@ -29,7 +32,8 @@ optimization:
   n_seeds_per_trial: 3
   
   # Reduced episode count for fast tuning trials
-  # Should be long enough to show learning signal but shorter than full training
+  # RecurrentPPO collects ~512 env-steps per rollout (vs 2,048 for flat PPO)
+  # 50 episodes × 512 steps ≈ 25k env-steps, sufficient for learning signal
   truncated_episodes: 50
   
   # Optimization objective ('maximize' for reward, 'minimize' for loss)
@@ -43,7 +47,7 @@ optimization:
   # λ=0.0: Pure mean optimization (maximize average reward, ignore variance)
   # λ=0.1-0.3: Balanced (prefer consistent learning with slight reward trade-off)
   # λ=0.5+: Conservative (strongly penalize inconsistent seeds)
-  # Recommended starting value: 0.2 (moderate penalty for learning fragility)
+  # RecurrentPPO uses same penalty as flat PPO (0.2) since both are flat architectures
   stability_penalty_weight: 0.2
   
   # TPE sampler configuration (optional; all values can be auto-inferred)
@@ -65,20 +69,30 @@ optimization:
 
 search_space:
   # Learning rate: Step size for policy updates
-  # Log scale recommended (orders of magnitude matter more than linear differences)
+  # Log scale recommended; recurrent networks benefit from more conservative rates
+  # Upper bound reduced from 1e-3 to 5e-4 for LSTM training stability
   learning_rate:
     type: float
     low: 1.0e-5
-    high: 1.0e-3
+    high: 5.0e-4
     log: true
   
-  # Rollout length: Number of steps per rollout buffer collection
-  # Trades off sample efficiency (low) vs variance reduction (high)
+  # Rollout length: Number of environment steps per rollout buffer collection
+  # CRITICAL: RecurrentPPO requires shorter sequences for effective LSTM memory
+  #
+  # Scaling rationale (feedforward:recurrent = 4:1):
+  # - Flat PPO: 128-2048 steps (baseline)
+  # - RecurrentPPO: 64-512 steps (1/4 of flat PPO range)
+  #
+  # This maintains:
+  # - Comparable sample efficiency across architectures
+  # - Manageable sequence length for LSTM training
+  # - Consistent training dynamics (update frequency, gradient flow)
   n_steps:
     type: int
-    low: 128
-    high: 2048
-    step: 128
+    low: 64
+    high: 512
+    step: 64
   
   # Discount factor: Weight on future rewards (0=myopic, 1=far-sighted)
   # Close to 1.0 for long-term planning tasks
@@ -98,7 +112,7 @@ search_space:
   # Higher values = more exploration; 0.0 = no exploration bonus
   ent_coef:
     type: categorical
-    choices: [0.0, 0.001, 0.01, 0.1]
+    choices: [0.01, 0.05, 0.1, 0.2, 0.3]
   
   # Clip range: Maximum policy change per update (PPO-specific)
   # Lower values = more conservative updates
@@ -106,12 +120,6 @@ search_space:
     type: float
     low: 0.1
     high: 0.3
-  
-  # Batch size: Number of samples per gradient update
-  # Must divide n_steps evenly for efficiency
-  batch_size:
-    type: categorical
-    choices: [32, 64, 128, 256]
   
   # Number of gradient update epochs per rollout
   # Higher values = more thorough learning but risk overfitting
