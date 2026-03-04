@@ -937,17 +937,10 @@ class PatientGeneratorMixer(PatientGenerator):
         if rng is None:
             rng = self.rng
         
-        # Calculate number of patients to sample from each generator
-        # Use proportions to allocate, ensuring total equals n_patients
-        n_per_generator = (self.proportions * n_patients).astype(int)
-        
-        # Handle rounding: add remaining patients to generators with largest fractional parts
-        remaining = n_patients - n_per_generator.sum()
-        if remaining > 0:
-            fractional_parts = (self.proportions * n_patients) - n_per_generator
-            # Add one patient to generators with largest fractional parts
-            indices_to_increment = np.argsort(fractional_parts)[-remaining:]
-            n_per_generator[indices_to_increment] += 1
+        # Draw per-generator cohort sizes stochastically from a multinomial.
+        # This preserves expected long-run proportions while allowing realistic
+        # per-timestep variation in composition.
+        n_per_generator = rng.multinomial(n=n_patients, pvals=self.proportions)
         
         # Sample from each generator
         mixed_patients = []

@@ -112,7 +112,7 @@ def main() -> None:
         pg_port=pg_port,
         pg_data_dir=pg_data_dir,
         pg_username=pg_username,
-        expected_major_version=expected_major_version
+        expected_major_version=None
     )
     postgres_utils.ensure_database_exists(
         pg_port=pg_port,
