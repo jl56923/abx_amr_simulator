@@ -1200,8 +1200,8 @@ def plot_metrics_trained_agent(model, env, experiment_folder, deterministic=True
     plt.title('Antibiotic Prescriptions Over Time')
     plt.legend()
     plt.grid(True)
-    plt.ylim(-0.05, overall_max_count)
-    
+    max_prescriptions = max([max(count_of_abx_prescriptions_over_time[abx_name]) for abx_name in antibiotic_names]) + 1
+    plt.ylim(-0.05, max_prescriptions)
     plt.tight_layout()
     plt.savefig(os.path.join(experiment_figures_folder, "abx_prescriptions_over_time.png"))
     plt.close()
@@ -1598,10 +1598,10 @@ def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_fol
     plt.title('Antibiotic Prescriptions Over Time')
     plt.legend()
     plt.grid(True)
-    plt.ylim(-0.05, overall_max_count)
+    max_prescriptions = max([max(count_of_abx_prescriptions_over_time[abx_name]) for abx_name in antibiotic_names]) + 1
+    plt.ylim(-0.05, max_prescriptions)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(experiment_figures_folder, "abx_prescriptions_over_time.png"))
     plt.close()
     
     # Individual antibiotic figures:
@@ -2199,12 +2199,12 @@ def plot_metrics_ensemble_agents(
     plt.grid(True)
     plt.ylim(-0.05, overall_max_count)
     plt.legend()
-    
     plt.tight_layout()
     plt.savefig(os.path.join(experiment_figures_folder, "outcome_counts_over_time.png"))
     plt.close()
     
     # Figure 5: Antibiotic prescriptions
+    max_prescriptions = max([aggregated['count_prescriptions'][abx_name]['p90'].max() for abx_name in antibiotic_names]) + 1
     plt.figure(figsize=(10, 5))
     for abx_name in antibiotic_names:
         plot_with_bands(plt.gca(), aggregated['count_prescriptions'][abx_name], 
@@ -2214,7 +2214,7 @@ def plot_metrics_ensemble_agents(
     plt.title('Antibiotic Prescriptions Over Time (Mean ± 10-90%)')
     plt.legend()
     plt.grid(True)
-    plt.ylim(-0.05, overall_max_count)
+    plt.ylim(-0.05, max_prescriptions)
     plt.tight_layout()
     plt.savefig(os.path.join(experiment_figures_folder, "abx_prescriptions_over_time.png"))
     plt.close()
