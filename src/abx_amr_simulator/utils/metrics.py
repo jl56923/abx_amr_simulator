@@ -1867,43 +1867,55 @@ def plot_metrics_ensemble_agents(
         per_seed_data.append(seed_trajectories_data)
     
     print("Data collection complete!")
-    
-    # ====== PHASE 2: Aggregation ======
+
+    plot_metrics_from_collected_trajectories_ensemble(
+        all_trajectories_data=all_trajectories_data,
+        antibiotic_names=antibiotic_names,
+        experiment_figures_folder=experiment_figures_folder,
+        per_seed_data=per_seed_data,
+        per_seed_figures=per_seed_figures,
+    )
+    return
+
+
+def plot_metrics_from_collected_trajectories_ensemble(
+    all_trajectories_data,
+    antibiotic_names,
+    experiment_figures_folder,
+    per_seed_data=None,
+    per_seed_figures=True,
+):
+    """Generate ensemble plots + JSON summaries from pre-collected trajectory data.
+
+    This function is the reusable visualization primitive for any path that already
+    has trajectory metrics extracted (e.g., RL ensemble runs or fixed-rule rollouts).
+
+    Args:
+        all_trajectories_data: Dictionary of trajectory lists keyed by metric name.
+        antibiotic_names: Ordered list of antibiotic names.
+        experiment_figures_folder: Output directory for PNG and JSON artifacts.
+        per_seed_data: Optional list of per-seed trajectory dictionaries.
+        per_seed_figures: Whether to emit per-seed summary figures when available.
+    """
+    if not os.path.exists(experiment_figures_folder):
+        os.makedirs(experiment_figures_folder)
+
     print("Aggregating trajectories...")
-    
+
     def aggregate_trajectories(trajectories_list, apply_cumsum=False):
-        """
-        Aggregate list of trajectories into mean, percentiles, and IQM.
-        
-        Handles variable-length trajectories by padding shorter ones to the maximum length
-        using their final value (maintains continuity for cumulative metrics and AMR levels).
-        
-        Parameters:
-        -----------
-        trajectories_list : list of lists
-            Each element is a trajectory (list of values over timesteps)
-        apply_cumsum : bool
-            Whether to apply cumulative sum before aggregation
-        
-        Returns:
-        --------
-        dict with keys: mean, median, p10, p90, p25, p75, iqm, timesteps
-        """
         if len(trajectories_list) == 0:
             raise ValueError("trajectories_list is empty")
-        
-        # Check for consistent trajectory lengths (STRICT ENFORCEMENT)
+
         trajectory_lengths = [len(traj) for traj in trajectories_list]
         unique_lengths = set(trajectory_lengths)
-        
+
         if len(unique_lengths) > 1:
-            # MISMATCHED LENGTHS - FAIL LOUDLY
             min_len = min(trajectory_lengths)
             max_len = max(trajectory_lengths)
             length_distribution = {}
             for length in trajectory_lengths:
                 length_distribution[length] = length_distribution.get(length, 0) + 1
-            
+
             error_msg = (
                 f"\n{'='*80}\n"
                 f"ERROR: Trajectory length mismatch detected!\n"
@@ -1928,31 +1940,25 @@ def plot_metrics_ensemble_agents(
                 f"{'='*80}"
             )
             raise ValueError(error_msg)
-        
-        # All trajectories have consistent length - proceed normally
+
         arr = np.array(trajectories_list)
-        
         if apply_cumsum:
             arr = np.cumsum(arr, axis=1)
-        
-        # Compute statistics across trajectories (axis=0)
+
         mean = np.mean(arr, axis=0)
-        median = np.percentile(arr, 50, axis=0)  # 50th percentile
+        median = np.percentile(arr, 50, axis=0)
         p10 = np.percentile(arr, 10, axis=0)
         p90 = np.percentile(arr, 90, axis=0)
-        
-        # Interquartile mean (IQM): mean of values between 25th and 75th percentile
         p25 = np.percentile(arr, 25, axis=0)
         p75 = np.percentile(arr, 75, axis=0)
-        # For each timestep, filter values within IQR and compute mean
+
         iqm = np.zeros(arr.shape[1])
         for t in range(arr.shape[1]):
             values_t = arr[:, t]
             mask = (values_t >= p25[t]) & (values_t <= p75[t])
             iqm[t] = np.mean(values_t[mask]) if mask.sum() > 0 else mean[t]
-        
+
         timesteps = np.arange(len(median))
-        
         return {
             'mean': mean,
             'median': median,
@@ -1963,11 +1969,8 @@ def plot_metrics_ensemble_agents(
             'iqm': iqm,
             'timesteps': timesteps,
         }
-    
-    # Aggregate all metrics
+
     aggregated = {}
-    
-    # AMR levels (no cumsum)
     aggregated['actual_AMR_levels'] = {}
     aggregated['visible_AMR_levels'] = {}
     for abx_name in antibiotic_names:
@@ -1977,18 +1980,15 @@ def plot_metrics_ensemble_agents(
         aggregated['visible_AMR_levels'][abx_name] = aggregate_trajectories(
             all_trajectories_data['visible_AMR_levels'][abx_name], apply_cumsum=False
         )
-    
-    # Rewards (apply cumsum)
+
     for key in ['total_reward', 'individual_reward', 'normalized_individual_reward',
                 'community_reward', 'normalized_community_reward']:
         aggregated[key] = aggregate_trajectories(all_trajectories_data[key], apply_cumsum=True)
-    
-    # Outcome counts (apply cumsum)
+
     for key in ['count_clinical_benefits', 'count_clinical_failures', 'count_adverse_events',
                 'not_infected_no_treatment', 'not_infected_treated', 'infected_no_treatment']:
         aggregated[key] = aggregate_trajectories(all_trajectories_data[key], apply_cumsum=True)
-    
-    # Per-antibiotic counts (apply cumsum)
+
     aggregated['infected_treated_sensitive'] = {}
     aggregated['infected_treated_resistant'] = {}
     aggregated['count_prescriptions'] = {}
@@ -2002,8 +2002,7 @@ def plot_metrics_ensemble_agents(
         aggregated['count_prescriptions'][abx_name] = aggregate_trajectories(
             all_trajectories_data['count_prescriptions'][abx_name], apply_cumsum=True
         )
-    
-    # Compute infected treated overall (sum across antibiotics)
+
     infected_treated_overall_trajs = []
     for traj_idx in range(len(all_trajectories_data['infected_treated_sensitive'][antibiotic_names[0]])):
         traj_sum = np.zeros(len(all_trajectories_data['infected_treated_sensitive'][antibiotic_names[0]][traj_idx]))
@@ -2012,69 +2011,49 @@ def plot_metrics_ensemble_agents(
             traj_sum += np.array(all_trajectories_data['infected_treated_resistant'][abx_name][traj_idx])
         infected_treated_overall_trajs.append(traj_sum.tolist())
     aggregated['infected_treated_overall'] = aggregate_trajectories(infected_treated_overall_trajs, apply_cumsum=True)
-    
+
     print("Aggregation complete!")
-    
-    # ====== PHASE 3: Plotting ======
     print("Generating ensemble plots...")
-    
+
     def plot_with_bands(ax, data_dict, label, color, linestyle='-', linewidth=1.5):
-        """Helper function to plot median with percentile bands (p10-p90) and IQR bounds (p25-p75).
-        
-        Uses median (50th percentile) instead of mean because:
-        - Median is guaranteed to be between p25-p75 by definition
-        - More robust to outlier trajectories
-        - More intuitive: "50% of seeds achieved at least this value by this timestep"
-        """
         timesteps = data_dict['timesteps']
         median = data_dict['median']
         p10 = data_dict['p10']
         p90 = data_dict['p90']
         p25 = data_dict['p25']
         p75 = data_dict['p75']
-        
-        # Plot median line and capture its color (important when color=None for auto-coloring)
+
         line = ax.plot(timesteps, median, label=label, color=color, linestyle=linestyle, linewidth=linewidth)
         line_color = line[0].get_color()
-        
-        # Use the same color for shading and IQR bounds
         ax.fill_between(timesteps, p10, p90, color=line_color, alpha=0.2)
-        
-        # Plot p25 and p75 with different line styles for better distinction
-        # Use dotted for one and dashed for the other
         ax.plot(timesteps, p25, color=line_color, linestyle=':', linewidth=1.5, alpha=0.7, label=f'{label} (IQR: p25-p75)')
         ax.plot(timesteps, p75, color=line_color, linestyle='--', linewidth=1.0, alpha=0.7)
-    
-    # Figure 1: AMR levels over time
+
     plt.figure(figsize=(14, 6))
-    
     plt.subplot(1, 2, 1)
     for abx_name in antibiotic_names:
-        plot_with_bands(plt.gca(), aggregated['actual_AMR_levels'][abx_name], 
-                       f"{abx_name} Actual AMR", color=None)
+        plot_with_bands(plt.gca(), aggregated['actual_AMR_levels'][abx_name], f"{abx_name} Actual AMR", color=None)
     plt.xlabel('Timestep')
     plt.ylabel('Actual AMR Level')
     plt.title('Actual AMR Levels Over Time (Median ± 10-90%)')
     plt.grid(True)
     plt.ylim(-0.05, 1.05)
     plt.legend()
-    
+
     plt.subplot(1, 2, 2)
     for abx_name in antibiotic_names:
-        plot_with_bands(plt.gca(), aggregated['visible_AMR_levels'][abx_name],
-                       f"{abx_name} Visible AMR", color=None)
+        plot_with_bands(plt.gca(), aggregated['visible_AMR_levels'][abx_name], f"{abx_name} Visible AMR", color=None)
     plt.xlabel('Timestep')
     plt.ylabel('Visible AMR Level')
     plt.title('Visible AMR Levels Over Time (Median ± 10-90%)')
     plt.grid(True)
     plt.ylim(-0.05, 1.05)
     plt.legend()
-    
+
     plt.tight_layout()
     plt.savefig(os.path.join(experiment_figures_folder, "amr_levels_over_time.png"))
     plt.close()
-    
-    # Figure 2: Reward components
+
     ylim_min = min(
         aggregated['individual_reward']['p10'].min(),
         aggregated['normalized_individual_reward']['p10'].min(),
@@ -2089,9 +2068,8 @@ def plot_metrics_ensemble_agents(
         aggregated['normalized_community_reward']['p90'].max(),
         aggregated['total_reward']['p90'].max(),
     ) + 0.5
-    
+
     plt.figure(figsize=(18, 5))
-    
     plt.subplot(1, 3, 1)
     plot_with_bands(plt.gca(), aggregated['individual_reward'], 'Individual Reward', 'blue')
     plot_with_bands(plt.gca(), aggregated['community_reward'], 'Community Reward', 'orange')
@@ -2101,7 +2079,7 @@ def plot_metrics_ensemble_agents(
     plt.ylim(ylim_min, ylim_max)
     plt.legend()
     plt.grid(True)
-    
+
     plt.subplot(1, 3, 2)
     plot_with_bands(plt.gca(), aggregated['normalized_individual_reward'], 'Normalized Individual', 'blue')
     plot_with_bands(plt.gca(), aggregated['normalized_community_reward'], 'Normalized Community', 'orange')
@@ -2111,7 +2089,7 @@ def plot_metrics_ensemble_agents(
     plt.ylim(ylim_min, ylim_max)
     plt.grid(True)
     plt.legend()
-    
+
     plt.subplot(1, 3, 3)
     plot_with_bands(plt.gca(), aggregated['total_reward'], 'Total Reward', 'purple')
     plt.xlabel('Timestep')
@@ -2120,12 +2098,11 @@ def plot_metrics_ensemble_agents(
     plt.grid(True)
     plt.legend()
     plt.ylim(ylim_min, ylim_max)
-    
+
     plt.tight_layout()
     plt.savefig(os.path.join(experiment_figures_folder, "reward_components_over_time.png"))
     plt.close()
-    
-    # Figure 3: Clinical outcomes
+
     plt.figure(figsize=(10, 5))
     plot_with_bands(plt.gca(), aggregated['count_clinical_benefits'], 'Clinical Benefits', 'green')
     plot_with_bands(plt.gca(), aggregated['count_clinical_failures'], 'Clinical Failures', 'red')
@@ -2144,17 +2121,15 @@ def plot_metrics_ensemble_agents(
     plt.tight_layout()
     plt.savefig(os.path.join(experiment_figures_folder, "clinical_benefits_failures_adverse_events_over_time.png"))
     plt.close()
-    
-    # Figure 4: Outcome counts (4 subplots)
+
     overall_max_count = max(
         aggregated['not_infected_no_treatment']['p90'].max(),
         aggregated['not_infected_treated']['p90'].max(),
         aggregated['infected_no_treatment']['p90'].max(),
         aggregated['infected_treated_overall']['p90'].max(),
     ) + 1
-    
+
     plt.figure(figsize=(18, 12))
-    
     plt.subplot(2, 2, 1)
     plot_with_bands(plt.gca(), aggregated['not_infected_no_treatment'], 'Not Infected No Treatment', 'blue')
     plt.xlabel('Timestep')
@@ -2163,7 +2138,7 @@ def plot_metrics_ensemble_agents(
     plt.title('Not Infected No Treatment (Mean ± 10-90%)')
     plt.ylim(-0.05, overall_max_count)
     plt.legend()
-    
+
     plt.subplot(2, 2, 2)
     plot_with_bands(plt.gca(), aggregated['not_infected_treated'], 'Not Infected Treated', 'orange')
     plt.xlabel('Timestep')
@@ -2172,7 +2147,7 @@ def plot_metrics_ensemble_agents(
     plt.grid(True)
     plt.ylim(-0.05, overall_max_count)
     plt.legend()
-    
+
     plt.subplot(2, 2, 3)
     plot_with_bands(plt.gca(), aggregated['infected_no_treatment'], 'Infected No Treatment', 'red')
     plt.xlabel('Timestep')
@@ -2181,15 +2156,16 @@ def plot_metrics_ensemble_agents(
     plt.title('Infected No Treatment (Mean ± 10-90%)')
     plt.ylim(-0.05, overall_max_count)
     plt.legend()
-    
+
     plt.subplot(2, 2, 4)
     plot_with_bands(plt.gca(), aggregated['infected_treated_overall'], 'Infected Treated Overall', 'purple', linewidth=2)
     for abx_name in antibiotic_names:
-        # Compute per-antibiotic infected treated (sensitive + resistant)
         per_abx_trajs = []
         for traj_idx in range(len(all_trajectories_data['infected_treated_sensitive'][abx_name])):
-            traj = (np.array(all_trajectories_data['infected_treated_sensitive'][abx_name][traj_idx]) +
-                   np.array(all_trajectories_data['infected_treated_resistant'][abx_name][traj_idx]))
+            traj = (
+                np.array(all_trajectories_data['infected_treated_sensitive'][abx_name][traj_idx])
+                + np.array(all_trajectories_data['infected_treated_resistant'][abx_name][traj_idx])
+            )
             per_abx_trajs.append(traj.tolist())
         per_abx_agg = aggregate_trajectories(per_abx_trajs, apply_cumsum=True)
         plot_with_bands(plt.gca(), per_abx_agg, f'Infected Treated {abx_name}', color=None)
@@ -2202,13 +2178,11 @@ def plot_metrics_ensemble_agents(
     plt.tight_layout()
     plt.savefig(os.path.join(experiment_figures_folder, "outcome_counts_over_time.png"))
     plt.close()
-    
-    # Figure 5: Antibiotic prescriptions
+
     max_prescriptions = max([aggregated['count_prescriptions'][abx_name]['p90'].max() for abx_name in antibiotic_names]) + 1
     plt.figure(figsize=(10, 5))
     for abx_name in antibiotic_names:
-        plot_with_bands(plt.gca(), aggregated['count_prescriptions'][abx_name], 
-                       f"{abx_name} Prescriptions", color=None)
+        plot_with_bands(plt.gca(), aggregated['count_prescriptions'][abx_name], f"{abx_name} Prescriptions", color=None)
     plt.xlabel('Timestep')
     plt.ylabel('Cumulative Count')
     plt.title('Antibiotic Prescriptions Over Time (Mean ± 10-90%)')
@@ -2218,14 +2192,11 @@ def plot_metrics_ensemble_agents(
     plt.tight_layout()
     plt.savefig(os.path.join(experiment_figures_folder, "abx_prescriptions_over_time.png"))
     plt.close()
-    
-    # Figure 6: Per-antibiotic infected treated (sensitive vs resistant)
+
     for abx_name in antibiotic_names:
         plt.figure(figsize=(10, 5))
-        plot_with_bands(plt.gca(), aggregated['infected_treated_sensitive'][abx_name],
-                       'Sensitive Infection Treated', 'green')
-        plot_with_bands(plt.gca(), aggregated['infected_treated_resistant'][abx_name],
-                       'Resistant Infection Treated', 'red')
+        plot_with_bands(plt.gca(), aggregated['infected_treated_sensitive'][abx_name], 'Sensitive Infection Treated', 'green')
+        plot_with_bands(plt.gca(), aggregated['infected_treated_resistant'][abx_name], 'Resistant Infection Treated', 'red')
         plt.xlabel('Timestep')
         plt.ylabel('Cumulative Count')
         plt.title(f'Infected Treated Counts for {abx_name} (Mean ± 10-90%)')
@@ -2239,71 +2210,37 @@ def plot_metrics_ensemble_agents(
         plt.tight_layout()
         plt.savefig(os.path.join(experiment_figures_folder, f"infected_treated_counts_{abx_name}_over_time.png"))
         plt.close()
-    
+
     print(f"Ensemble plots saved to {experiment_figures_folder}")
-    
-    # ====== PHASE 4: Per-Seed Visualizations (Optional) ======
-    if per_seed_figures and len(per_seed_data) > 1:
+
+    if per_seed_figures and per_seed_data and len(per_seed_data) > 1:
         print("Generating per-seed visualizations...")
-        
         for seed_idx, seed_data in enumerate(per_seed_data):
             seed_folder = os.path.join(experiment_figures_folder, f"seed_{seed_idx}")
             if not os.path.exists(seed_folder):
                 os.makedirs(seed_folder)
-            
-            # Aggregate this seed's trajectories
+
             seed_aggregated = {}
-            
-            # AMR levels
             seed_aggregated['actual_AMR_levels'] = {}
             seed_aggregated['visible_AMR_levels'] = {}
             for abx_name in antibiotic_names:
-                seed_aggregated['actual_AMR_levels'][abx_name] = aggregate_trajectories(
-                    seed_data['actual_AMR_levels'][abx_name], apply_cumsum=False
-                )
-                seed_aggregated['visible_AMR_levels'][abx_name] = aggregate_trajectories(
-                    seed_data['visible_AMR_levels'][abx_name], apply_cumsum=False
-                )
-            
-            # Rewards
-            for key in ['total_reward', 'individual_reward', 'normalized_individual_reward',
-                        'community_reward', 'normalized_community_reward']:
+                seed_aggregated['actual_AMR_levels'][abx_name] = aggregate_trajectories(seed_data['actual_AMR_levels'][abx_name], apply_cumsum=False)
+                seed_aggregated['visible_AMR_levels'][abx_name] = aggregate_trajectories(seed_data['visible_AMR_levels'][abx_name], apply_cumsum=False)
+
+            for key in ['total_reward', 'individual_reward', 'normalized_individual_reward', 'community_reward', 'normalized_community_reward']:
                 seed_aggregated[key] = aggregate_trajectories(seed_data[key], apply_cumsum=True)
-            
-            # Outcome counts
-            for key in ['count_clinical_benefits', 'count_clinical_failures', 'count_adverse_events',
-                        'not_infected_no_treatment', 'not_infected_treated', 'infected_no_treatment']:
-                seed_aggregated[key] = aggregate_trajectories(seed_data[key], apply_cumsum=True)
-            
-            # Per-antibiotic
-            seed_aggregated['infected_treated_sensitive'] = {}
-            seed_aggregated['infected_treated_resistant'] = {}
-            seed_aggregated['count_prescriptions'] = {}
-            for abx_name in antibiotic_names:
-                seed_aggregated['infected_treated_sensitive'][abx_name] = aggregate_trajectories(
-                    seed_data['infected_treated_sensitive'][abx_name], apply_cumsum=True
-                )
-                seed_aggregated['infected_treated_resistant'][abx_name] = aggregate_trajectories(
-                    seed_data['infected_treated_resistant'][abx_name], apply_cumsum=True
-                )
-                seed_aggregated['count_prescriptions'][abx_name] = aggregate_trajectories(
-                    seed_data['count_prescriptions'][abx_name], apply_cumsum=True
-                )
-            
-            # Quick plot: just AMR and total reward for each seed
+
             plt.figure(figsize=(14, 6))
-            
             plt.subplot(1, 2, 1)
             for abx_name in antibiotic_names:
-                plot_with_bands(plt.gca(), seed_aggregated['actual_AMR_levels'][abx_name],
-                               f"{abx_name}", color=None)
+                plot_with_bands(plt.gca(), seed_aggregated['actual_AMR_levels'][abx_name], f"{abx_name}", color=None)
             plt.xlabel('Timestep')
             plt.ylabel('Actual AMR Level')
             plt.title(f'Seed {seed_idx}: Actual AMR (Mean ± 10-90%)')
             plt.grid(True)
             plt.ylim(-0.05, 1.05)
             plt.legend()
-            
+
             plt.subplot(1, 2, 2)
             plot_with_bands(plt.gca(), seed_aggregated['total_reward'], 'Total Reward', 'purple')
             plt.xlabel('Timestep')
@@ -2311,17 +2248,15 @@ def plot_metrics_ensemble_agents(
             plt.title(f'Seed {seed_idx}: Total Reward (Mean ± 10-90%)')
             plt.grid(True)
             plt.legend()
-            
+
             plt.tight_layout()
             plt.savefig(os.path.join(seed_folder, f"seed_{seed_idx}_summary.png"))
             plt.close()
-        
+
         print(f"Per-seed plots saved to {experiment_figures_folder}/seed_*")
-    
-    # ====== PHASE 5: Overall Outcomes Summary ======
+
     print("Collecting overall outcomes summary across all runs...")
-    
-    # Helper to flatten per-antibiotic dictionaries for percentile computation
+
     def _flatten_summary(summary_dict):
         flat_dict = {}
         for key, value in summary_dict.items():
@@ -2331,26 +2266,22 @@ def plot_metrics_ensemble_agents(
             else:
                 flat_dict[key] = value
         return flat_dict
-    
+
     overall_outcomes_per_trajectory = []
     num_trajectories = len(all_trajectories_data['total_reward'])
-    
-    # Also create a dictionary that will record what the final AMR levels (both true and visible) were at the end of each trajectory, per antibiotic, over the last 10 timesteps.
-    
     list_of_final_amr_levels_per_trajectory_per_abx = []
-    
+
     for traj_idx in range(num_trajectories):
-            
-        # Store the final AMR levels for this trajectory
-        list_of_final_amr_levels_per_trajectory_per_abx.append({
-            abx_name: {
-                'actual': all_trajectories_data['actual_AMR_levels'][abx_name][traj_idx][-10:],
-                'visible': all_trajectories_data['visible_AMR_levels'][abx_name][traj_idx][-10:],
+        list_of_final_amr_levels_per_trajectory_per_abx.append(
+            {
+                abx_name: {
+                    'actual': all_trajectories_data['actual_AMR_levels'][abx_name][traj_idx][-10:],
+                    'visible': all_trajectories_data['visible_AMR_levels'][abx_name][traj_idx][-10:],
+                }
+                for abx_name in antibiotic_names
             }
-            for abx_name in antibiotic_names
-        })
-        
-        # Build cumulative trajectories for this run
+        )
+
         count_clinical_benefits_cumsum = np.cumsum(all_trajectories_data['count_clinical_benefits'][traj_idx])
         count_clinical_failures_cumsum = np.cumsum(all_trajectories_data['count_clinical_failures'][traj_idx])
         count_adverse_events_cumsum = np.cumsum(all_trajectories_data['count_adverse_events'][traj_idx])
@@ -2358,7 +2289,7 @@ def plot_metrics_ensemble_agents(
         not_infected_treated_cumsum = np.cumsum(all_trajectories_data['not_infected_treated'][traj_idx])
         infected_no_treatment_cumsum = np.cumsum(all_trajectories_data['infected_no_treatment'][traj_idx])
         total_reward_cumsum = np.cumsum(all_trajectories_data['total_reward'][traj_idx])
-        
+
         infected_treated_sensitive_per_abx_cumsum = {
             abx_name: np.cumsum(all_trajectories_data['infected_treated_sensitive'][abx_name][traj_idx])
             for abx_name in antibiotic_names
@@ -2375,7 +2306,7 @@ def plot_metrics_ensemble_agents(
         for abx_name in antibiotic_names:
             combined = infected_treated_sensitive_per_abx_cumsum[abx_name] + infected_treated_resistant_per_abx_cumsum[abx_name]
             infected_treated_overall_cumsum = combined if infected_treated_overall_cumsum is None else infected_treated_overall_cumsum + combined
-        
+
         overall_outcomes_summary_dict = create_overall_outcomes_summary_dict(
             count_clinical_benefits_cumsum=count_clinical_benefits_cumsum,
             count_clinical_failures_cumsum=count_clinical_failures_cumsum,
@@ -2391,36 +2322,32 @@ def plot_metrics_ensemble_agents(
             antibiotic_names=antibiotic_names,
         )
         overall_outcomes_per_trajectory.append(overall_outcomes_summary_dict)
-    
-    # Build raw values dictionary (flattened for JSON + percentiles)
+
     if not overall_outcomes_per_trajectory:
         raise ValueError("No trajectories collected; cannot compute overall outcomes summary.")
-    
+
     raw_template = _flatten_summary(overall_outcomes_per_trajectory[0])
     overall_outcomes_summary_raw_vals_dict = {key: [] for key in raw_template.keys()}
-    
+
     for summary_dict in overall_outcomes_per_trajectory:
         flat_summary = _flatten_summary(summary_dict)
         for key, value in flat_summary.items():
             overall_outcomes_summary_raw_vals_dict[key].append(value)
-    
-    # Also add final AMR levels per antibiotic (both actual and visible) to the raw values dict
+
     for abx_name in antibiotic_names:
         for level_type in ['actual', 'visible']:
             final_levels_list = [
-                sum(traj_final_levels[abx_name][level_type])/len(traj_final_levels[abx_name][level_type])
+                sum(traj_final_levels[abx_name][level_type]) / len(traj_final_levels[abx_name][level_type])
                 for traj_final_levels in list_of_final_amr_levels_per_trajectory_per_abx
             ]
             overall_outcomes_summary_raw_vals_dict[f'final_amr_{level_type}_{abx_name}'] = final_levels_list
-            
+
     overall_outcomes_summary_raw_vals_dict = convert_to_native_types(overall_outcomes_summary_raw_vals_dict)
-    
     with open(os.path.join(experiment_figures_folder, "overall_outcomes_summary_raw_vals.json"), 'w') as f:
         json.dump(overall_outcomes_summary_raw_vals_dict, f, indent=4)
-    
+
     print(f"Raw values saved to {experiment_figures_folder}/overall_outcomes_summary_raw_vals.json")
-    
-    # Compute summary statistics (percentiles) for each outcome (only for scalar series)
+
     overall_outcomes_summary_summary_stats_dict = {}
     for outcome_key, values_list in overall_outcomes_summary_raw_vals_dict.items():
         values_array = np.array(values_list, dtype=float)
@@ -2431,12 +2358,11 @@ def plot_metrics_ensemble_agents(
             'p75': float(np.percentile(values_array, 75)),
             'p90': float(np.percentile(values_array, 90)),
         }
-        
-    # Compute summary statistics (percentiles) for final AMR levels per antibiotic, add them to the summary stats dict
+
     for abx_name in antibiotic_names:
         for level_type in ['actual', 'visible']:
             final_levels_list = [
-                sum(traj_final_levels[abx_name][level_type])/len(traj_final_levels[abx_name][level_type])
+                sum(traj_final_levels[abx_name][level_type]) / len(traj_final_levels[abx_name][level_type])
                 for traj_final_levels in list_of_final_amr_levels_per_trajectory_per_abx
             ]
             final_levels_array = np.array(final_levels_list, dtype=float)
@@ -2447,11 +2373,10 @@ def plot_metrics_ensemble_agents(
                 'p75': float(np.percentile(final_levels_array, 75)),
                 'p90': float(np.percentile(final_levels_array, 90)),
             }
-    
+
     with open(os.path.join(experiment_figures_folder, "overall_outcomes_summary_summary_stats.json"), 'w') as f:
         json.dump(overall_outcomes_summary_summary_stats_dict, f, indent=4)
-    
+
     print(f"Summary statistics saved to {experiment_figures_folder}/overall_outcomes_summary_summary_stats.json")
-    
     print("All plots complete!")
     return
