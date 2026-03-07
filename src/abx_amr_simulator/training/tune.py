@@ -1373,10 +1373,21 @@ def main():
         sys.exit(0)
     
     # Calculate per-worker trial quota for distributed tuning
-    # Each worker runs a specific portion of the total trials
-    trials_per_worker = (n_trials + args.total_workers - 1) // args.total_workers  # Ceiling division
-    worker_trial_start = args.worker_id * trials_per_worker
-    worker_trial_end = min((args.worker_id + 1) * trials_per_worker, n_trials)
+    # Distribute trials evenly, with remainder distributed to early workers
+    # Example: 32 trials, 12 workers -> workers 0-7 get 3 trials, workers 8-11 get 2 trials
+    base_trials_per_worker = n_trials // args.total_workers  # Floor division
+    remainder = n_trials % args.total_workers
+    
+    # Workers 0 to (remainder-1) get base_trials + 1
+    # Workers remainder to (total_workers-1) get base_trials
+    if args.worker_id < remainder:
+        worker_trial_start = args.worker_id * (base_trials_per_worker + 1)
+        worker_trial_end = worker_trial_start + base_trials_per_worker + 1
+    else:
+        # Offset by the extra trials given to earlier workers
+        worker_trial_start = remainder * (base_trials_per_worker + 1) + (args.worker_id - remainder) * base_trials_per_worker
+        worker_trial_end = worker_trial_start + base_trials_per_worker
+    
     worker_quota = worker_trial_end - worker_trial_start
     
     # Diagnostic: log worker configuration for debugging
@@ -1386,7 +1397,7 @@ def main():
         print(f"{'='*70}")
         print(f"  Worker ID: {args.worker_id} (0-indexed)")
         print(f"  Total workers: {args.total_workers}")
-        print(f"  Trials per worker: {trials_per_worker}")
+        print(f"  Base trials per worker: {base_trials_per_worker} (with {remainder} workers getting +1)")
         print(f"  This worker's quota: {worker_quota} trials (range: {worker_trial_start}-{worker_trial_end-1})")
         print(f"{'='*70}\n")
     
@@ -1399,8 +1410,13 @@ def main():
             # Calculate how many trials globally are still needed to reach target
             remaining_globally = max(0, n_trials - n_completed_trials_with_results)
             # Each worker should only run trials if there are still trials to complete
-            # Distribute remaining work among all workers
-            remaining_per_worker = (remaining_globally + args.total_workers - 1) // args.total_workers
+            # Distribute remaining work among all workers using same logic as initial distribution
+            base_remaining_per_worker = remaining_globally // args.total_workers
+            remaining_remainder = remaining_globally % args.total_workers
+            if args.worker_id < remaining_remainder:
+                remaining_per_worker = base_remaining_per_worker + 1
+            else:
+                remaining_per_worker = base_remaining_per_worker
             remaining_trials = min(worker_quota, remaining_per_worker)
             
             print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
@@ -1445,6 +1461,16 @@ def main():
         tuning_run_name=run_name
     )
     
+    # Safety check: don't run optimization if allocated 0 or negative trials
+    if remaining_trials <= 0:
+        print(f"\n⚠️  This worker was allocated {remaining_trials} trials. Exiting gracefully.")
+        if args.total_workers > 1:
+            if worker_quota <= 0:
+                print(f"   (Worker {args.worker_id}: More workers than trials - this worker has no work to do)")
+            else:
+                print(f"   (Worker {args.worker_id}/{args.total_workers}: Other workers have already completed all necessary trials)")
+        sys.exit(0)
+    
     # Run optimization
     print(f"\nStarting optimization with {remaining_trials} trials...")
     print(f"Direction: {direction}")
@@ -1454,24 +1480,34 @@ def main():
     
     study.optimize(objective, n_trials=remaining_trials)
     
-    # Print results
+    # Print results (check if any trials completed)
     print(f"\n{'='*70}")
     print("OPTIMIZATION COMPLETE")
     print(f"{'='*70}")
-    print(f"Best value: {study.best_value:.4f}")
-    print(f"Best trial: {study.best_trial.number}")
-    print(f"Total trials completed: {len(study.trials)}")
-    print(f"Best parameters:")
-    for key, value in study.best_params.items():
-        print(f"  {key}: {value}")
+    
+    completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    if len(completed_trials) > 0:
+        print(f"Best value: {study.best_value:.4f}")
+        print(f"Best trial: {study.best_trial.number}")
+        print(f"Total trials completed: {len(completed_trials)}")
+        print(f"Best parameters:")
+        for key, value in study.best_params.items():
+            print(f"  {key}: {value}")
+    else:
+        print(f"No trials completed yet (total trials: {len(study.trials)})")
+        if args.total_workers > 1:
+            print(f"  Note: This worker ({args.worker_id}) may have finished before other workers completed trials.")
     print(f"{'='*70}\n")
     
-    # Save results
-    save_best_params(
-        study=study,
-        tuning_config=tuning_config,
-        optimization_dir=optimization_dir
-    )
+    # Save results (only if there are completed trials)
+    if len(completed_trials) > 0:
+        save_best_params(
+            study=study,
+            tuning_config=tuning_config,
+            optimization_dir=optimization_dir
+        )
+    else:
+        print(f"⚠️  Skipping save_best_params (no completed trials yet)")
 
     if trial_results_dir_to_cleanup:
         shutil.rmtree(trial_results_dir_to_cleanup, ignore_errors=True)
