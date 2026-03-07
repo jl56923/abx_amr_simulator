@@ -1255,14 +1255,23 @@ def main():
 
     if not args.use_postgres:
         storage_path = os.path.join(optimization_dir, 'optuna_study.db')
+        # Only worker 0 should delete the database to avoid multi-worker race conditions
         if args.overwrite_existing_study and os.path.exists(storage_path):
-            print(f"\n⚠️  Overwriting existing study database: {storage_path}")
-            os.remove(storage_path)
+            if args.worker_id == 0:
+                print(f"\n⚠️  [Worker 0] Overwriting existing study database: {storage_path}")
+                os.remove(storage_path)
+            else:
+                print(f"\n⚠️  [Worker {args.worker_id}] Waiting for worker 0 to initialize database...")
+                # Wait for worker 0 to delete and recreate the database
+                # Combined with shell-level sequential startup (2-3s), this gives ~17-18s total delay
+                time.sleep(15)
         elif load_if_exists and os.path.exists(storage_path):
             print(f"\n✓ Found existing study database, will continue: {storage_path}")
 
     # Create Optuna study with retry logic for Postgres enum creation race condition
+    # and SQLite table/study creation race conditions
     study = None
+    current_load_if_exists = load_if_exists  # Track whether to load existing study
     for attempt in range(3):
         try:
             study = optuna.create_study(
@@ -1270,15 +1279,38 @@ def main():
                 sampler=sampler,
                 study_name=args.study_name or run_name,
                 storage=storage_url,
-                load_if_exists=load_if_exists
+                load_if_exists=current_load_if_exists
             )
             break  # Success
         except Exception as e:
             error_str = str(e).lower()
-            if 'studydirection' in error_str and 'unique' in error_str and attempt < 2:
-                # Likely Postgres enum creation race; another worker is creating it
-                print(f"⚠️  Postgres enum creation race detected (attempt {attempt + 1}/3). Retrying in 2 seconds...")
-                time.sleep(2)
+            error_type = type(e).__name__
+            
+            # Check for Postgres enum creation race
+            is_postgres_race = 'studydirection' in error_str and 'unique' in error_str
+            
+            # Check for SQLite table creation race
+            is_sqlite_table_race = ('table' in error_str and 'already exists' in error_str) or \
+                                   ('operational' in error_str and 'database is locked' in error_str)
+            
+            # Check for SQLite study name collision (multi-worker race)
+            is_sqlite_study_race = ('duplicatedstudyerror' in error_type.lower()) or \
+                                   ('unique constraint failed' in error_str and 'study_name' in error_str)
+            
+            is_any_race = is_postgres_race or is_sqlite_table_race or is_sqlite_study_race
+            
+            if is_any_race and attempt < 2:
+                if is_postgres_race:
+                    race_type = "Postgres enum"
+                elif is_sqlite_study_race:
+                    race_type = "SQLite study name"
+                    # If study already exists, load it on retry instead of trying to create again
+                    current_load_if_exists = True
+                else:
+                    race_type = "SQLite table/lock"
+                
+                print(f"⚠️  {race_type} creation race detected (attempt {attempt + 1}/3). Retrying in {2 + attempt} seconds...")
+                time.sleep(2 + attempt)  # Exponential backoff: 2s, 3s
             else:
                 raise
     
@@ -1346,6 +1378,17 @@ def main():
     worker_trial_start = args.worker_id * trials_per_worker
     worker_trial_end = min((args.worker_id + 1) * trials_per_worker, n_trials)
     worker_quota = worker_trial_end - worker_trial_start
+    
+    # Diagnostic: log worker configuration for debugging
+    if args.total_workers > 1:
+        print(f"\n{'='*70}")
+        print(f"DISTRIBUTED TUNING CONFIGURATION")
+        print(f"{'='*70}")
+        print(f"  Worker ID: {args.worker_id} (0-indexed)")
+        print(f"  Total workers: {args.total_workers}")
+        print(f"  Trials per worker: {trials_per_worker}")
+        print(f"  This worker's quota: {worker_quota} trials (range: {worker_trial_start}-{worker_trial_end-1})")
+        print(f"{'='*70}\n")
     
     # In distributed mode, each worker should stop once they've completed their quota,
     # not based on global trial count
