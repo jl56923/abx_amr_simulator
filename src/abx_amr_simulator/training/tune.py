@@ -1401,34 +1401,22 @@ def main():
         print(f"  This worker's quota: {worker_quota} trials (range: {worker_trial_start}-{worker_trial_end-1})")
         print(f"{'='*70}\n")
     
-    # In distributed mode, each worker should stop once they've completed their quota,
-    # not based on global trial count
+    # In distributed mode, each worker should stop once they've completed their quota.
+    # IMPORTANT: do NOT re-divide based on each worker's local snapshot of global
+    # completed trials. With staggered startup, that can cause under-allocation
+    # (e.g., 32 target trials finishing at 24).
     if args.total_workers > 1:
-        # For distributed tuning: each worker runs only their quota
-        # When resuming, adjust for already-completed trials to avoid overshoot
+        # Deterministic per-worker allocation.
+        remaining_trials = worker_quota
         if is_resumed_study:
-            # Calculate how many trials globally are still needed to reach target
-            remaining_globally = max(0, n_trials - n_completed_trials_with_results)
-            # Each worker should only run trials if there are still trials to complete
-            # Distribute remaining work among all workers using same logic as initial distribution
-            base_remaining_per_worker = remaining_globally // args.total_workers
-            remaining_remainder = remaining_globally % args.total_workers
-            if args.worker_id < remaining_remainder:
-                remaining_per_worker = base_remaining_per_worker + 1
-            else:
-                remaining_per_worker = base_remaining_per_worker
-            remaining_trials = min(worker_quota, remaining_per_worker)
-            
             print(f"✓ Loaded existing study with {n_existing_trials} trial(s)")
             print(f"  Completed trials with results: {n_completed_trials_with_results}")
             if n_completed_trials_with_results > 0:
                 print(f"  Best value so far: {study.best_value:.4f}")
             print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
             print(f"  Original worker quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
-            print(f"  Remaining globally: {remaining_globally} trials")
-            print(f"  This worker will run: {remaining_trials} trials")
+            print(f"  This worker will run deterministic quota: {remaining_trials} trials")
         else:
-            remaining_trials = worker_quota
             print(f"✓ Starting new study")
             print(f"  [Distributed mode: Worker {args.worker_id}/{args.total_workers}]")
             print(f"  This worker's quota: trials {worker_trial_start}-{worker_trial_end-1} ({worker_quota} trials)")
