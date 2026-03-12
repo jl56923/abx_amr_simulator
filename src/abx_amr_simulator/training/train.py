@@ -71,6 +71,7 @@ Example shell script pattern (resuming interrupted runs):
 import os
 import sys
 import argparse
+import math
 from pathlib import Path
 import yaml
 import json
@@ -589,18 +590,36 @@ def main():
         if eval_env is not None and len(callbacks) > 1:
             # Find EvalCallback in callbacks list
             eval_callback = None
+            episode_counter_callback = None
             for cb in callbacks:
                 if hasattr(cb, 'best_mean_reward'):
                     eval_callback = cb
-                    break
+                if hasattr(cb, 'n_episodes'):
+                    episode_counter_callback = cb
             
             if eval_callback is not None and hasattr(eval_callback, 'last_mean_reward'):
+                eval_freq_steps = getattr(eval_callback, 'eval_freq', None)
+                n_evals = getattr(eval_callback, 'n_evals', None)
+                completed_episodes = (
+                    episode_counter_callback.n_episodes
+                    if episode_counter_callback is not None and hasattr(episode_counter_callback, 'n_episodes')
+                    else None
+                )
+
                 # Print in format that tune.py can parse
                 print(f"\n{'='*70}")
                 print(f"EVALUATION RESULTS (for hyperparameter tuning)")
                 print(f"{'='*70}")
                 print(f"Final mean reward: {eval_callback.last_mean_reward:.4f}")
                 print(f"Best mean reward: {eval_callback.best_mean_reward:.4f}")
+                print(f"Eval callback diagnostics: n_evals={n_evals}, eval_freq_steps={eval_freq_steps}, model_num_timesteps={agent.num_timesteps}, completed_episodes={completed_episodes}")
+                if not math.isfinite(eval_callback.last_mean_reward):
+                    print("Warning: Final mean reward is non-finite.")
+                    if eval_freq_steps is not None and agent.num_timesteps < eval_freq_steps:
+                        print(
+                            "Likely cause: no evaluation pass was triggered before training stopped "
+                            f"(model_num_timesteps={agent.num_timesteps} < eval_freq_steps={eval_freq_steps})."
+                        )
                 print(f"{'='*70}\n")
         
         # Save summary
@@ -952,18 +971,36 @@ def main():
         if eval_env is not None and len(callbacks) > 1:
             # Find EvalCallback in callbacks list (should be second callback after PatientStatsLoggingCallback)
             eval_callback = None
+            episode_counter_callback = None
             for cb in callbacks:
                 if hasattr(cb, 'best_mean_reward'):
                     eval_callback = cb
-                    break
+                if hasattr(cb, 'n_episodes'):
+                    episode_counter_callback = cb
             
             if eval_callback is not None and hasattr(eval_callback, 'last_mean_reward'):
+                eval_freq_steps = getattr(eval_callback, 'eval_freq', None)
+                n_evals = getattr(eval_callback, 'n_evals', None)
+                completed_episodes = (
+                    episode_counter_callback.n_episodes
+                    if episode_counter_callback is not None and hasattr(episode_counter_callback, 'n_episodes')
+                    else None
+                )
+
                 # Print in format that tune.py can parse
                 print(f"\n{'='*70}")
                 print(f"EVALUATION RESULTS (for hyperparameter tuning)")
                 print(f"{'='*70}")
                 print(f"Final mean reward: {eval_callback.last_mean_reward:.4f}")
                 print(f"Best mean reward: {eval_callback.best_mean_reward:.4f}")
+                print(f"Eval callback diagnostics: n_evals={n_evals}, eval_freq_steps={eval_freq_steps}, model_num_timesteps={agent.num_timesteps}, completed_episodes={completed_episodes}")
+                if not math.isfinite(eval_callback.last_mean_reward):
+                    print("Warning: Final mean reward is non-finite.")
+                    if eval_freq_steps is not None and agent.num_timesteps < eval_freq_steps:
+                        print(
+                            "Likely cause: no evaluation pass was triggered before training stopped "
+                            f"(model_num_timesteps={agent.num_timesteps} < eval_freq_steps={eval_freq_steps})."
+                        )
                 print(f"{'='*70}\n")
         
         # Save summary

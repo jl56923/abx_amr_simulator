@@ -462,9 +462,14 @@ def run_training_trial(
         param_overrides['training.total_num_training_episodes'] = truncated_episodes
         param_overrides['training.run_name'] = f"{trial_run_prefix}_seed{seed}"
         
-        # Optimize evaluation for tuning: do ONE final evaluation to get reward metric
-        # Set eval_freq to trigger only at the very end (truncated_episodes + 1 ensures one eval at end)
-        param_overrides['training.eval_freq_every_n_episodes'] = truncated_episodes  # Eval at end only
+        # Ensure at least one evaluation occurs during tuning even when episodes
+        # terminate early (e.g., HRL boundary clipping). The train.py callback
+        # converts eval_freq_every_n_episodes to timesteps using max_time_steps,
+        # so using truncated_episodes here can miss evaluation entirely when
+        # EpisodeCounterCallback stops training before that timestep threshold.
+        # Using 1 guarantees frequent evaluation and avoids non-finite rewards
+        # caused by never-running EvalCallback.
+        param_overrides['training.eval_freq_every_n_episodes'] = 1
         param_overrides['training.save_freq_every_n_episodes'] = 999999  # Save only final model
         param_overrides['training.log_patient_trajectories'] = False  # Disable trajectory logging
         
