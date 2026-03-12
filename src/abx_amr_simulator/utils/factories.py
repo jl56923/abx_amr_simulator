@@ -19,6 +19,9 @@ import gymnasium as gym
 from stable_baselines3 import PPO, A2C
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
+
+# Import masked variants for HRL
+from abx_amr_simulator.hrl.rl_algorithms import PPO_Masked, RecurrentPPO_Masked
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
@@ -507,7 +510,13 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
         ppo_config = config.get('ppo', {})
         learning_rate = ppo_config.get('learning_rate', 3.0e-4)
         
-        agent = PPO(
+        # Check if masking should be used for clipped transitions
+        hrl_config = config.get('hrl', {})
+        exclude_clipped = hrl_config.get('exclude_clipped_manager_steps_from_training', False)
+        
+        PPOClass = PPO_Masked if exclude_clipped else PPO
+        
+        agent = PPOClass(
             policy='MlpPolicy',
             env=env,
             learning_rate=learning_rate,
@@ -539,7 +548,13 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
             'enable_critic_lstm': lstm_kwargs_config.get('enable_critic_lstm', True),
         })
 
-        agent = RecurrentPPO(
+        # Check if masking should be used for clipped transitions
+        hrl_config = config.get('hrl', {})
+        exclude_clipped = hrl_config.get('exclude_clipped_manager_steps_from_training', False)
+        
+        RecurrentPPOClass = RecurrentPPO_Masked if exclude_clipped else RecurrentPPO
+
+        agent = RecurrentPPOClass(
             policy='MlpLstmPolicy',
             env=env,
             learning_rate=learning_rate,

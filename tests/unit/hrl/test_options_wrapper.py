@@ -161,8 +161,14 @@ def test_build_env_state_fallbacks() -> None:
 
     env_state = wrapper._build_env_state(observation=obs)
 
-    assert env_state["current_step"] == 0
+    # Verify that current_step is NOT in env_state (Phase A: removed timestep awareness)
+    assert "current_step" not in env_state, \
+        "current_step should be removed from env_state (Phase A cleanup)"
+    
+    # Verify that core env_state fields are still present
     assert env_state["num_patients"] == env.unwrapped.num_patients_per_time_step
+    assert "patients" in env_state
+    assert "current_amr_levels" in env_state
 
 
 def test_extract_patients_fallback_when_missing_current_patients() -> None:
@@ -263,3 +269,66 @@ def test_step_runs_single_macro_action() -> None:
     assert isinstance(info, dict)
     assert terminated in {True, False}
     assert truncated in {True, False}
+
+
+def test_step_info_dict_contains_clipping_metadata() -> None:
+    """Test that step() returns clipping metadata in info dict."""
+    env = create_mock_environment(antibiotic_names=["A"], num_patients_per_time_step=1)
+    library = _build_library(env=env, action_name="no_treatment")
+    wrapper = OptionsWrapper(env=env, option_library=library, gamma=0.99)
+    wrapper.reset(seed=42)
+
+    obs, reward, terminated, truncated, info = wrapper.step(manager_action=0)
+
+    # Verify clipping metadata fields exist in info dict
+    assert "manager_clipped" in info
+    assert "steps_clipped" in info
+    assert "manager_transition_trainable" in info
+    
+    # Verify field types
+    assert isinstance(info["manager_clipped"], bool)
+    assert isinstance(info["steps_clipped"], (int, np.integer))
+    assert isinstance(info["manager_transition_trainable"], bool)
+
+
+def test_step_no_clipping_normal_execution() -> None:
+    """Test that normal execution (no boundary reached) sets clipping flags correctly."""
+    env = create_mock_environment(
+        antibiotic_names=["A"],
+        num_patients_per_time_step=1,
+        max_time_steps=100,  # Long episode
+    )
+    library = _build_library(env=env, action_name="no_treatment")
+    wrapper = OptionsWrapper(env=env, option_library=library, gamma=0.99)
+    wrapper.reset(seed=42)
+
+    # Take a few steps (should not clip early in episode)
+    for _ in range(5):
+        obs, reward, terminated, truncated, info = wrapper.step(manager_action=0)
+        
+        if not terminated and not truncated:
+            # Should not be clipped when we haven't reached episode boundary
+            assert info["manager_clipped"] is False
+            assert info["steps_clipped"] == 0
+            assert info["manager_transition_trainable"] is True
+            break
+
+
+def test_step_trainability_flag_inverse_of_clipping() -> None:
+    """Test that manager_transition_trainable is exactly the inverse of manager_clipped."""
+    env = create_mock_environment(
+        antibiotic_names=["A"],
+        num_patients_per_time_step=1,
+        max_time_steps=100,
+    )
+    library = _build_library(env=env)
+    wrapper = OptionsWrapper(env=env, option_library=library, gamma=0.99)
+    wrapper.reset(seed=42)
+
+    # Run a few steps and verify trainability is always inverse of clipping
+    for _ in range(3):
+        obs, reward, terminated, truncated, info = wrapper.step(manager_action=0)
+        
+        if not terminated and not truncated:
+            expected_trainable = not info["manager_clipped"]
+            assert info["manager_transition_trainable"] is expected_trainable

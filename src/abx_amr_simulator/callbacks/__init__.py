@@ -279,6 +279,10 @@ class DetailedEvalCallback(EvalCallback):
                 'actual_amr_levels': [],
                 'visible_amr_levels': [],
                 'antibiotic_names': antibiotic_names,
+                # Phase B: Clipping metadata for variable-length episodes and manager masking
+                'manager_clipped': [],              # Whether macro-action was clipped at boundary
+                'steps_clipped': [],                # Number of steps clipped
+                'manager_transition_trainable': [],  # Trainability flag for manager training
             }
             
             done = False
@@ -298,6 +302,11 @@ class DetailedEvalCallback(EvalCallback):
                     episode_data['rewards'].append(float(reward))
                     episode_data['actual_amr_levels'].append(info.get('actual_amr_levels', {}))
                     episode_data['visible_amr_levels'].append(info.get('visible_amr_levels', {}))
+                    
+                    # Phase B: Store clipping metadata
+                    episode_data['manager_clipped'].append(info.get('manager_clipped', False))
+                    episode_data['steps_clipped'].append(info.get('steps_clipped', 0))
+                    episode_data['manager_transition_trainable'].append(info.get('manager_transition_trainable', True))
                 
                 episode_reward += reward
                 episode_length += 1

@@ -191,8 +191,10 @@ def run_evaluation_episodes(
     episode_lengths = []
     episode_data = []
     
-    obs, info = env.reset()
     for ep in range(num_episodes):
+        # Reset at the START of each episode to ensure independence
+        obs, info = env.reset()
+        
         ep_reward = 0.0
         ep_length = 0
         ep_trajectory = {
