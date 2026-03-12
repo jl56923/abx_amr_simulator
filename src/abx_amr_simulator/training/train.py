@@ -449,7 +449,12 @@ def main():
         max_time_steps = config['environment'].get('max_time_steps', 1000)
         additional_episodes = args.additional_training_episodes
         additional_steps = additional_episodes * max_time_steps
-        print(f"Training for {additional_episodes} additional episodes ({additional_steps} timesteps, episode length: {max_time_steps})")
+        print(
+            f"Training for {additional_episodes} additional episodes "
+            f"({additional_steps} timestep ceiling, episode length: {max_time_steps}). "
+            f"EpisodeCounterCallback will stop after exactly {additional_episodes} "
+            f"actual completed episodes."
+        )
         
         # Override seed if provided
         if args.seed is not None:
@@ -549,7 +554,15 @@ def main():
             from abx_amr_simulator.utils import wrap_environment_for_hrl
             eval_env = wrap_environment_for_hrl(eval_env, config)
                 # Set up callbacks for continued training
-        callbacks = setup_callbacks(config, run_dir, eval_env=eval_env)
+        # Pass additional_episodes as stop_after_n_episodes so that continued
+        # training terminates after the exact desired number of additional
+        # actual episodes (correct under variable-length / clipped episodes).
+        callbacks = setup_callbacks(
+            config,
+            run_dir,
+            eval_env=eval_env,
+            stop_after_n_episodes=additional_episodes,
+        )
         
         print(f"\nContinuing training for {additional_steps} additional timesteps...")
         print(f"TensorBoard logs: {os.path.join(run_dir, 'logs')}")
@@ -771,7 +784,12 @@ def main():
         total_num_training_episodes = training_config.get('total_num_training_episodes')
         if total_num_training_episodes is not None:
             total_timesteps = total_num_training_episodes * max_time_steps
-            print(f"Training for {total_num_training_episodes} episodes ({total_timesteps} timesteps, episode length: {max_time_steps})")
+            print(
+                f"Training for {total_num_training_episodes} episodes "
+                f"({total_timesteps} timestep ceiling, episode length: {max_time_steps}). "
+                f"EpisodeCounterCallback will stop training after exactly "
+                f"{total_num_training_episodes} actual completed episodes."
+            )
         else:
             # Fallback for legacy configs
             total_timesteps = training_config.get('total_timesteps', 1000)
@@ -895,7 +913,17 @@ def main():
         agent = create_agent(config, env, tb_log_path=os.path.join(run_dir, 'logs'))
         
         # Set up callbacks
-        callbacks = setup_callbacks(config, run_dir, eval_env=eval_env)
+        # Pass total_num_training_episodes as stop_after_n_episodes so that
+        # training terminates after the exact desired number of actual episodes.
+        # This is correct under variable-length / HRL boundary-clipped episodes:
+        # total_timesteps below is a safe upper-bound ceiling; the callback
+        # stops training first when clipping is active.
+        callbacks = setup_callbacks(
+            config,
+            run_dir,
+            eval_env=eval_env,
+            stop_after_n_episodes=total_num_training_episodes,
+        )
         
         # Train agent
         training_config = config.get('training', {})

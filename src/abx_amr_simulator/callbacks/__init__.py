@@ -6,6 +6,8 @@ Provides:
 - DetailedEvalCallback: Extends EvalCallback to collect and save full patient trajectories during eval
 - EarlyStoppingCallback: Stops training when performance metric plateaus
 - LSTMStateLogger: Logs LSTM hidden states for belief probing analysis
+- EpisodeCounterCallback: Counts completed episodes, logs to TensorBoard, and can stop training
+  after a target number of actual episodes (correct under variable-length / boundary-clipped episodes)
 """
 
 import os
@@ -17,7 +19,7 @@ from stable_baselines3.common.vec_env import VecEnv, sync_envs_normalization
 from .early_stopping import EarlyStoppingCallback
 from .lstm_state_logger import LSTMStateLogger
 
-__all__ = ['PatientStatsLoggingCallback', 'DetailedEvalCallback', 'EarlyStoppingCallback', 'LSTMStateLogger']
+__all__ = ['PatientStatsLoggingCallback', 'DetailedEvalCallback', 'EarlyStoppingCallback', 'LSTMStateLogger', 'EpisodeCounterCallback']
 
 
 class PatientStatsLoggingCallback(BaseCallback):
@@ -474,3 +476,100 @@ class DetailedEvalCallback(EvalCallback):
         
         if self.verbose >= 1:
             print(f"Saved evaluation trajectories to {filename}")
+
+
+class EpisodeCounterCallback(BaseCallback):
+    """Count completed training episodes and optionally stop after a target number.
+
+    SB3's ``model.learn(total_timesteps=N)`` controls the training budget in
+    timesteps.  When HRL boundary clipping is active, episodes may terminate
+    early, so a fixed timestep budget corresponds to *more* actual episodes than
+    expected (each episode consumes fewer timesteps than ``max_time_steps``).
+    This callback counts **actual** completed episodes and stops training once
+    the desired number is reached, regardless of remaining timestep budget.
+
+    The intended usage is:
+    1. Set ``total_timesteps = total_num_training_episodes * max_time_steps`` in
+       ``model.learn()`` as a safe upper-bound ceiling.
+    2. Pass an ``EpisodeCounterCallback(stop_after_n_episodes=total_num_training_episodes)``
+       so that training always terminates after exactly the desired number of
+       actual episodes, even when episodes are shorter than ``max_time_steps``.
+
+    In the no-clipping case both limits fire at roughly the same time; there is
+    no change in training behaviour.  When clipping is active the callback is
+    the binding constraint and the timestep ceiling is never reached.
+
+    Attributes:
+        n_episodes (int): Number of completed episodes observed so far.
+
+    Example:
+        >>> counter = EpisodeCounterCallback(
+        ...     stop_after_n_episodes=1000,
+        ...     verbose=1,
+        ... )
+        >>> agent.learn(
+        ...     total_timesteps=1000 * max_time_steps,  # safe ceiling
+        ...     callback=counter,
+        ... )
+    """
+
+    def __init__(
+        self,
+        stop_after_n_episodes: Optional[int] = None,
+        verbose: int = 0,
+    ):
+        """Initialise the EpisodeCounterCallback.
+
+        Args:
+            stop_after_n_episodes: If not None, training stops (via ``return
+                False`` from ``_on_step``) once this many actual episodes have
+                been completed.  If None, the callback only counts and logs
+                episodes without forcing a stop.
+            verbose: Verbosity level.  0 = silent; 1 = print a message when
+                the stop target is reached.
+        """
+        super().__init__(verbose=verbose)
+        if stop_after_n_episodes is not None and stop_after_n_episodes <= 0:
+            raise ValueError(
+                f"stop_after_n_episodes must be a positive integer, got {stop_after_n_episodes}"
+            )
+        self.stop_after_n_episodes = stop_after_n_episodes
+        self.n_episodes: int = 0
+
+    def _on_step(self) -> bool:
+        """Called after every environment step during training.
+
+        Increments ``n_episodes`` for each environment that signals ``done``
+        in the current step.  For vectorised environments, every entry in
+        ``dones`` is inspected independently.
+
+        Returns:
+            True to continue training; False to stop when ``stop_after_n_episodes``
+            has been reached.
+        """
+        dones = self.locals.get('dones', self.locals.get('done', []))
+        # Normalise: a bare bool (non-vectorised) becomes a one-element list.
+        if isinstance(dones, (bool, np.bool_)):
+            dones = [bool(dones)]
+
+        for done in dones:
+            if done:
+                self.n_episodes += 1
+
+        # Log completed episode count to TensorBoard at every step.
+        # SB3 deduplicates identical values, so this is low overhead.
+        self.logger.record('training/completed_episodes', self.n_episodes)
+
+        if (
+            self.stop_after_n_episodes is not None
+            and self.n_episodes >= self.stop_after_n_episodes
+        ):
+            if self.verbose >= 1:
+                print(
+                    f"[EpisodeCounterCallback] Reached target of "
+                    f"{self.n_episodes} completed episodes. Stopping training."
+                )
+            return False
+
+        return True
+

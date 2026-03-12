@@ -1692,6 +1692,92 @@ def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_fol
     return
 
 
+def aggregate_trajectories(trajectories_list, apply_cumsum=False):
+    """Aggregate a list of trajectories supporting variable lengths via NaN-padding.
+
+    Handles both fixed-length and variable-length episodes (e.g. from boundary
+    clipping in HRL).  Each trajectory is placed left-aligned in a
+    ``(num_trajectories, max_len)`` array padded with ``NaN``.  All summary
+    statistics are then computed with NaN-aware operations so that trajectories
+    that ended early do not bias later timesteps.
+
+    Args:
+        trajectories_list: List of 1-D sequences (lists or arrays) where each
+            element is the per-timestep value for one trajectory.  Trajectories
+            may have different lengths.
+        apply_cumsum: If True, the cumulative sum is applied per-trajectory
+            (on the valid, non-NaN prefix) before aggregation.
+
+    Returns:
+        Dict with keys:
+            ``mean``, ``median``, ``p10``, ``p90``, ``p25``, ``p75``, ``iqm``,
+            ``timesteps``, ``n_active_trajectories``.
+
+    Raises:
+        ValueError: If ``trajectories_list`` is empty.
+    """
+    if len(trajectories_list) == 0:
+        raise ValueError("trajectories_list is empty")
+
+    trajectory_lengths = [len(traj) for traj in trajectories_list]
+    max_len = max(trajectory_lengths)
+    num_trajectories = len(trajectories_list)
+
+    # Create NaN-padded array for variable-length support
+    # Shape: (num_trajectories, max_len) filled with NaN
+    padded = np.full((num_trajectories, max_len), np.nan, dtype=np.float64)
+
+    # Copy each trajectory into left-aligned prefix of its row
+    for i, traj in enumerate(trajectories_list):
+        padded[i, :len(traj)] = np.asarray(traj)
+
+    # Apply cumsum if needed (operates on non-NaN values per trajectory first)
+    if apply_cumsum:
+        for i in range(num_trajectories):
+            valid_idx = ~np.isnan(padded[i, :])
+            if valid_idx.sum() > 0:
+                padded[i, valid_idx] = np.cumsum(padded[i, valid_idx])
+
+    # Compute n_active_trajectories: count of non-NaN values at each timestep
+    n_active = np.sum(~np.isnan(padded), axis=0)
+
+    # Use NaN-aware statistics
+    mean = np.nanmean(padded, axis=0)
+    median = np.nanpercentile(padded, 50, axis=0)
+    p10 = np.nanpercentile(padded, 10, axis=0)
+    p90 = np.nanpercentile(padded, 90, axis=0)
+    p25 = np.nanpercentile(padded, 25, axis=0)
+    p75 = np.nanpercentile(padded, 75, axis=0)
+
+    # Compute IQM (Interquartile Mean) with NaN handling
+    iqm = np.zeros(max_len)
+    for t in range(max_len):
+        values_t = padded[:, t]
+        valid_mask = ~np.isnan(values_t)
+        if valid_mask.sum() > 0:
+            valid_values = values_t[valid_mask]
+            # Recompute percentiles for this timestep using only valid values
+            p25_t = np.percentile(valid_values, 25)
+            p75_t = np.percentile(valid_values, 75)
+            iqm_mask = (valid_values >= p25_t) & (valid_values <= p75_t)
+            iqm[t] = np.mean(valid_values[iqm_mask]) if iqm_mask.sum() > 0 else np.nanmean(valid_values)
+        else:
+            iqm[t] = np.nan
+
+    timesteps = np.arange(max_len)
+    return {
+        'mean': mean,
+        'median': median,
+        'p10': p10,
+        'p90': p90,
+        'p25': p25,
+        'p75': p75,
+        'iqm': iqm,
+        'timesteps': timesteps,
+        'n_active_trajectories': n_active,  # Track contributor count for visualization
+    }
+
+
 def plot_metrics_ensemble_agents(
     models,
     env,
@@ -1926,75 +2012,6 @@ def plot_metrics_from_collected_trajectories_ensemble(
         os.makedirs(experiment_figures_folder)
 
     print("Aggregating trajectories...")
-
-    def aggregate_trajectories(trajectories_list, apply_cumsum=False):
-        """Aggregate trajectories supporting variable lengths via NaN-padding.
-        
-        Handles both fixed-length and variable-length episodes (from boundary clipping).
-        Uses NaN-padding to align trajectories and masked aggregation statistics.
-        
-        Returns dict with aggregated metrics and n_active_trajectories count.
-        """
-        if len(trajectories_list) == 0:
-            raise ValueError("trajectories_list is empty")
-
-        trajectory_lengths = [len(traj) for traj in trajectories_list]
-        max_len = max(trajectory_lengths)
-        num_trajectories = len(trajectories_list)
-        
-        # Create NaN-padded array for variable-length support
-        # Shape: (num_trajectories, max_len) filled with NaN
-        padded = np.full((num_trajectories, max_len), np.nan, dtype=np.float64)
-        
-        # Copy each trajectory into left-aligned prefix of its row
-        for i, traj in enumerate(trajectories_list):
-            padded[i, :len(traj)] = np.asarray(traj)
-        
-        # Apply cumsum if needed (operates on non-NaN values per trajectory first)
-        if apply_cumsum:
-            for i in range(num_trajectories):
-                valid_idx = ~np.isnan(padded[i, :])
-                if valid_idx.sum() > 0:
-                    padded[i, valid_idx] = np.cumsum(padded[i, valid_idx])
-        
-        # Compute n_active_trajectories: count of non-NaN values at each timestep
-        n_active = np.sum(~np.isnan(padded), axis=0)
-        
-        # Use NaN-aware statistics
-        mean = np.nanmean(padded, axis=0)
-        median = np.nanpercentile(padded, 50, axis=0)
-        p10 = np.nanpercentile(padded, 10, axis=0)
-        p90 = np.nanpercentile(padded, 90, axis=0)
-        p25 = np.nanpercentile(padded, 25, axis=0)
-        p75 = np.nanpercentile(padded, 75, axis=0)
-        
-        # Compute IQM (Interquartile Mean) with NaN handling
-        iqm = np.zeros(max_len)
-        for t in range(max_len):
-            values_t = padded[:, t]
-            valid_mask = ~np.isnan(values_t)
-            if valid_mask.sum() > 0:
-                valid_values = values_t[valid_mask]
-                # Recompute percentiles for this timestep using only valid values
-                p25_t = np.percentile(valid_values, 25)
-                p75_t = np.percentile(valid_values, 75)
-                iqm_mask = (valid_values >= p25_t) & (valid_values <= p75_t)
-                iqm[t] = np.mean(valid_values[iqm_mask]) if iqm_mask.sum() > 0 else np.nanmean(valid_values)
-            else:
-                iqm[t] = np.nan
-        
-        timesteps = np.arange(max_len)
-        return {
-            'mean': mean,
-            'median': median,
-            'p10': p10,
-            'p90': p90,
-            'p25': p25,
-            'p75': p75,
-            'iqm': iqm,
-            'timesteps': timesteps,
-            'n_active_trajectories': n_active,  # Track contributor count for visualization
-        }
 
     aggregated = {}
     aggregated['actual_AMR_levels'] = {}

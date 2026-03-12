@@ -5,6 +5,17 @@ Generates publication-quality evaluation plots from trained policies.
 Merges ensemble performance plotting with action-attribute association analysis.
 Automatically detects new experiments and generates plots for evaluation-ready policies.
 
+Variable-length episode support:
+    When HRL boundary clipping is active, episodes may terminate before
+    ``env.max_time_steps``.  All evaluation functions in this module are
+    designed to handle episodes of heterogeneous realized lengths:
+    - ``run_evaluation_episodes()`` resets the environment at the start of
+      every episode and records the true realized step count.
+    - ``compute_action_attribute_associations()`` uses the actual length of
+      each episode's trajectory rather than assuming a fixed horizon.
+    Downstream analysis (e.g. ``plot_metrics_ensemble_agents`` in metrics.py)
+    uses NaN-padding to aggregate trajectories of different lengths.
+
 How to use:
     # Auto mode: Generate plots for all new exp_* experiments
     python -m abx_amr_simulator.analysis.evaluative_plots
@@ -184,8 +195,31 @@ def run_evaluation_episodes(
 ) -> Dict[str, Any]:
     """
     Run evaluation episodes and collect trajectory data.
-    
-    Returns dict with episode metrics and trajectory data.
+
+    Each episode starts with a fresh ``env.reset()``, ensuring episode
+    independence. Episodes are not assumed to have equal lengths: when boundary
+    clipping is active in HRL (or the environment terminates early for any
+    reason) the realized episode length may be less than ``env.max_time_steps``.
+    The returned ``episode_lengths`` list reflects the true realized length of
+    each episode; downstream callers must not assume all lengths are equal.
+
+    Args:
+        model: Trained policy that implements ``predict(obs, deterministic)``.
+        env: Gymnasium-compatible environment. Must support the
+            ``(obs, info) = env.reset()`` and
+            ``(obs, reward, terminated, truncated, info) = env.step(action)``
+            interfaces.
+        num_episodes: Number of independent evaluation episodes to run.
+        is_hrl: If True, unwraps scalar array actions produced by the HRL
+            manager before passing them to ``env.step``.
+
+    Returns:
+        Dict with keys:
+            - ``episode_rewards`` (List[float]): total undiscounted reward per episode.
+            - ``episode_lengths`` (List[int]): realized step count per episode
+              (may vary across episodes if early termination occurs).
+            - ``episodes`` (List[Dict]): per-episode trajectory dicts with keys
+              ``obs``, ``actions``, ``rewards``, ``amr_levels``.
     """
     episode_rewards = []
     episode_lengths = []
@@ -330,6 +364,8 @@ def compute_action_attribute_associations(
                 obs = obs[:, np.newaxis, :]  # (steps, 1, features)
             
             steps = min(obs.shape[0], len(actions), len(rewards))
+            # Note: episodes may have different lengths (variable-length support);
+            # `steps` is the realized step count for this specific episode.
             
             for s in range(steps):
                 action_val = int(actions[s])

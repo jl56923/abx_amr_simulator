@@ -578,12 +578,15 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
     return agent
 
 
-def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym.Env] = None) -> list:
+def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym.Env] = None, stop_after_n_episodes: Optional[int] = None) -> list:
     """Set up stable-baselines3 training callbacks.
     
-    Creates PatientStatsLoggingCallback (always active), DetailedEvalCallback or
-    standard EvalCallback (if eval_env provided), and CheckpointCallback. Automatically
-    creates subdirectories in run_dir for logs, checkpoints, and eval_logs.
+    Creates PatientStatsLoggingCallback (always active), EpisodeCounterCallback
+    (always active; optionally stops training after a target number of actual
+    episodes — correct under variable-length/boundary-clipped episodes),
+    DetailedEvalCallback or standard EvalCallback (if eval_env provided), and
+    CheckpointCallback. Automatically creates subdirectories in run_dir for
+    logs, checkpoints, and eval_logs.
     
     Args:
         config (Dict[str, Any]): Full experiment config dictionary. Uses 'training'
@@ -597,15 +600,22 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
         eval_env (gym.Env, optional): Evaluation environment instance. If None, no
             evaluation callback created. Should be a separate env instance from
             training env to avoid state pollution.
+        stop_after_n_episodes (int, optional): If provided, an EpisodeCounterCallback
+            will stop training after this many actual completed episodes. This makes
+            the training budget accurate under variable-length episodes (e.g. when
+            HRL boundary clipping terminates episodes early). When None, the
+            EpisodeCounterCallback is still added but only counts/logs episodes;
+            training budget is controlled solely by model.learn(total_timesteps=...).
     
     Returns:
         list: List of callback instances to pass to agent.learn(callback=...).
     
     Example:
-        >>> callbacks = setup_callbacks(config, run_dir, eval_env=eval_env)
-        >>> agent.learn(total_timesteps=100000, callback=callbacks)
+        >>> callbacks = setup_callbacks(config, run_dir, eval_env=eval_env,
+        ...                             stop_after_n_episodes=total_episodes)
+        >>> agent.learn(total_timesteps=total_episodes * max_time_steps, callback=callbacks)
     """
-    from abx_amr_simulator.callbacks import PatientStatsLoggingCallback, DetailedEvalCallback
+    from abx_amr_simulator.callbacks import PatientStatsLoggingCallback, DetailedEvalCallback, EpisodeCounterCallback
     
     callbacks = []
     
@@ -619,6 +629,16 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
     # Patient stats logging callback (always active during training)
     patient_stats_callback = PatientStatsLoggingCallback()
     callbacks.append(patient_stats_callback)
+
+    # Episode counter callback (always active).
+    # When stop_after_n_episodes is set, training terminates after exactly that
+    # many actual episodes — important under HRL boundary clipping where episodes
+    # can be shorter than max_time_steps.
+    episode_counter_callback = EpisodeCounterCallback(
+        stop_after_n_episodes=stop_after_n_episodes,
+        verbose=1,
+    )
+    callbacks.append(episode_counter_callback)
     
     # Evaluation callback (only if an eval_env is provided)
     if eval_env is not None:
