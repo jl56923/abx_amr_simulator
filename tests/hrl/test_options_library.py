@@ -316,12 +316,20 @@ class TestOptionLibraryValidation:
         
         assert 'nonexistent_attribute' in str(exc_info.value)
 
-    def test_validation_requires_step_number(self):
-        """Test validation passes when option requires step number and env has it."""
-        class RequiresStepOption(OptionBase):
+    def test_option_api_has_no_requires_step_number(self):
+        """Test that OptionBase API no longer exposes REQUIRES_STEP_NUMBER.
+        
+        Timestep awareness has been removed from the HRL option interface.
+        Options are time-agnostic; all timestep handling is internal to the wrapper.
+        """
+        # Verify OptionBase does not define REQUIRES_STEP_NUMBER
+        assert not hasattr(OptionBase, 'REQUIRES_STEP_NUMBER'), \
+            "OptionBase should not have REQUIRES_STEP_NUMBER attribute"
+        
+        # Verify concrete options don't define it either
+        class TimestepAgnosticOption(OptionBase):
             REQUIRES_OBSERVATION_ATTRIBUTES = []
             REQUIRES_AMR_LEVELS = False
-            REQUIRES_STEP_NUMBER = True
             
             def get_referenced_antibiotics(self):
                 return []
@@ -330,12 +338,10 @@ class TestOptionLibraryValidation:
                 num_patients = env_state['num_patients']
                 return np.full(num_patients, 'no_treatment', dtype=object)
 
-        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib = OptionLibrary(env=env)
-        lib.add_option(RequiresStepOption(name='opt1', k=5))
-
-        # The real environment HAS current_time_step attribute, so validation should pass
-        lib.validate_environment_compatibility(env=env, patient_generator=env.unwrapped.patient_generator)
+        opt = TimestepAgnosticOption(name='opt1', k=5)
+        # Should not have attribute (will raise AttributeError)
+        with pytest.raises(AttributeError):
+            _ = opt.REQUIRES_STEP_NUMBER
 
     def test_validation_invalid_antibiotic_name(self):
         """Test validation fails when option references non-existent antibiotic.

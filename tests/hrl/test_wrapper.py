@@ -126,7 +126,6 @@ class TestOptionsWrapperReset:
             4 * len(visible_attrs)
             + 2 * num_abx
             + (2 + num_abx)
-            + 1
             + 2 * len(visible_attrs)
         )
         assert manager_obs.shape == (expected_len,)
@@ -389,7 +388,7 @@ class TestOptionsWrapperBuildsEnvState:
     """Test that wrapper correctly builds env_state."""
 
     def test_build_env_state_structure(self):
-        """Test that env_state has correct structure."""
+        """Test that env_state has correct structure (timestep-free after Phase A)."""
         env = create_test_environment(num_patients=2, num_abx=2)
         lib = OptionLibrary(env=env)
         
@@ -398,12 +397,17 @@ class TestOptionsWrapperBuildsEnvState:
             REQUIRES_AMR_LEVELS = False
             
             def decide(self, env_state):
-                # Check env_state structure
+                # Check env_state structure (options are time-agnostic after Phase A)
                 assert 'patients' in env_state
                 assert 'num_patients' in env_state
                 assert 'current_amr_levels' in env_state
-                assert 'current_step' in env_state
-                assert 'max_steps' in env_state
+                assert 'option_library' in env_state
+                assert 'reward_calculator' in env_state
+                assert 'patient_generator' in env_state
+                
+                # Timestep fields removed in Phase A - options no longer see time
+                assert 'current_step' not in env_state
+                assert 'max_steps' not in env_state
                 
                 assert env_state['num_patients'] == 2
                 assert len(env_state['patients']) == 2

@@ -53,14 +53,19 @@ class TestHeuristicWorkerInstantiation:
         assert worker.uncertainty_threshold == 2.0
     
     def test_option_base_protocol_attributes(self):
-        """Test that HeuristicWorker declares required OptionBase attributes."""
+        """Test that HeuristicWorker declares required OptionBase attributes.
+        
+        Note: REQUIRES_STEP_NUMBER has been removed from the OptionBase protocol.
+        Options are now time-agnostic.
+        """
         assert hasattr(HeuristicWorker, 'REQUIRES_OBSERVATION_ATTRIBUTES')
         assert hasattr(HeuristicWorker, 'REQUIRES_AMR_LEVELS')
-        assert hasattr(HeuristicWorker, 'REQUIRES_STEP_NUMBER')
         assert hasattr(HeuristicWorker, 'PROVIDES_TERMINATION_CONDITION')
         
+        # Verify no REQUIRES_STEP_NUMBER attribute
+        assert not hasattr(HeuristicWorker, 'REQUIRES_STEP_NUMBER')
+        
         assert HeuristicWorker.REQUIRES_AMR_LEVELS is True
-        assert HeuristicWorker.REQUIRES_STEP_NUMBER is False
         assert HeuristicWorker.PROVIDES_TERMINATION_CONDITION is False
         # Minimal requirements: only prob_infected is truly required
         assert HeuristicWorker.REQUIRES_OBSERVATION_ATTRIBUTES == ['prob_infected']

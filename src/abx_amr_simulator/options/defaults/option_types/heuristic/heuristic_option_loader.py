@@ -37,7 +37,6 @@ class HeuristicWorker(OptionBase):
     # Only prob_infected is truly required; other attributes use defaults if missing
     REQUIRES_OBSERVATION_ATTRIBUTES: ClassVar[List[str]] = ['prob_infected']
     REQUIRES_AMR_LEVELS: ClassVar[bool] = True  # Needed for accurate expected reward calculation
-    REQUIRES_STEP_NUMBER: ClassVar[bool] = False  # Not used for MVP
     PROVIDES_TERMINATION_CONDITION: ClassVar[bool] = False  # Fixed duration
     
     def __init__(

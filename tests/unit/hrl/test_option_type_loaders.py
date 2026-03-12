@@ -59,13 +59,20 @@ def _load_module(module_name: str, module_path: Path):
     return module
 
 
-def _build_env_state(option_library: OptionLibrary, current_step: int) -> dict:
+def _build_env_state(option_library: OptionLibrary, current_step: int = None) -> dict:
+    """Build a minimal env_state for testing options.
+    
+    Args:
+        option_library: The option library.
+        current_step: Deprecated; included for backward compatibility but not used by options.
+    
+    Returns:
+        Dict with required env_state fields (без timestep fields).
+    """
     return {
         "patients": [],
         "num_patients": 2,
         "current_amr_levels": {},
-        "current_step": current_step,
-        "max_steps": 10,
         "option_library": option_library,
     }
 
@@ -151,7 +158,12 @@ def test_alternation_option_sequences_actions():
     assert actions.tolist() == ["B", "B"]
 
 
-def test_alternation_resets_on_step_gap():
+def test_alternation_resets_via_explicit_reset_call():
+    """Test that AlternationOption resets via explicit reset() call, not step gaps.
+    
+    With timestep awareness removed, alternation options cycle through their sequence
+    on each decide() call. They only reset when reset() is explicitly called.
+    """
     env = create_mock_environment(
         antibiotic_names=["A", "B"],
         num_patients_per_time_step=2,
@@ -166,13 +178,23 @@ def test_alternation_resets_on_step_gap():
         sequence=["A", "B"],
     )
 
-    env_state = _build_env_state(option_library=option_library, current_step=0)
-    _ = option.decide(env_state=env_state)
-
-    env_state = _build_env_state(option_library=option_library, current_step=2)
+    env_state = _build_env_state(option_library=option_library)
+    
+    # First call: get A
     actions = option.decide(env_state=env_state)
-
-    # decide() returns antibiotic name strings, not indices
+    assert actions.tolist() == ["A", "A"]
+    
+    # Second call: get B (continues sequence)
+    actions = option.decide(env_state=env_state)
+    assert actions.tolist() == ["B", "B"]
+    
+    # Third call: get A (wraps around)
+    actions = option.decide(env_state=env_state)
+    assert actions.tolist() == ["A", "A"]
+    
+    # After explicit reset: back to beginning
+    option.reset()
+    actions = option.decide(env_state=env_state)
     assert actions.tolist() == ["A", "A"]
 
 

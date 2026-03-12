@@ -12,7 +12,6 @@ class BlockOption(OptionBase):
 
     REQUIRES_OBSERVATION_ATTRIBUTES: List[str] = []
     REQUIRES_AMR_LEVELS: bool = False
-    REQUIRES_STEP_NUMBER: bool = False
     PROVIDES_TERMINATION_CONDITION: bool = False
 
     def __init__(self, name: str, antibiotic: str, duration: int) -> None:

@@ -235,7 +235,6 @@ class OptionLibraryLoader:
             'k': option.k if option.k != float('inf') else 'inf',
             'requires_observation_attrs': option.REQUIRES_OBSERVATION_ATTRIBUTES,
             'requires_amr_levels': option.REQUIRES_AMR_LEVELS,
-            'requires_step_number': option.REQUIRES_STEP_NUMBER,
         }
 
         return option, resolved_config

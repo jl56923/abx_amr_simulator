@@ -37,8 +37,6 @@ class OptionBase(ABC):
             Empty list [] means option is deterministic and doesn't need patient data.
         REQUIRES_AMR_LEVELS: Whether option needs current AMR levels in env_state.
             Use True if option adapts behavior to resistance levels; False if deterministic.
-        REQUIRES_STEP_NUMBER: Whether option needs current episode step in env_state.
-            Use True if option behavior changes over time; False otherwise.
         PROVIDES_TERMINATION_CONDITION: Whether this option can terminate early (before k steps).
             Use False for MVP (deterministic fixed-duration options).
     """
@@ -46,7 +44,6 @@ class OptionBase(ABC):
     # Class variables that subclasses MUST override
     REQUIRES_OBSERVATION_ATTRIBUTES: ClassVar[List[str]] = []
     REQUIRES_AMR_LEVELS: ClassVar[bool] = False
-    REQUIRES_STEP_NUMBER: ClassVar[bool] = False
     PROVIDES_TERMINATION_CONDITION: ClassVar[bool] = False
 
     def __init__(self, name: str, k: int | float = None):

@@ -119,8 +119,7 @@ class OptionsWrapper(gym.Wrapper):
         1. Aggregate patient stats: len(visible_attrs) * 4 (mean, std, max, min)
         2. AMR trajectory: 2 * num_antibiotics (start + end for each)
         3. Option history: 2 + num_antibiotics (previous_option_id, consecutive_count, steps_since_prescribed for each)
-        4. Episode progress: 1 (current_step / max_steps)
-        5. Front-edge cohort features:
+        4. Front-edge cohort features:
            - If front_edge_use_full_vector: num_patients * len(visible_attrs)
            - Else: 2 * len(visible_attrs) (mean + std for each)
         
@@ -135,14 +134,13 @@ class OptionsWrapper(gym.Wrapper):
         aggregate_stats_dim = num_visible_attrs * 4
         amr_obs_dim = 2 * num_antibiotics
         option_history_dim = 2 + num_antibiotics
-        progress_dim = 1
         
         if self.front_edge_use_full_vector:
             front_edge_dim = num_patients * num_visible_attrs
         else:
             front_edge_dim = 2 * num_visible_attrs
         
-        total_dim = aggregate_stats_dim + amr_obs_dim + option_history_dim + progress_dim + front_edge_dim
+        total_dim = aggregate_stats_dim + amr_obs_dim + option_history_dim + front_edge_dim
         return total_dim
 
     def reset(self, seed=None, options=None):
@@ -296,8 +294,6 @@ class OptionsWrapper(gym.Wrapper):
                 - 'patients': List of patient dicts
                 - 'num_patients': Number of patients
                 - 'current_amr_levels': Dict mapping antibiotic -> resistance
-                - 'current_step': Current episode timestep (from env.current_time_step)
-                - 'max_steps': Episode length limit
                 - 'option_library': Reference to OptionLibrary for accessing abx_name_to_index
                 - 'reward_calculator': Reference to RewardCalculator (for heuristic workers to access clinical params)
                 - 'patient_generator': Reference to PatientGenerator (for heuristic workers to access attribute count)
@@ -310,12 +306,6 @@ class OptionsWrapper(gym.Wrapper):
         # Extract AMR levels
         current_amr_levels = self._get_current_amr_levels()
 
-        # Get current step from environment (should be exposed as current_time_step)
-        try:
-            current_step = self._base_env.current_time_step
-        except AttributeError:
-            current_step = 0
-
         # Get use_relative_uncertainty flag from option library config (defaults to True)
         use_relative_uncertainty = getattr(
             self.option_library, 'use_relative_uncertainty', True
@@ -325,8 +315,6 @@ class OptionsWrapper(gym.Wrapper):
             'patients': patients,
             'num_patients': num_patients,
             'current_amr_levels': current_amr_levels,
-            'current_step': current_step,
-            'max_steps': self.max_steps,
             'option_library': self.option_library,  # Reference for options to access abx_name_to_index
             'reward_calculator': self._base_env.reward_calculator,  # For heuristic workers to access clinical params
             'patient_generator': self.patient_generator,  # For heuristic workers to access attribute metadata
@@ -434,10 +422,9 @@ class OptionsWrapper(gym.Wrapper):
             dtype=np.float32,
         )
 
-        progress = np.array([self.current_step / self.max_steps], dtype=np.float32)
         front_edge = self._build_front_edge_features()
 
-        return np.concatenate([aggregate_stats, amr_obs, option_history, progress, front_edge])
+        return np.concatenate([aggregate_stats, amr_obs, option_history, front_edge])
 
     def _build_front_edge_features(self) -> np.ndarray:
         """Build front-edge patient cohort features at the boundary timestep.

@@ -1,6 +1,6 @@
 """Alternation option loader for deterministic sequences."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -8,11 +8,15 @@ from abx_amr_simulator.hrl import OptionBase
 
 
 class AlternationOption(OptionBase):
-    """Deterministic option that follows a fixed sequence of antibiotics."""
+    """Deterministic option that follows a fixed sequence of antibiotics.
+    
+    This option cycles through a predetermined sequence of antibiotics. It maintains
+    internal sequence state (not episode timestep state), so it only resets when
+    explicitly called via reset() by the wrapper.
+    """
 
     REQUIRES_OBSERVATION_ATTRIBUTES: List[str] = []
     REQUIRES_AMR_LEVELS: bool = False
-    REQUIRES_STEP_NUMBER: bool = True
     PROVIDES_TERMINATION_CONDITION: bool = False
 
     def __init__(self, name: str, sequence: List[str]) -> None:
@@ -21,15 +25,18 @@ class AlternationOption(OptionBase):
         super().__init__(name=name, k=len(sequence))
         self.sequence = sequence
         self._sequence_index = 0
-        self._last_seen_step: Optional[int] = None
 
     def decide(self, env_state: Dict[str, Any]) -> np.ndarray:
+        """Decide next antibiotic in the sequence.
+        
+        Args:
+            env_state: Environment state dict (does not need current_step).
+        
+        Returns:
+            Array of shape (num_patients,) with antibiotic names.
+        """
         num_patients = env_state["num_patients"]
         option_library = env_state["option_library"]
-        current_step = int(env_state.get("current_step", 0))
-
-        if self._last_seen_step is None or current_step != self._last_seen_step + 1:
-            self._sequence_index = 0
 
         # No normalization - antibiotic name must match exactly
         action_name = self.sequence[self._sequence_index]
@@ -46,13 +53,15 @@ class AlternationOption(OptionBase):
             ) from exc
 
         self._sequence_index = (self._sequence_index + 1) % len(self.sequence)
-        self._last_seen_step = current_step
 
         return np.full(shape=num_patients, fill_value=action_name, dtype=object)
 
     def reset(self) -> None:
+        """Reset to beginning of sequence.
+        
+        Called by wrapper when option changes or episode resets.
+        """
         self._sequence_index = 0
-        self._last_seen_step = None
 
     def get_referenced_antibiotics(self) -> List[str]:
         """Return all antibiotics in the alternation sequence."""
