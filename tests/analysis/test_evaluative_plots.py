@@ -26,6 +26,7 @@ from abx_amr_simulator.analysis.evaluative_plots import (
     compute_hrl_option_stats,
     aggregate_hrl_option_stats,
     run_hrl_diagnostics,
+    run_lstm_probe_diagnostics,
 )
 from abx_amr_simulator.utils import (
     create_reward_calculator,
@@ -729,3 +730,102 @@ class TestRunHrlDiagnostics:
 
         assert result is False
         assert not (output_dir / "hrl_stats" / "hrl_stats_summary.json").exists()
+
+
+def _write_valid_lstm_logs(
+    run_dir: Path,
+    num_episodes: int = 2,
+    steps_per_episode: int = 24,
+    hidden_dim: int = 4,
+    num_antibiotics: int = 3,
+) -> Path:
+    """Create synthetic LSTM probe logs with required arrays."""
+    log_dir = run_dir / "lstm_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed=123)
+
+    projection = rng.normal(loc=0.0, scale=0.5, size=(hidden_dim, num_antibiotics))
+
+    for episode_idx in range(num_episodes):
+        hidden_states = rng.normal(loc=0.0, scale=1.0, size=(steps_per_episode, hidden_dim))
+        noise = rng.normal(loc=0.0, scale=0.05, size=(steps_per_episode, num_antibiotics))
+        true_amr = np.clip(hidden_states @ projection + noise, a_min=0.0, a_max=1.0)
+        timesteps = np.arange(steps_per_episode)
+
+        np.savez(
+            file=log_dir / f"episode_{episode_idx:04d}.npz",
+            hidden_states=hidden_states,
+            true_amr=true_amr,
+            timesteps=timesteps,
+        )
+
+    return log_dir
+
+
+class TestRunLstmProbeDiagnostics:
+    """Tests for run_lstm_probe_diagnostics() output contract + partial failure handling."""
+
+    def _tmp_output_dir(self, tmp_path: Path) -> Path:
+        out = tmp_path / "evaluation"
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+
+    def test_output_path_contract(self, tmp_path: Path):
+        """Artifacts are written under analysis_output/<prefix>/evaluation/lstm_probe/."""
+        run_dir = tmp_path / "results" / "exp_recurrent_seed1_20260101_000001"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        _write_valid_lstm_logs(run_dir=run_dir)
+
+        output_dir = tmp_path / "analysis_output" / "my_prefix" / "evaluation"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        result = run_lstm_probe_diagnostics(
+            run_dirs=[run_dir],
+            seed_labels=["seed_1"],
+            output_dir=output_dir,
+        )
+
+        lstm_probe_dir = output_dir / "lstm_probe"
+        assert result is True
+        assert lstm_probe_dir.is_dir(), "lstm_probe/ must be created at evaluation/lstm_probe/"
+        assert (lstm_probe_dir / "lstm_probe_summary.json").exists()
+        assert (lstm_probe_dir / "lstm_probe_seed_1.json").exists()
+
+    def test_partial_seed_failure_continues_and_returns_true(self, tmp_path: Path, capsys):
+        """One failed seed emits warning while successful seed still yields aggregate output."""
+        good_run_dir = tmp_path / "results" / "exp_recurrent_seed1_20260101_000001"
+        bad_run_dir = tmp_path / "results" / "exp_recurrent_seed2_20260101_000002"
+        good_run_dir.mkdir(parents=True, exist_ok=True)
+        bad_run_dir.mkdir(parents=True, exist_ok=True)
+        _write_valid_lstm_logs(run_dir=good_run_dir)
+
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+
+        result = run_lstm_probe_diagnostics(
+            run_dirs=[bad_run_dir, good_run_dir],
+            seed_labels=["seed_2", "seed_1"],
+            output_dir=output_dir,
+        )
+
+        captured = capsys.readouterr()
+        assert result is True
+        assert "[WARN]" in captured.out
+        assert (output_dir / "lstm_probe" / "lstm_probe_summary.json").exists()
+
+    def test_all_seeds_fail_returns_false(self, tmp_path: Path):
+        """When all seeds fail probe loading, function returns False and no summary is written."""
+        bad_run_dir_a = tmp_path / "results" / "exp_recurrent_seed1_20260101_000001"
+        bad_run_dir_b = tmp_path / "results" / "exp_recurrent_seed2_20260101_000002"
+        bad_run_dir_a.mkdir(parents=True, exist_ok=True)
+        bad_run_dir_b.mkdir(parents=True, exist_ok=True)
+
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+
+        result = run_lstm_probe_diagnostics(
+            run_dirs=[bad_run_dir_a, bad_run_dir_b],
+            seed_labels=["seed_1", "seed_2"],
+            output_dir=output_dir,
+        )
+
+        assert result is False
+        assert not (output_dir / "lstm_probe" / "lstm_probe_summary.json").exists()

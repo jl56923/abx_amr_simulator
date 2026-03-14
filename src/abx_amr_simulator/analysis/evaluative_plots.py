@@ -534,6 +534,194 @@ def run_hrl_diagnostics(
     return True
 
 
+# ==================== Recurrent LSTM Probe Diagnostics ====================
+
+def _safe_metric_mean(values: List[Any]) -> Optional[float]:
+    numeric_values = [float(v) for v in values if isinstance(v, (int, float, np.floating)) and np.isfinite(v)]
+    if not numeric_values:
+        return None
+    return float(np.mean(np.array(numeric_values, dtype=float)))
+
+
+def _safe_metric_std(values: List[Any]) -> Optional[float]:
+    numeric_values = [float(v) for v in values if isinstance(v, (int, float, np.floating)) and np.isfinite(v)]
+    if not numeric_values:
+        return None
+    return float(np.std(np.array(numeric_values, dtype=float)))
+
+
+def compute_lstm_probe_stats(
+    log_dir: Path,
+    test_size: float = 0.2,
+    random_state: int = 42,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Compute per-seed LSTM probe statistics from one run's ``lstm_logs`` directory."""
+    from abx_amr_simulator.analysis.probe_hidden_belief import fit_probe, load_episodes
+
+    hidden_states, true_amr, _ = load_episodes(log_dir=log_dir)
+    probe_results = fit_probe(
+        hidden_states=hidden_states,
+        true_amr=true_amr,
+        test_size=test_size,
+        random_state=random_state,
+    )
+
+    per_antibiotic: List[Dict[str, Any]] = []
+    for result in probe_results.get("results", []):
+        per_antibiotic.append(
+            {
+                "antibiotic_idx": int(result.get("antibiotic_idx", -1)),
+                "train_r2": float(result.get("train_r2", 0.0)),
+                "test_r2": float(result.get("test_r2", 0.0)),
+                "train_mae": float(result.get("train_mae", 0.0)),
+                "test_mae": float(result.get("test_mae", 0.0)),
+            }
+        )
+
+    mean_test_r2 = _safe_metric_mean(values=[item.get("test_r2") for item in per_antibiotic])
+    mean_test_mae = _safe_metric_mean(values=[item.get("test_mae") for item in per_antibiotic])
+
+    seed_stats: Dict[str, Any] = {
+        "log_dir": str(log_dir),
+        "num_timesteps": int(hidden_states.shape[0]) if hasattr(hidden_states, "shape") and hidden_states.shape else 0,
+        "hidden_state_shape": list(hidden_states.shape) if hasattr(hidden_states, "shape") else [],
+        "true_amr_shape": list(true_amr.shape) if hasattr(true_amr, "shape") else [],
+        "num_antibiotics": len(per_antibiotic),
+        "per_antibiotic": per_antibiotic,
+        "metrics": {
+            "mean_test_r2": mean_test_r2,
+            "mean_test_mae": mean_test_mae,
+        },
+    }
+
+    return seed_stats, probe_results
+
+
+def aggregate_lstm_probe_stats(per_seed_stats: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate per-seed recurrent LSTM probe stats into ensemble summary."""
+    if not per_seed_stats:
+        return {
+            "num_seeds": 0,
+            "mean_test_r2": None,
+            "std_test_r2": None,
+            "mean_test_mae": None,
+            "std_test_mae": None,
+            "per_antibiotic": {},
+        }
+
+    mean_test_r2_vals = [seed_stat.get("metrics", {}).get("mean_test_r2") for seed_stat in per_seed_stats]
+    mean_test_mae_vals = [seed_stat.get("metrics", {}).get("mean_test_mae") for seed_stat in per_seed_stats]
+
+    per_antibiotic_metrics: Dict[str, Dict[str, Any]] = {}
+    antibiotic_ids = sorted(
+        {
+            int(abx_stat.get("antibiotic_idx", -1))
+            for seed_stat in per_seed_stats
+            for abx_stat in seed_stat.get("per_antibiotic", [])
+            if int(abx_stat.get("antibiotic_idx", -1)) >= 0
+        }
+    )
+
+    for abx_idx in antibiotic_ids:
+        test_r2_vals = [
+            abx_stat.get("test_r2")
+            for seed_stat in per_seed_stats
+            for abx_stat in seed_stat.get("per_antibiotic", [])
+            if int(abx_stat.get("antibiotic_idx", -1)) == abx_idx
+        ]
+        test_mae_vals = [
+            abx_stat.get("test_mae")
+            for seed_stat in per_seed_stats
+            for abx_stat in seed_stat.get("per_antibiotic", [])
+            if int(abx_stat.get("antibiotic_idx", -1)) == abx_idx
+        ]
+        per_antibiotic_metrics[str(abx_idx)] = {
+            "mean_test_r2": _safe_metric_mean(values=test_r2_vals),
+            "std_test_r2": _safe_metric_std(values=test_r2_vals),
+            "mean_test_mae": _safe_metric_mean(values=test_mae_vals),
+            "std_test_mae": _safe_metric_std(values=test_mae_vals),
+        }
+
+    return {
+        "num_seeds": len(per_seed_stats),
+        "mean_test_r2": _safe_metric_mean(values=mean_test_r2_vals),
+        "std_test_r2": _safe_metric_std(values=mean_test_r2_vals),
+        "mean_test_mae": _safe_metric_mean(values=mean_test_mae_vals),
+        "std_test_mae": _safe_metric_std(values=mean_test_mae_vals),
+        "per_antibiotic": per_antibiotic_metrics,
+    }
+
+
+def run_lstm_probe_diagnostics(
+    run_dirs: List[Path],
+    seed_labels: List[str],
+    output_dir: Path,
+) -> bool:
+    """Run recurrent LSTM probe branch and write aggregated stats to ``lstm_probe/``.
+
+    Warning-and-continue behavior: if one seed fails, remaining seeds continue.
+    Branch succeeds if at least one seed probe succeeds.
+    """
+    lstm_probe_dir = output_dir / "lstm_probe"
+    lstm_probe_dir.mkdir(parents=True, exist_ok=True)
+
+    per_seed_stats: List[Dict[str, Any]] = []
+    succeeded_labels: List[str] = []
+    failed_labels: List[str] = []
+
+    for run_dir, label in zip(run_dirs, seed_labels):
+        try:
+            log_dir = run_dir / "lstm_logs"
+            if not log_dir.exists() or not log_dir.is_dir():
+                raise FileNotFoundError(f"missing lstm_logs directory at {log_dir}")
+
+            seed_stats, probe_results = compute_lstm_probe_stats(log_dir=log_dir)
+            per_seed_stats.append(seed_stats)
+            succeeded_labels.append(label)
+
+            per_seed_path = lstm_probe_dir / f"lstm_probe_{label}.json"
+            with open(per_seed_path, "w") as fh:
+                json.dump(seed_stats, fp=fh, indent=2)
+
+            try:
+                from abx_amr_simulator.analysis.probe_hidden_belief import plot_predictions
+
+                plot_predictions(
+                    probe_results=probe_results,
+                    output_dir=lstm_probe_dir / label,
+                )
+            except Exception as exc:
+                print(f"      [WARN] LSTM probe plotting failed for {label}: {exc}; continuing without plot")
+
+        except Exception as exc:
+            print(f"      [WARN] LSTM probe failed for {label}: {exc}; skipping seed")
+            failed_labels.append(label)
+            continue
+
+    if not per_seed_stats:
+        print(f"    [ERROR] LSTM probe diagnostics: no seeds succeeded; skipping lstm_probe output")
+        return False
+
+    if failed_labels:
+        print(
+            f"    [WARN] LSTM probe diagnostics: {len(failed_labels)} seed(s) failed "
+            f"({', '.join(failed_labels)}); aggregating from {len(per_seed_stats)} successful seed(s)"
+        )
+
+    aggregated = aggregate_lstm_probe_stats(per_seed_stats=per_seed_stats)
+    aggregated["prefix_seed_labels"] = succeeded_labels
+    aggregated["failed_seeds"] = failed_labels
+
+    summary_path = lstm_probe_dir / "lstm_probe_summary.json"
+    with open(summary_path, "w") as fh:
+        json.dump(aggregated, fp=fh, indent=2)
+
+    print(
+        f"    Saved LSTM probe diagnostics for {len(per_seed_stats)} seed(s) to {lstm_probe_dir}"
+    )
+    return True
+
+
 # ==================== Evaluation ====================
 
 def run_evaluation_episodes(
@@ -1017,6 +1205,18 @@ def analyze_experiment(
             output_dir=output_dir,
         )
 
+    # ===== Part 3b: Recurrent LSTM probe branch =====
+    lstm_probe_ok = False
+    if is_recurrent:
+        print(f"  Running recurrent LSTM probe branch...")
+        probe_run_dirs = [run_dir for _, _, _, run_dir in models_and_configs]
+        probe_seed_labels = [f"seed_{seed}" if seed >= 0 else "run" for seed, _, _, _ in models_and_configs]
+        lstm_probe_ok = run_lstm_probe_diagnostics(
+            run_dirs=probe_run_dirs,
+            seed_labels=probe_seed_labels,
+            output_dir=output_dir,
+        )
+
     # ===== Part 4: Compute action-attribute associations (skip for HRL) =====
     if is_hrl:
         print(f"  Skipping action-attribute associations for HRL run (actions are option IDs, not antibiotics)")
@@ -1050,6 +1250,8 @@ def analyze_experiment(
         "has_action_attributes": bool(action_rows),
         "has_plots": True,
         "branch_detection": branch_detection,
+        "hrl_diagnostics_ok": hrl_diagnostics_ok,
+        "lstm_probe_ok": lstm_probe_ok,
     }
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
