@@ -625,6 +625,23 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
     num_eval_episodes = training_config.get('num_eval_episodes', 10)
     save_freq = training_config.get('_converted_save_freq', training_config.get('save_freq', 10000))
     log_patient_trajectories = training_config.get('log_patient_trajectories', False)
+    log_personalized_patient_attributes = training_config.get('log_personalized_patient_attributes', False)
+
+    # Resolve sentinel value from patient generator config when personalized logging is enabled.
+    # Fail loudly if the toggle is on but the patient generator config does not supply the
+    # sentinel so that misconfigured runs are caught immediately rather than silently producing
+    # artifacts that cannot be used for downstream subgroup analysis.
+    patient_generator_config = config.get('patient_generator', {})
+    personalized_sentinel_value: Optional[float] = patient_generator_config.get(
+        'personalized_missing_prediction_fill_value', None
+    )
+    if log_personalized_patient_attributes and personalized_sentinel_value is None:
+        raise ValueError(
+            "training.log_personalized_patient_attributes is True, but "
+            "patient_generator.personalized_missing_prediction_fill_value is not set. "
+            "Provide this value in the patient generator config so the sentinel can be "
+            "persisted in evaluation trajectory artifacts for downstream subgroup inference."
+        )
     
     # Patient stats logging callback (always active during training)
     patient_stats_callback = PatientStatsLoggingCallback()
@@ -656,6 +673,8 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
                 best_model_save_path=os.path.join(run_dir, 'checkpoints'),
                 deterministic=True,
                 render=False,
+                log_personalized_patient_attributes=log_personalized_patient_attributes,
+                personalized_sentinel_value=personalized_sentinel_value,
             )
         else:
             # Use standard EvalCallback

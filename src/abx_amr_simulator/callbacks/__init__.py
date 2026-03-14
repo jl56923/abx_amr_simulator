@@ -166,6 +166,8 @@ class DetailedEvalCallback(EvalCallback):
         verbose: int = 1,
         warn: bool = True,
         save_patient_trajectories: bool = True,
+        log_personalized_patient_attributes: bool = False,
+        personalized_sentinel_value: Optional[float] = None,
     ):
         """Initialize the DetailedEvalCallback.
         
@@ -188,7 +190,23 @@ class DetailedEvalCallback(EvalCallback):
             warn (bool): If True, warn about evaluation issues. Default: True.
             save_patient_trajectories (bool): If True, save full patient trajectories
                 to .npz files. Default: True.
+            log_personalized_patient_attributes (bool): If True, enriched personalized
+                subgroup logging is enabled. The sentinel value will be written to
+                every .npz artifact so downstream analysis can recover subgroup
+                membership via sentinel inference. Default: False.
+            personalized_sentinel_value (float, optional): The fill value used for
+                patients without a personalized prediction (i.e.
+                ``personalized_missing_prediction_fill_value`` from the patient
+                generator config). Required (must not be None) when
+                ``log_personalized_patient_attributes=True``.
         """
+        if log_personalized_patient_attributes and personalized_sentinel_value is None:
+            raise ValueError(
+                "personalized_sentinel_value must be provided when "
+                "log_personalized_patient_attributes=True. "
+                "Set personalized_missing_prediction_fill_value in the patient generator config."
+            )
+
         super().__init__(
             eval_env=eval_env,
             callback_on_new_best=callback_on_new_best,
@@ -204,6 +222,8 @@ class DetailedEvalCallback(EvalCallback):
         )
         
         self.save_patient_trajectories = save_patient_trajectories
+        self.log_personalized_patient_attributes = log_personalized_patient_attributes
+        self.personalized_sentinel_value = personalized_sentinel_value
         self.eval_count = 0
         
         # Create eval_logs directory if saving trajectories
@@ -425,6 +445,17 @@ class DetailedEvalCallback(EvalCallback):
 
         if antibiotic_names:
             save_dict['antibiotic_names'] = np.array(antibiotic_names)
+
+        # When enriched personalized logging is enabled, persist the sentinel value so
+        # downstream analysis scripts can recover subgroup membership via sentinel inference
+        # without hardcoding the fill value.
+        if self.log_personalized_patient_attributes:
+            if self.personalized_sentinel_value is None:
+                raise ValueError(
+                    "log_personalized_patient_attributes is True but personalized_sentinel_value "
+                    "is None — cannot write sentinel metadata to trajectory artifact."
+                )
+            save_dict['personalized_sentinel_value'] = np.float64(self.personalized_sentinel_value)
         
         # Save each episode's data
         for ep_idx, traj in enumerate(trajectories):
