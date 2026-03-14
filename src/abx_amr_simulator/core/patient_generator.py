@@ -138,6 +138,15 @@ class PatientGenerator(PatientGeneratorBase):
         'recovery_without_treatment_prob',
         'visible_patient_attributes',
     ]
+
+    DEFAULT_LOGGING_PATIENT_ATTRIBUTES: ClassVar[List[str]] = [
+        'prob_infected',
+        'benefit_value_multiplier',
+        'failure_value_multiplier',
+        'benefit_probability_multiplier',
+        'failure_probability_multiplier',
+        'recovery_without_treatment_prob',
+    ]
     
     @classmethod
     def default_config(cls) -> Dict[str, Any]:
@@ -197,6 +206,7 @@ class PatientGenerator(PatientGeneratorBase):
                 'obs_noise_std_dev_fraction': 0.0,
                 'clipping_bounds': [0.0, 1.0],
             },
+            'logging_patient_attributes': list(cls.DEFAULT_LOGGING_PATIENT_ATTRIBUTES),
             'visible_patient_attributes': ['prob_infected'],
         }
     
@@ -238,6 +248,13 @@ class PatientGenerator(PatientGeneratorBase):
                 "Use default_config() as a template."
             )
         self.visible_patient_attributes: List[str] = config['visible_patient_attributes']
+
+        self.logging_patient_attributes: List[str] = list(
+            config.get('logging_patient_attributes', self.DEFAULT_LOGGING_PATIENT_ATTRIBUTES)
+        )
+        self._validate_logging_patient_attributes(
+            logging_patient_attributes=self.logging_patient_attributes,
+        )
         
         # Validate each visible attribute exists and is valid
         for attr in self.visible_patient_attributes:
@@ -268,6 +285,71 @@ class PatientGenerator(PatientGeneratorBase):
         
         # Ownership lifecycle: start in standalone mode
         self._standalone: bool = True
+
+    def _validate_logging_patient_attributes(
+        self,
+        logging_patient_attributes: List[str],
+    ) -> None:
+        if not isinstance(logging_patient_attributes, list) or len(logging_patient_attributes) == 0:
+            raise ValueError(
+                "logging_patient_attributes must be a non-empty list when provided"
+            )
+
+        for attribute_name in logging_patient_attributes:
+            if attribute_name not in self.KNOWN_ATTRIBUTE_TYPES:
+                raise ValueError(
+                    f"Unknown logging_patient_attributes entry '{attribute_name}'. "
+                    f"Known attributes: {sorted(self.KNOWN_ATTRIBUTE_TYPES.keys())}"
+                )
+
+            observed_attribute_name = self._obs_attr_name(attr=attribute_name)
+            if observed_attribute_name not in self.PROVIDES_ATTRIBUTES:
+                raise ValueError(
+                    f"Attribute '{attribute_name}' does not have observed counterpart "
+                    f"'{observed_attribute_name}' in PROVIDES_ATTRIBUTES"
+                )
+
+    def export_patient_attributes_for_logging(
+        self,
+        patients: List[Patient],
+        include_analysis_only_attributes: bool = False,
+    ) -> Dict[str, Dict[str, List[float]]]:
+        del include_analysis_only_attributes
+
+        if patients is None:
+            raise ValueError("patients must not be None for logging export")
+
+        true_attributes: Dict[str, List[float]] = {
+            attribute_name: []
+            for attribute_name in self.logging_patient_attributes
+        }
+        observed_attributes: Dict[str, List[float]] = {
+            attribute_name: []
+            for attribute_name in self.logging_patient_attributes
+        }
+
+        for patient in patients:
+            for attribute_name in self.logging_patient_attributes:
+                observed_attribute_name = self._obs_attr_name(attr=attribute_name)
+
+                if not hasattr(patient, attribute_name):
+                    raise ValueError(
+                        f"Patient missing attribute '{attribute_name}' required for logging export"
+                    )
+                if not hasattr(patient, observed_attribute_name):
+                    raise ValueError(
+                        f"Patient missing observed attribute '{observed_attribute_name}' required for logging export"
+                    )
+
+                true_attributes[attribute_name].append(float(getattr(patient, attribute_name)))
+                observed_attributes[attribute_name].append(
+                    float(getattr(patient, observed_attribute_name))
+                )
+
+        return {
+            'true': true_attributes,
+            'observed': observed_attributes,
+        }
     
     def _set_environment_owned(self):
         """Mark this component as environment-owned (one-way transition).

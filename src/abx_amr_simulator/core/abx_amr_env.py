@@ -4,6 +4,7 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+import inspect
 from typing import Optional, Dict, List, Tuple, Any
 from collections import deque
 
@@ -260,6 +261,7 @@ class ABXAMREnv(gym.Env):
         # Flag to control whether to log full patient attributes in info dict
         # Set to True during eval episodes to collect detailed patient data
         self.log_full_patient_attributes: bool = False
+        self.log_personalized_patient_attributes: bool = False
         
         # Default parameters for AMRDynamicsBase (AMR_LeakyBalloon)
         default_params = {
@@ -645,6 +647,22 @@ class ABXAMREnv(gym.Env):
         """
         if not patients:
             return {'true': {}, 'observed': {}}
+
+        export_function = getattr(self.patient_generator, 'export_patient_attributes_for_logging', None)
+        if callable(export_function):
+            export_signature = inspect.signature(export_function)
+            if 'include_analysis_only_attributes' in export_signature.parameters:
+                exported_attributes = export_function(
+                    patients=patients,
+                    include_analysis_only_attributes=bool(self.log_personalized_patient_attributes),
+                )
+            else:
+                exported_attributes = export_function(patients=patients)
+
+            return self._validate_and_normalize_exported_patient_attributes(
+                exported_attributes=exported_attributes,
+                expected_num_patients=len(patients),
+            )
         
         true_attrs = {
             'prob_infected': [float(p.prob_infected) for p in patients],
@@ -667,6 +685,69 @@ class ABXAMREnv(gym.Env):
         return {
             'true': true_attrs,
             'observed': obs_attrs,
+        }
+
+    def _validate_and_normalize_exported_patient_attributes(
+        self,
+        exported_attributes: Dict[str, Any],
+        expected_num_patients: int,
+    ) -> Dict[str, Dict[str, List[float]]]:
+        if not isinstance(exported_attributes, dict):
+            raise ValueError(
+                "Patient logging export must return a dictionary with 'true' and 'observed' keys"
+            )
+
+        if 'true' not in exported_attributes or 'observed' not in exported_attributes:
+            raise ValueError(
+                "Patient logging export must contain both 'true' and 'observed' dictionaries"
+            )
+
+        true_attributes = exported_attributes['true']
+        observed_attributes = exported_attributes['observed']
+        if not isinstance(true_attributes, dict) or not isinstance(observed_attributes, dict):
+            raise ValueError("Patient logging export 'true' and 'observed' entries must be dictionaries")
+
+        true_keys = set(true_attributes.keys())
+        observed_keys = set(observed_attributes.keys())
+        if true_keys != observed_keys:
+            raise ValueError(
+                "Patient logging export key mismatch between true and observed attributes. "
+                f"true={sorted(true_keys)}, observed={sorted(observed_keys)}"
+            )
+
+        normalized_true: Dict[str, List[float]] = {}
+        normalized_observed: Dict[str, List[float]] = {}
+
+        for attribute_name in sorted(true_keys):
+            true_values = true_attributes[attribute_name]
+            observed_values = observed_attributes[attribute_name]
+
+            if not isinstance(true_values, (list, tuple, np.ndarray)):
+                raise ValueError(
+                    f"Patient logging export attribute '{attribute_name}' true values must be a list-like object"
+                )
+            if not isinstance(observed_values, (list, tuple, np.ndarray)):
+                raise ValueError(
+                    f"Patient logging export attribute '{attribute_name}' observed values must be a list-like object"
+                )
+
+            if len(true_values) != expected_num_patients:
+                raise ValueError(
+                    f"Patient logging export attribute '{attribute_name}' true values length {len(true_values)} "
+                    f"does not match expected patient count {expected_num_patients}"
+                )
+            if len(observed_values) != expected_num_patients:
+                raise ValueError(
+                    f"Patient logging export attribute '{attribute_name}' observed values length {len(observed_values)} "
+                    f"does not match expected patient count {expected_num_patients}"
+                )
+
+            normalized_true[attribute_name] = [float(value) for value in true_values]
+            normalized_observed[attribute_name] = [float(value) for value in observed_values]
+
+        return {
+            'true': normalized_true,
+            'observed': normalized_observed,
         }
     
     def step(self, action):

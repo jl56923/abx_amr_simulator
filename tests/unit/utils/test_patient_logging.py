@@ -14,6 +14,22 @@ import pytest
 
 from tests.unit.utils.test_reference_helpers import create_mock_environment
 from abx_amr_simulator.core import ABXAMREnv
+from abx_amr_simulator.core import PatientGenerator
+
+
+class AnalysisOnlyMarkerPatientGenerator(PatientGenerator):
+    """Concrete generator used to test analysis-only logging hook behavior."""
+
+    def export_patient_attributes_for_logging(self, patients, include_analysis_only_attributes=False):
+        exported = super().export_patient_attributes_for_logging(
+            patients=patients,
+            include_analysis_only_attributes=include_analysis_only_attributes,
+        )
+        if include_analysis_only_attributes:
+            marker_values = [1.0 for _ in patients]
+            exported['true']['analysis_only_marker'] = marker_values
+            exported['observed']['analysis_only_marker'] = marker_values
+        return exported
 
 
 def test_log_full_patient_attributes_flag_defaults_to_false():
@@ -138,6 +154,59 @@ def test_extract_full_patient_attributes_returns_correct_structure():
         # Check that values are floats
         for val in full_data['observed'][attr]:
             assert isinstance(val, float)
+
+
+def test_extract_full_patient_attributes_respects_configurable_logging_attribute_set():
+    """Configured logging_patient_attributes should control canonical export payload fields."""
+    generator_config = PatientGenerator.default_config()
+    generator_config['logging_patient_attributes'] = [
+        'prob_infected',
+        'benefit_value_multiplier',
+    ]
+    patient_generator = PatientGenerator(config=generator_config)
+
+    env = create_mock_environment(patient_generator=patient_generator)
+    true_amr_levels = {
+        abx_name: env.amr_balloon_models[abx_name].get_volume()
+        for abx_name in env.antibiotic_names
+    }
+    patients = env.patient_generator.sample(
+        n_patients=4,
+        true_amr_levels=true_amr_levels,
+        rng=env.np_random,
+    )
+
+    full_data = env._extract_full_patient_attributes(patients=patients)
+    expected_attributes = {'prob_infected', 'benefit_value_multiplier'}
+    assert set(full_data['true'].keys()) == expected_attributes
+    assert set(full_data['observed'].keys()) == expected_attributes
+
+
+def test_extract_full_patient_attributes_passes_analysis_only_toggle_to_generator_hook():
+    """Analysis-only attributes are exported only when personalized logging flag is enabled."""
+    generator_config = PatientGenerator.default_config()
+    marker_generator = AnalysisOnlyMarkerPatientGenerator(config=generator_config)
+    env = create_mock_environment(patient_generator=marker_generator)
+
+    true_amr_levels = {
+        abx_name: env.amr_balloon_models[abx_name].get_volume()
+        for abx_name in env.antibiotic_names
+    }
+    patients = env.patient_generator.sample(
+        n_patients=3,
+        true_amr_levels=true_amr_levels,
+        rng=env.np_random,
+    )
+
+    env.log_personalized_patient_attributes = False
+    without_analysis_payload = env._extract_full_patient_attributes(patients=patients)
+    assert 'analysis_only_marker' not in without_analysis_payload['true']
+    assert 'analysis_only_marker' not in without_analysis_payload['observed']
+
+    env.log_personalized_patient_attributes = True
+    with_analysis_payload = env._extract_full_patient_attributes(patients=patients)
+    assert 'analysis_only_marker' in with_analysis_payload['true']
+    assert 'analysis_only_marker' in with_analysis_payload['observed']
 
 
 def test_step_always_includes_patient_stats():

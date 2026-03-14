@@ -245,6 +245,30 @@ class TestDetailedEvalCallback:
         # Disable logging
         callback._set_eval_env_logging_flag(False)
         assert test_env.log_full_patient_attributes is False
+
+    def test_sets_personalized_logging_flag_on_eval_env(self, test_env, temp_log_dir):
+        """Test personalized toggle propagation to environment logging flags."""
+        vec_env = DummyVecEnv([lambda: test_env])
+
+        callback = DetailedEvalCallback(
+            eval_env=vec_env,
+            n_eval_episodes=1,
+            eval_freq=100,
+            log_path=temp_log_dir,
+            save_patient_trajectories=True,
+            log_personalized_patient_attributes=True,
+            personalized_sentinel_value=-1.0,
+        )
+
+        assert test_env.log_personalized_patient_attributes is False
+
+        callback._set_eval_env_logging_flag(value=True)
+        assert test_env.log_full_patient_attributes is True
+        assert test_env.log_personalized_patient_attributes is True
+
+        callback._set_eval_env_logging_flag(value=False)
+        assert test_env.log_full_patient_attributes is False
+        assert test_env.log_personalized_patient_attributes is False
     
     def test_saves_trajectory_files(self, test_env, temp_log_dir):
         """Test that callback saves trajectory files with correct structure."""

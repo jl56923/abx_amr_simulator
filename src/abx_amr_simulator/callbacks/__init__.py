@@ -401,12 +401,20 @@ class DetailedEvalCallback(EvalCallback):
             for env in self.eval_env.envs:
                 try:
                     env.unwrapped.log_full_patient_attributes = value
+                    if hasattr(env.unwrapped, 'log_personalized_patient_attributes'):
+                        env.unwrapped.log_personalized_patient_attributes = bool(
+                            value and self.log_personalized_patient_attributes
+                        )
                 except AttributeError:
                     pass
         else:
             # Single env or wrapped env
             try:
                 self.eval_env.unwrapped.log_full_patient_attributes = value
+                if hasattr(self.eval_env.unwrapped, 'log_personalized_patient_attributes'):
+                    self.eval_env.unwrapped.log_personalized_patient_attributes = bool(
+                        value and self.log_personalized_patient_attributes
+                    )
             except AttributeError:
                 pass
     
