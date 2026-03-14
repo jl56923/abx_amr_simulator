@@ -257,6 +257,283 @@ def wrap_environment_for_hrl(
         return None
 
 
+# ==================== HRL Diagnostics ====================
+
+def compute_hrl_option_stats(eval_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute per-option statistics from a single seed's evaluation trajectories.
+
+    Args:
+        eval_data: Output dict from ``run_evaluation_episodes()`` for one seed.
+
+    Returns:
+        Dict containing:
+        - ``option_counts`` (Dict[int, int]): raw selection counts per option ID.
+        - ``option_frequencies`` (Dict[int, float]): relative frequency per option ID.
+        - ``option_reward_stats`` (Dict[int, Dict]): mean/std reward per option ID.
+        - ``episode_length_stats`` (Dict): mean/std/min/max of episode lengths.
+        - ``total_steps`` (int): total steps across all episodes.
+        - ``num_episodes`` (int): number of evaluation episodes.
+    """
+    episode_lengths = eval_data.get("episode_lengths", [])
+    episodes = eval_data.get("episodes", [])
+
+    total_steps = sum(episode_lengths)
+    option_counts: Dict[int, int] = {}
+    option_reward_totals: Dict[int, float] = {}
+    option_reward_counts: Dict[int, int] = {}
+
+    for episode in episodes:
+        actions = episode.get("actions", [])
+        rewards = episode.get("rewards", [])
+
+        for step_idx, action in enumerate(actions):
+            # Actions for HRL are manager-level option IDs (int or 1-element array)
+            if isinstance(action, np.ndarray):
+                if action.size == 1:
+                    action_id = int(action.item())
+                else:
+                    action_id = int(action.flat[0])
+            else:
+                action_id = int(action)
+
+            option_counts[action_id] = option_counts.get(action_id, 0) + 1
+
+            step_reward = float(rewards[step_idx]) if step_idx < len(rewards) else 0.0
+            option_reward_totals[action_id] = option_reward_totals.get(action_id, 0.0) + step_reward
+            option_reward_counts[action_id] = option_reward_counts.get(action_id, 0) + 1
+
+    # Relative frequencies
+    option_frequencies: Dict[int, float] = {}
+    for opt_id, count in option_counts.items():
+        option_frequencies[opt_id] = count / total_steps if total_steps > 0 else 0.0
+
+    # Per-option reward stats
+    option_reward_stats: Dict[int, Dict[str, float]] = {}
+    for opt_id in option_counts:
+        cnt = option_reward_counts.get(opt_id, 0)
+        mean_reward = option_reward_totals.get(opt_id, 0.0) / cnt if cnt > 0 else 0.0
+        option_reward_stats[opt_id] = {"mean_reward": mean_reward, "count": cnt}
+
+    # Episode length statistics
+    ep_lengths_arr = np.array(episode_lengths, dtype=float) if episode_lengths else np.array([0.0])
+    episode_length_stats: Dict[str, float] = {
+        "mean": float(np.mean(ep_lengths_arr)),
+        "std": float(np.std(ep_lengths_arr)),
+        "min": float(np.min(ep_lengths_arr)),
+        "max": float(np.max(ep_lengths_arr)),
+    }
+
+    return {
+        "option_counts": {str(k): v for k, v in option_counts.items()},
+        "option_frequencies": {str(k): v for k, v in option_frequencies.items()},
+        "option_reward_stats": {str(k): v for k, v in option_reward_stats.items()},
+        "episode_length_stats": episode_length_stats,
+        "total_steps": total_steps,
+        "num_episodes": len(episode_lengths),
+    }
+
+
+def aggregate_hrl_option_stats(per_seed_stats: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate per-seed HRL option statistics into ensemble summary.
+
+    Args:
+        per_seed_stats: List of dicts from ``compute_hrl_option_stats()``.
+
+    Returns:
+        Dict with ensemble option statistics (mean/std/median/min/max per option).
+    """
+    if not per_seed_stats:
+        return {
+            "num_seeds": 0,
+            "options": [],
+            "option_statistics": {},
+            "episode_length_statistics": {},
+        }
+
+    # Collect all option IDs seen across seeds
+    all_option_ids = sorted(
+        {opt_id for seed_stat in per_seed_stats for opt_id in seed_stat.get("option_frequencies", {}).keys()}
+    )
+
+    option_statistics: Dict[str, Any] = {}
+    for opt_id in all_option_ids:
+        freq_values = np.array(
+            [seed_stat.get("option_frequencies", {}).get(opt_id, 0.0) for seed_stat in per_seed_stats]
+        )
+        reward_values = np.array(
+            [
+                seed_stat.get("option_reward_stats", {}).get(opt_id, {}).get("mean_reward", 0.0)
+                for seed_stat in per_seed_stats
+            ]
+        )
+        option_statistics[opt_id] = {
+            "frequency_mean": float(np.mean(freq_values)),
+            "frequency_std": float(np.std(freq_values)),
+            "frequency_median": float(np.median(freq_values)),
+            "frequency_min": float(np.min(freq_values)),
+            "frequency_max": float(np.max(freq_values)),
+            "frequency_p25": float(np.percentile(freq_values, 25)),
+            "frequency_p75": float(np.percentile(freq_values, 75)),
+            "mean_reward_mean": float(np.mean(reward_values)),
+            "mean_reward_std": float(np.std(reward_values)),
+        }
+
+    # Aggregate episode length statistics across seeds
+    all_ep_means = np.array([s.get("episode_length_stats", {}).get("mean", 0.0) for s in per_seed_stats])
+    episode_length_statistics: Dict[str, float] = {
+        "mean_of_seed_means": float(np.mean(all_ep_means)),
+        "std_of_seed_means": float(np.std(all_ep_means)),
+    }
+
+    return {
+        "num_seeds": len(per_seed_stats),
+        "options": all_option_ids,
+        "option_statistics": option_statistics,
+        "episode_length_statistics": episode_length_statistics,
+    }
+
+
+def run_hrl_diagnostics(
+    all_eval_data: List[Dict[str, Any]],
+    seed_labels: List[str],
+    output_dir: Path,
+) -> bool:
+    """Run HRL diagnostics branch and write aggregated stats to ``hrl_stats/`` subfolder.
+
+    Processes pre-collected evaluation trajectories for each seed with
+    warning-and-continue behavior: if a single seed's diagnostics fail, a warning
+    is emitted and aggregation proceeds from the remaining successful seeds.
+    The branch succeeds as long as at least one seed produces valid diagnostics.
+
+    Args:
+        all_eval_data: List of eval data dicts (one per seed) as returned by
+            ``run_evaluation_episodes()``.  Must be the same length as
+            ``seed_labels``.
+        seed_labels: Human-readable label for each entry in ``all_eval_data``
+            (e.g. ``["seed_1", "seed_2"]``).
+        output_dir: Base evaluation output directory
+            (``analysis_output/<prefix>/evaluation/``).  The ``hrl_stats/``
+            subfolder will be created inside it.
+
+    Returns:
+        True if at least one seed's diagnostics were successfully collected
+        and written; False otherwise.
+    """
+    hrl_stats_dir = output_dir / "hrl_stats"
+    hrl_stats_dir.mkdir(parents=True, exist_ok=True)
+
+    per_seed_stats: List[Dict[str, Any]] = []
+    succeeded_labels: List[str] = []
+    failed_labels: List[str] = []
+
+    for eval_data, label in zip(all_eval_data, seed_labels):
+        try:
+            seed_stats = compute_hrl_option_stats(eval_data=eval_data)
+            per_seed_stats.append(seed_stats)
+            succeeded_labels.append(label)
+
+            # Write per-seed diagnostics file
+            per_seed_path = hrl_stats_dir / f"hrl_stats_{label}.json"
+            with open(per_seed_path, "w") as fh:
+                json.dump(seed_stats, fp=fh, indent=2)
+
+        except Exception as exc:
+            print(f"      [WARN] HRL diagnostics failed for {label}: {exc}; skipping seed")
+            failed_labels.append(label)
+            continue
+
+    if not per_seed_stats:
+        print(f"    [ERROR] HRL diagnostics: no seeds succeeded; skipping hrl_stats output")
+        return False
+
+    if failed_labels:
+        print(
+            f"    [WARN] HRL diagnostics: {len(failed_labels)} seed(s) failed "
+            f"({', '.join(failed_labels)}); aggregating from {len(per_seed_stats)} successful seed(s)"
+        )
+
+    # Aggregate across seeds
+    aggregated = aggregate_hrl_option_stats(per_seed_stats=per_seed_stats)
+    aggregated["prefix_seed_labels"] = succeeded_labels
+    aggregated["failed_seeds"] = failed_labels
+
+    summary_path = hrl_stats_dir / "hrl_stats_summary.json"
+    with open(summary_path, "w") as fh:
+        json.dump(aggregated, fp=fh, indent=2)
+
+    # Write option_usage.csv for convenient downstream inspection
+    option_usage_path = hrl_stats_dir / "option_usage.csv"
+    option_stats = aggregated.get("option_statistics", {})
+    csv_headers = [
+        "option_id",
+        "frequency_mean",
+        "frequency_std",
+        "frequency_median",
+        "frequency_min",
+        "frequency_max",
+        "frequency_p25",
+        "frequency_p75",
+        "mean_reward_mean",
+        "mean_reward_std",
+    ]
+    csv_lines = [",".join(csv_headers)]
+    for opt_id in aggregated.get("options", []):
+        stats = option_stats.get(opt_id, {})
+        row = [
+            str(opt_id),
+            str(stats.get("frequency_mean", "")),
+            str(stats.get("frequency_std", "")),
+            str(stats.get("frequency_median", "")),
+            str(stats.get("frequency_min", "")),
+            str(stats.get("frequency_max", "")),
+            str(stats.get("frequency_p25", "")),
+            str(stats.get("frequency_p75", "")),
+            str(stats.get("mean_reward_mean", "")),
+            str(stats.get("mean_reward_std", "")),
+        ]
+        csv_lines.append(",".join(row))
+    option_usage_path.write_text("\n".join(csv_lines))
+
+    # Optional: generate a simple bar-chart for option frequencies when matplotlib is available
+    if plt is not None and option_stats:
+        try:
+            options_list = aggregated.get("options", [])
+            means = [option_stats[opt].get("frequency_mean", 0.0) for opt in options_list]
+            stds = [option_stats[opt].get("frequency_std", 0.0) for opt in options_list]
+
+            fig, ax = plt.subplots(figsize=(max(8, len(options_list) * 1.2), 5))
+            x_pos = np.arange(len(options_list))
+            ax.bar(
+                x_pos,
+                means,
+                yerr=stds,
+                capsize=5,
+                alpha=0.75,
+                edgecolor="black",
+                linewidth=1.2,
+                error_kw={"linewidth": 1.5},
+            )
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels([f"opt_{o}" for o in options_list], rotation=45, ha="right")
+            ax.set_ylabel("Mean Selection Frequency (across seeds)")
+            ax.set_xlabel("Option ID")
+            ax.set_title("HRL Option Selection Frequency (Ensemble)")
+            ax.set_ylim(0.0, min(1.0, max(means) * 1.3 + 0.05) if means else 1.0)
+            ax.grid(axis="y", alpha=0.3)
+            plt.tight_layout()
+            plot_path = hrl_stats_dir / "option_frequency_ensemble.png"
+            fig.savefig(plot_path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            print(f"    Saved option frequency plot to hrl_stats/option_frequency_ensemble.png")
+        except Exception as exc:
+            print(f"    [WARN] Could not generate HRL option frequency plot: {exc}")
+
+    print(
+        f"    Saved HRL diagnostics for {len(per_seed_stats)} seed(s) to {hrl_stats_dir}"
+    )
+    return True
+
+
 # ==================== Evaluation ====================
 
 def run_evaluation_episodes(
@@ -730,7 +1007,17 @@ def analyze_experiment(
         print(f"  [ERROR] No successful evaluations for {prefix}")
         return False, None, None
     
-    # ===== Part 3: Compute action-attribute associations (skip for HRL) =====
+    # ===== Part 3: HRL diagnostics branch =====
+    hrl_diagnostics_ok = False
+    if is_hrl:
+        print(f"  Running HRL diagnostics branch...")
+        hrl_diagnostics_ok = run_hrl_diagnostics(
+            all_eval_data=all_eval_data,
+            seed_labels=seed_labels,
+            output_dir=output_dir,
+        )
+
+    # ===== Part 4: Compute action-attribute associations (skip for HRL) =====
     if is_hrl:
         print(f"  Skipping action-attribute associations for HRL run (actions are option IDs, not antibiotics)")
         action_rows = []

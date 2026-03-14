@@ -4,6 +4,7 @@ Tests cover:
 1. HRL run detection (is_hrl_run function)
 2. Environment wrapping for HRL (wrap_environment_for_hrl function)
 3. Integration test: generating plots for HRL agents
+4. HRL diagnostics: compute_hrl_option_stats, aggregate_hrl_option_stats, run_hrl_diagnostics
 """
 
 from __future__ import annotations
@@ -22,6 +23,9 @@ from abx_amr_simulator.analysis.evaluative_plots import (
     is_recurrent_run,
     wrap_environment_for_hrl,
     run_evaluation_episodes,
+    compute_hrl_option_stats,
+    aggregate_hrl_option_stats,
+    run_hrl_diagnostics,
 )
 from abx_amr_simulator.utils import (
     create_reward_calculator,
@@ -491,3 +495,237 @@ class TestRunEvaluationEpisodesActionHandling:
         )
 
         assert results["episode_lengths"] == [1]
+
+
+# ==================== HRL Diagnostics Tests ====================
+
+
+def _make_eval_data(num_episodes: int = 3, steps_per_ep: int = 4, num_options: int = 2) -> Dict[str, Any]:
+    """Helper: build a synthetic eval_data dict matching run_evaluation_episodes() output."""
+    rng = np.random.default_rng(seed=0)
+    episodes = []
+    episode_lengths = []
+    for _ in range(num_episodes):
+        actions = rng.integers(low=0, high=num_options, size=steps_per_ep).tolist()
+        rewards = rng.uniform(low=-1.0, high=1.0, size=steps_per_ep).tolist()
+        episodes.append({"actions": actions, "rewards": rewards, "obs": [], "amr_levels": []})
+        episode_lengths.append(steps_per_ep)
+    return {
+        "episode_rewards": [sum(ep["rewards"]) for ep in episodes],
+        "episode_lengths": episode_lengths,
+        "episodes": episodes,
+    }
+
+
+class TestComputeHrlOptionStats:
+    """Tests for compute_hrl_option_stats()."""
+
+    def test_returns_expected_keys(self):
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=4, num_options=3)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+
+        assert "option_counts" in stats
+        assert "option_frequencies" in stats
+        assert "option_reward_stats" in stats
+        assert "episode_length_stats" in stats
+        assert "total_steps" in stats
+        assert "num_episodes" in stats
+
+    def test_total_steps_matches_sum_of_lengths(self):
+        eval_data = _make_eval_data(num_episodes=3, steps_per_ep=5, num_options=2)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        assert stats["total_steps"] == 15
+
+    def test_frequencies_sum_to_one(self):
+        eval_data = _make_eval_data(num_episodes=4, steps_per_ep=6, num_options=3)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        total_freq = sum(stats["option_frequencies"].values())
+        assert abs(total_freq - 1.0) < 1e-9, f"Option frequencies sum to {total_freq}, expected 1.0"
+
+    def test_handles_ndarray_actions(self):
+        """Actions as 1-element ndarrays (typical HRL manager output) are handled correctly."""
+        eval_data = {
+            "episode_lengths": [2],
+            "episodes": [
+                {
+                    "actions": [np.array([0]), np.array([1])],
+                    "rewards": [1.0, -0.5],
+                    "obs": [],
+                    "amr_levels": [],
+                }
+            ],
+            "episode_rewards": [0.5],
+        }
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        assert stats["total_steps"] == 2
+        assert "0" in stats["option_counts"]
+        assert "1" in stats["option_counts"]
+
+    def test_num_episodes_matches(self):
+        eval_data = _make_eval_data(num_episodes=5, steps_per_ep=3, num_options=2)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        assert stats["num_episodes"] == 5
+
+    def test_episode_length_stats_keys(self):
+        eval_data = _make_eval_data(num_episodes=3, steps_per_ep=4, num_options=2)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        ep_stats = stats["episode_length_stats"]
+        for key in ("mean", "std", "min", "max"):
+            assert key in ep_stats, f"Missing episode_length_stats key: {key}"
+
+
+class TestAggregateHrlOptionStats:
+    """Tests for aggregate_hrl_option_stats()."""
+
+    def test_empty_input_returns_zero_seeds(self):
+        result = aggregate_hrl_option_stats(per_seed_stats=[])
+        assert result["num_seeds"] == 0
+        assert result["options"] == []
+
+    def test_single_seed_aggregation(self):
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=6, num_options=2)
+        single_stats = compute_hrl_option_stats(eval_data=eval_data)
+        result = aggregate_hrl_option_stats(per_seed_stats=[single_stats])
+
+        assert result["num_seeds"] == 1
+        assert len(result["options"]) >= 1
+
+    def test_multi_seed_aggregation_contains_all_options(self):
+        """Options seen in any seed appear in the aggregate."""
+        # Seed A only uses option 0
+        seed_a_data: Dict[str, Any] = {
+            "episode_lengths": [2],
+            "episodes": [{"actions": [0, 0], "rewards": [1.0, 1.0], "obs": [], "amr_levels": []}],
+            "episode_rewards": [2.0],
+        }
+        # Seed B only uses option 1
+        seed_b_data: Dict[str, Any] = {
+            "episode_lengths": [2],
+            "episodes": [{"actions": [1, 1], "rewards": [0.5, 0.5], "obs": [], "amr_levels": []}],
+            "episode_rewards": [1.0],
+        }
+        stats_a = compute_hrl_option_stats(eval_data=seed_a_data)
+        stats_b = compute_hrl_option_stats(eval_data=seed_b_data)
+        result = aggregate_hrl_option_stats(per_seed_stats=[stats_a, stats_b])
+
+        assert result["num_seeds"] == 2
+        assert "0" in result["options"]
+        assert "1" in result["options"]
+
+    def test_option_statistics_contain_expected_fields(self):
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=4, num_options=2)
+        single_stats = compute_hrl_option_stats(eval_data=eval_data)
+        result = aggregate_hrl_option_stats(per_seed_stats=[single_stats])
+
+        for opt_id in result["options"]:
+            opt_stat = result["option_statistics"][opt_id]
+            for field in (
+                "frequency_mean",
+                "frequency_std",
+                "frequency_median",
+                "frequency_min",
+                "frequency_max",
+                "frequency_p25",
+                "frequency_p75",
+                "mean_reward_mean",
+                "mean_reward_std",
+            ):
+                assert field in opt_stat, f"Missing field {field!r} for option {opt_id!r}"
+
+
+class TestRunHrlDiagnostics:
+    """Tests for run_hrl_diagnostics() — output directory mapping and partial failure path."""
+
+    def _tmp_output_dir(self, tmp_path: Path) -> Path:
+        out = tmp_path / "evaluation"
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+
+    def test_creates_hrl_stats_subfolder(self, tmp_path: Path):
+        """hrl_stats/ subfolder is created under the given output_dir."""
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=3, num_options=2)
+
+        result = run_hrl_diagnostics(
+            all_eval_data=[eval_data],
+            seed_labels=["seed_1"],
+            output_dir=output_dir,
+        )
+
+        assert result is True
+        assert (output_dir / "hrl_stats").is_dir()
+
+    def test_writes_summary_and_per_seed_files(self, tmp_path: Path):
+        """Summary JSON and per-seed JSON files are written to hrl_stats/."""
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=3, num_options=2)
+
+        run_hrl_diagnostics(
+            all_eval_data=[eval_data],
+            seed_labels=["seed_1"],
+            output_dir=output_dir,
+        )
+
+        hrl_stats_dir = output_dir / "hrl_stats"
+        assert (hrl_stats_dir / "hrl_stats_summary.json").exists()
+        assert (hrl_stats_dir / "hrl_stats_seed_1.json").exists()
+        assert (hrl_stats_dir / "option_usage.csv").exists()
+
+    def test_output_path_contract(self, tmp_path: Path):
+        """Output directory correctly maps to analysis_output/<prefix>/evaluation/hrl_stats/."""
+        # Simulate canonical layout: analysis_output/my_prefix/evaluation/
+        output_dir = tmp_path / "analysis_output" / "my_prefix" / "evaluation"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        eval_data = _make_eval_data(num_episodes=1, steps_per_ep=2, num_options=2)
+
+        run_hrl_diagnostics(
+            all_eval_data=[eval_data],
+            seed_labels=["seed_0"],
+            output_dir=output_dir,
+        )
+
+        expected_stats_dir = tmp_path / "analysis_output" / "my_prefix" / "evaluation" / "hrl_stats"
+        assert expected_stats_dir.is_dir(), "hrl_stats/ must be created at evaluation/hrl_stats/"
+
+    def test_partial_seed_failure_continues_and_returns_true(self, tmp_path: Path, capsys):
+        """If one seed fails, a warning is emitted, other seeds succeed, and True is returned."""
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+
+        # Good seed
+        good_eval_data = _make_eval_data(num_episodes=2, steps_per_ep=3, num_options=2)
+        # Bad seed: corrupt structure that will raise inside compute_hrl_option_stats
+        bad_eval_data: Dict[str, Any] = {
+            "episode_lengths": None,  # None instead of list — will crash sum()
+            "episodes": [],
+            "episode_rewards": [],
+        }
+
+        result = run_hrl_diagnostics(
+            all_eval_data=[bad_eval_data, good_eval_data],
+            seed_labels=["bad_seed", "good_seed"],
+            output_dir=output_dir,
+        )
+
+        captured = capsys.readouterr()
+        assert result is True, "Should return True when at least one seed's diagnostics succeed"
+        assert "[WARN]" in captured.out, "Should emit a [WARN] message for the failed seed"
+        assert (output_dir / "hrl_stats" / "hrl_stats_summary.json").exists()
+
+    def test_all_seeds_fail_returns_false(self, tmp_path: Path):
+        """If all seeds fail, returns False and no summary is written."""
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+
+        bad_eval_data: Dict[str, Any] = {
+            "episode_lengths": None,
+            "episodes": [],
+            "episode_rewards": [],
+        }
+
+        result = run_hrl_diagnostics(
+            all_eval_data=[bad_eval_data],
+            seed_labels=["bad_seed"],
+            output_dir=output_dir,
+        )
+
+        assert result is False
+        assert not (output_dir / "hrl_stats" / "hrl_stats_summary.json").exists()
