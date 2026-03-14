@@ -501,13 +501,24 @@ class TestDetailedEvalCallback:
         )
 
         trajectories = [{
-            'patient_full_data': [],
+            'patient_full_data': [{
+                'true': {
+                    'has_personalized_prediction': [1.0, 0.0],
+                    'personalized_predicted_resistance__Antibiotic_A': [0.2, 1.0],
+                },
+                'observed': {
+                    'has_personalized_prediction': [1.0, 0.0],
+                    'personalized_predicted_resistance__Antibiotic_A': [0.2, sentinel_value],
+                },
+            }],
             'patient_stats': [],
-            'actions': [np.array([0])],
+            'actions': [np.array([0, 0])],
             'rewards': [0.0],
+            'patients_actually_infected': [[1.0, 0.0]],
+            'individual_rewards': [[1.0, -0.5]],
             'actual_amr_levels': [],
             'visible_amr_levels': [],
-            'antibiotic_names': [],
+            'antibiotic_names': ['Antibiotic_A'],
             'manager_clipped': [],
             'steps_clipped': [],
             'manager_transition_trainable': [],
@@ -523,6 +534,144 @@ class TestDetailedEvalCallback:
         data = np.load(file=saved_file, allow_pickle=True)
         assert 'personalized_sentinel_value' in data.files
         assert float(data['personalized_sentinel_value']) == pytest.approx(sentinel_value)
+
+    def test_personalized_logging_fails_loudly_when_personalized_slots_are_missing(self, test_env, temp_log_dir):
+        """Missing personalized block should fail loudly when personalized logging is enabled."""
+        vec_env = DummyVecEnv([lambda: test_env])
+
+        callback = DetailedEvalCallback(
+            eval_env=vec_env,
+            n_eval_episodes=1,
+            eval_freq=10,
+            log_path=temp_log_dir,
+            save_patient_trajectories=True,
+            log_personalized_patient_attributes=True,
+            personalized_sentinel_value=-1.0,
+            verbose=0,
+        )
+
+        trajectories = [{
+            'patient_full_data': [{
+                'true': {
+                    'prob_infected': [0.5],
+                },
+                'observed': {
+                    'prob_infected': [0.5],
+                },
+            }],
+            'patient_stats': [],
+            'actions': [np.array([0])],
+            'rewards': [0.0],
+            'patients_actually_infected': [[1.0]],
+            'individual_rewards': [[0.1]],
+            'actual_amr_levels': [],
+            'visible_amr_levels': [],
+            'antibiotic_names': ['Antibiotic_A'],
+            'manager_clipped': [],
+            'steps_clipped': [],
+            'manager_transition_trainable': [],
+        }]
+
+        with pytest.raises(expected_exception=ValueError, match='missing required personalized field'):
+            callback._save_trajectories(
+                trajectories=trajectories,
+                episode_rewards=[0.0],
+                episode_lengths=[1],
+            )
+
+    def test_personalized_logging_fails_loudly_when_uncovered_slots_are_clipped(self, test_env, temp_log_dir):
+        """Uncovered personalized values clipped into [0, 1] should fail sentinel validation."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        sentinel_value = -1.0
+
+        callback = DetailedEvalCallback(
+            eval_env=vec_env,
+            n_eval_episodes=1,
+            eval_freq=10,
+            log_path=temp_log_dir,
+            save_patient_trajectories=True,
+            log_personalized_patient_attributes=True,
+            personalized_sentinel_value=sentinel_value,
+            verbose=0,
+        )
+
+        trajectories = [{
+            'patient_full_data': [{
+                'true': {
+                    'has_personalized_prediction': [0.0],
+                    'personalized_predicted_resistance__Antibiotic_A': [1.0],
+                },
+                'observed': {
+                    'has_personalized_prediction': [0.0],
+                    'personalized_predicted_resistance__Antibiotic_A': [0.0],
+                },
+            }],
+            'patient_stats': [],
+            'actions': [np.array([0])],
+            'rewards': [0.0],
+            'patients_actually_infected': [[1.0]],
+            'individual_rewards': [[0.1]],
+            'actual_amr_levels': [],
+            'visible_amr_levels': [],
+            'antibiotic_names': ['Antibiotic_A'],
+            'manager_clipped': [],
+            'steps_clipped': [],
+            'manager_transition_trainable': [],
+        }]
+
+        with pytest.raises(expected_exception=ValueError, match='must equal sentinel'):
+            callback._save_trajectories(
+                trajectories=trajectories,
+                episode_rewards=[0.0],
+                episode_lengths=[1],
+            )
+
+    def test_personalized_logging_fails_loudly_when_has_prediction_is_malformed(self, test_env, temp_log_dir):
+        """Non-binary has_personalized_prediction values should fail loudly."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        sentinel_value = -1.0
+
+        callback = DetailedEvalCallback(
+            eval_env=vec_env,
+            n_eval_episodes=1,
+            eval_freq=10,
+            log_path=temp_log_dir,
+            save_patient_trajectories=True,
+            log_personalized_patient_attributes=True,
+            personalized_sentinel_value=sentinel_value,
+            verbose=0,
+        )
+
+        trajectories = [{
+            'patient_full_data': [{
+                'true': {
+                    'has_personalized_prediction': [1.0],
+                    'personalized_predicted_resistance__Antibiotic_A': [0.4],
+                },
+                'observed': {
+                    'has_personalized_prediction': [0.25],
+                    'personalized_predicted_resistance__Antibiotic_A': [0.4],
+                },
+            }],
+            'patient_stats': [],
+            'actions': [np.array([0])],
+            'rewards': [0.0],
+            'patients_actually_infected': [[1.0]],
+            'individual_rewards': [[0.1]],
+            'actual_amr_levels': [],
+            'visible_amr_levels': [],
+            'antibiotic_names': ['Antibiotic_A'],
+            'manager_clipped': [],
+            'steps_clipped': [],
+            'manager_transition_trainable': [],
+        }]
+
+        with pytest.raises(expected_exception=ValueError, match='must be 0.0 or 1.0'):
+            callback._save_trajectories(
+                trajectories=trajectories,
+                episode_rewards=[0.0],
+                episode_lengths=[1],
+            )
 
     def test_personalized_logging_toggle_on_without_sentinel_fails_loudly(self, test_env, temp_log_dir):
         """Invalid toggle/config combination should fail loudly."""

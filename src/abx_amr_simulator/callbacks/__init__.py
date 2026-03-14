@@ -298,6 +298,8 @@ class DetailedEvalCallback(EvalCallback):
                 'patient_stats': [],
                 'actions': [],
                 'rewards': [],
+                'patients_actually_infected': [],
+                'individual_rewards': [],
                 'actual_amr_levels': [],
                 'visible_amr_levels': [],
                 'antibiotic_names': antibiotic_names,
@@ -322,6 +324,12 @@ class DetailedEvalCallback(EvalCallback):
                     episode_data['patient_stats'].append(info['patient_stats'])
                     episode_data['actions'].append(action)
                     episode_data['rewards'].append(float(reward))
+                    episode_data['patients_actually_infected'].append(
+                        info.get('patients_actually_infected', None)
+                    )
+                    episode_data['individual_rewards'].append(
+                        info.get('individual_rewards', None)
+                    )
                     episode_data['actual_amr_levels'].append(info.get('actual_amr_levels', {}))
                     episode_data['visible_amr_levels'].append(info.get('visible_amr_levels', {}))
                     
@@ -468,6 +476,12 @@ class DetailedEvalCallback(EvalCallback):
         # Save each episode's data
         for ep_idx, traj in enumerate(trajectories):
             ep_prefix = f'episode_{ep_idx}'
+
+            if self.log_personalized_patient_attributes:
+                self._validate_personalized_logging_contract(
+                    trajectory=traj,
+                    episode_prefix=ep_prefix,
+                )
             
             # Save patient data
             if traj['patient_full_data']:
@@ -497,6 +511,18 @@ class DetailedEvalCallback(EvalCallback):
             save_dict[f'{ep_prefix}/actions'] = np.array(traj['actions'])
             save_dict[f'{ep_prefix}/rewards'] = np.array(traj['rewards'])
 
+            if traj.get('patients_actually_infected'):
+                save_dict[f'{ep_prefix}/patients_actually_infected'] = np.array(
+                    traj['patients_actually_infected'],
+                    dtype=np.float64,
+                )
+
+            if traj.get('individual_rewards'):
+                save_dict[f'{ep_prefix}/individual_rewards'] = np.array(
+                    traj['individual_rewards'],
+                    dtype=np.float64,
+                )
+
             # Store AMR time series if available
             if antibiotic_names and traj['actual_amr_levels']:
                 num_steps_amr = len(traj['actual_amr_levels'])
@@ -515,6 +541,125 @@ class DetailedEvalCallback(EvalCallback):
         
         if self.verbose >= 1:
             print(f"Saved evaluation trajectories to {filename}")
+
+    def _validate_personalized_logging_contract(
+        self,
+        trajectory: Dict[str, Any],
+        episode_prefix: str,
+    ) -> None:
+        patient_full_data = trajectory.get('patient_full_data', [])
+        if not patient_full_data:
+            raise ValueError(
+                f"{episode_prefix}: personalized logging contract requires non-empty patient_full_data"
+            )
+
+        required_step_keys = {
+            'has_personalized_prediction',
+        }
+
+        personalized_observed_prefix = 'personalized_predicted_resistance__'
+        sentinel_value = float(self.personalized_sentinel_value)
+        expected_num_steps = len(patient_full_data)
+
+        infected_rows = trajectory.get('patients_actually_infected', [])
+        if len(infected_rows) != expected_num_steps:
+            raise ValueError(
+                f"{episode_prefix}: expected patients_actually_infected for each step "
+                f"({expected_num_steps}), got {len(infected_rows)}"
+            )
+
+        individual_reward_rows = trajectory.get('individual_rewards', [])
+        if len(individual_reward_rows) != expected_num_steps:
+            raise ValueError(
+                f"{episode_prefix}: expected individual_rewards for each step "
+                f"({expected_num_steps}), got {len(individual_reward_rows)}"
+            )
+
+        for step_index, step_data in enumerate(patient_full_data):
+            if 'true' not in step_data or 'observed' not in step_data:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: patient_full_data must contain 'true' and 'observed'"
+                )
+
+            true_payload = step_data['true']
+            observed_payload = step_data['observed']
+
+            for required_key in required_step_keys:
+                if required_key not in true_payload or required_key not in observed_payload:
+                    raise ValueError(
+                        f"{episode_prefix} step {step_index}: missing required personalized field '{required_key}'"
+                    )
+
+            has_prediction_values = []
+            for patient_index, raw_value in enumerate(observed_payload['has_personalized_prediction']):
+                numeric_value = float(raw_value)
+                if numeric_value not in (0.0, 1.0):
+                    raise ValueError(
+                        f"{episode_prefix} step {step_index}: has_personalized_prediction for patient "
+                        f"{patient_index} must be 0.0 or 1.0, got {numeric_value}"
+                    )
+                has_prediction_values.append(bool(int(numeric_value)))
+
+            personalized_attribute_names = sorted(
+                attribute_name
+                for attribute_name in observed_payload.keys()
+                if attribute_name.startswith(personalized_observed_prefix)
+            )
+            if not personalized_attribute_names:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: no personalized prediction attributes found "
+                    f"(expected keys starting with '{personalized_observed_prefix}')"
+                )
+
+            expected_num_patients = len(has_prediction_values)
+            if expected_num_patients == 0:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: has_personalized_prediction is empty"
+                )
+
+            infected_row = infected_rows[step_index]
+            reward_row = individual_reward_rows[step_index]
+            if infected_row is None or reward_row is None:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: missing reward/outcome payload "
+                    "(patients_actually_infected or individual_rewards)"
+                )
+            if len(infected_row) != expected_num_patients:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: patients_actually_infected length "
+                    f"{len(infected_row)} != expected {expected_num_patients}"
+                )
+            if len(reward_row) != expected_num_patients:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: individual_rewards length "
+                    f"{len(reward_row)} != expected {expected_num_patients}"
+                )
+
+            for attribute_name in personalized_attribute_names:
+                predicted_values = observed_payload[attribute_name]
+                if len(predicted_values) != expected_num_patients:
+                    raise ValueError(
+                        f"{episode_prefix} step {step_index}: field '{attribute_name}' length "
+                        f"{len(predicted_values)} != expected {expected_num_patients}"
+                    )
+
+                for patient_index, predicted_value_raw in enumerate(predicted_values):
+                    predicted_value = float(predicted_value_raw)
+                    has_prediction = has_prediction_values[patient_index]
+
+                    if has_prediction:
+                        if not 0.0 <= predicted_value <= 1.0:
+                            raise ValueError(
+                                f"{episode_prefix} step {step_index}: covered patient {patient_index} "
+                                f"field '{attribute_name}' must be in [0, 1], got {predicted_value}"
+                            )
+                    else:
+                        if predicted_value != sentinel_value:
+                            raise ValueError(
+                                f"{episode_prefix} step {step_index}: uncovered patient {patient_index} "
+                                f"field '{attribute_name}' must equal sentinel "
+                                f"{sentinel_value}, got {predicted_value}"
+                            )
 
 
 class EpisodeCounterCallback(BaseCallback):
