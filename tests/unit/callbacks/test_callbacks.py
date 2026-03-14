@@ -421,6 +421,104 @@ class TestDetailedEvalCallback:
         callback._set_eval_env_logging_flag(False)
         assert test_env.log_full_patient_attributes is False
 
+    def test_personalized_logging_toggle_defaults_off_and_does_not_persist_sentinel(self, test_env, temp_log_dir):
+        """Default toggle should be OFF and sentinel metadata should be absent in saved artifacts."""
+        vec_env = DummyVecEnv([lambda: test_env])
+
+        callback = DetailedEvalCallback(
+            eval_env=vec_env,
+            n_eval_episodes=1,
+            eval_freq=10,
+            log_path=temp_log_dir,
+            save_patient_trajectories=True,
+            verbose=0,
+        )
+
+        assert callback.log_personalized_patient_attributes is False
+        assert callback.personalized_sentinel_value is None
+
+        trajectories = [{
+            'patient_full_data': [],
+            'patient_stats': [],
+            'actions': [np.array([0])],
+            'rewards': [0.0],
+            'actual_amr_levels': [],
+            'visible_amr_levels': [],
+            'antibiotic_names': [],
+            'manager_clipped': [],
+            'steps_clipped': [],
+            'manager_transition_trainable': [],
+        }]
+        callback._save_trajectories(
+            trajectories=trajectories,
+            episode_rewards=[0.0],
+            episode_lengths=[1],
+        )
+
+        eval_logs_dir = Path(temp_log_dir) / 'eval_logs'
+        saved_file = list(eval_logs_dir.glob('*.npz'))[0]
+        data = np.load(file=saved_file, allow_pickle=True)
+        assert 'personalized_sentinel_value' not in data.files
+
+    def test_personalized_logging_toggle_on_persists_sentinel_metadata(self, test_env, temp_log_dir):
+        """When toggle is ON with sentinel configured, sentinel metadata should be persisted."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        sentinel_value = -1.0
+
+        callback = DetailedEvalCallback(
+            eval_env=vec_env,
+            n_eval_episodes=1,
+            eval_freq=10,
+            log_path=temp_log_dir,
+            save_patient_trajectories=True,
+            log_personalized_patient_attributes=True,
+            personalized_sentinel_value=sentinel_value,
+            verbose=0,
+        )
+
+        trajectories = [{
+            'patient_full_data': [],
+            'patient_stats': [],
+            'actions': [np.array([0])],
+            'rewards': [0.0],
+            'actual_amr_levels': [],
+            'visible_amr_levels': [],
+            'antibiotic_names': [],
+            'manager_clipped': [],
+            'steps_clipped': [],
+            'manager_transition_trainable': [],
+        }]
+        callback._save_trajectories(
+            trajectories=trajectories,
+            episode_rewards=[0.0],
+            episode_lengths=[1],
+        )
+
+        eval_logs_dir = Path(temp_log_dir) / 'eval_logs'
+        saved_file = list(eval_logs_dir.glob('*.npz'))[0]
+        data = np.load(file=saved_file, allow_pickle=True)
+        assert 'personalized_sentinel_value' in data.files
+        assert float(data['personalized_sentinel_value']) == pytest.approx(sentinel_value)
+
+    def test_personalized_logging_toggle_on_without_sentinel_fails_loudly(self, test_env, temp_log_dir):
+        """Invalid toggle/config combination should fail loudly."""
+        vec_env = DummyVecEnv([lambda: test_env])
+
+        with pytest.raises(
+            expected_exception=ValueError,
+            match='personalized_sentinel_value must be provided',
+        ):
+            DetailedEvalCallback(
+                eval_env=vec_env,
+                n_eval_episodes=1,
+                eval_freq=10,
+                log_path=temp_log_dir,
+                save_patient_trajectories=True,
+                log_personalized_patient_attributes=True,
+                personalized_sentinel_value=None,
+                verbose=0,
+            )
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
