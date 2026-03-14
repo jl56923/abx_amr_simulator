@@ -123,25 +123,97 @@ def load_config_from_run(run_folder: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _extract_algorithm_name(config: Dict[str, Any]) -> str:
+    """Extract configured algorithm name from flat or nested config structures."""
+    if not isinstance(config, dict):
+        return ""
+
+    if "algorithm" in config and config.get("algorithm") is not None:
+        return str(config.get("algorithm", ""))
+
+    agent_algo = config.get("agent_algorithm", {})
+    if isinstance(agent_algo, dict):
+        return str(agent_algo.get("algorithm", ""))
+
+    return ""
+
+
 def is_hrl_run(config: Dict[str, Any]) -> bool:
     """Check if config indicates an HRL run."""
     try:
-        # Check flat structure first (most common after load_config())
-        if "algorithm" in config:
-            algo = config.get("algorithm", "")
-            if "HRL" in str(algo).upper():
-                return True
-        
-        # Check nested structure
-        agent_algo = config.get("agent_algorithm", {})
-        if isinstance(agent_algo, dict):
-            algo = agent_algo.get("algorithm", "")
-            if "HRL" in str(algo).upper():
-                return True
-        
-        return False
+        algo_upper = _extract_algorithm_name(config=config).upper()
+        return "HRL" in algo_upper
     except Exception:
         return False
+
+
+def is_recurrent_run(config: Dict[str, Any]) -> bool:
+    """Check if config indicates recurrent-policy usage (canonical or HRL-recurrent)."""
+    try:
+        algo_upper = _extract_algorithm_name(config=config).upper()
+        if not algo_upper:
+            return False
+        return ("RECURRENT" in algo_upper) or ("RPPO" in algo_upper)
+    except Exception:
+        return False
+
+
+def detect_analysis_branches(configs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Detect canonical branch applicability across one experiment prefix's seed configs."""
+    if not configs:
+        raise ValueError("detect_analysis_branches() requires at least one config")
+
+    per_seed = []
+    for cfg in configs:
+        algo = _extract_algorithm_name(config=cfg)
+        per_seed.append(
+            {
+                "algorithm": algo,
+                "is_hrl": is_hrl_run(config=cfg),
+                "is_recurrent": is_recurrent_run(config=cfg),
+            }
+        )
+
+    unique_algorithms = sorted({item["algorithm"] for item in per_seed})
+    unique_hrl = {item["is_hrl"] for item in per_seed}
+    unique_recurrent = {item["is_recurrent"] for item in per_seed}
+
+    if len(unique_algorithms) > 1:
+        print(
+            f"  [WARN] Mixed algorithm labels across seeds: {unique_algorithms}. "
+            "Branch detection will use any-seed applicability."
+        )
+    if len(unique_hrl) > 1:
+        print(
+            "  [WARN] Mixed HRL detection across seeds; using any-seed applicability "
+            "for canonical branch gating."
+        )
+    if len(unique_recurrent) > 1:
+        print(
+            "  [WARN] Mixed recurrent detection across seeds; using any-seed applicability "
+            "for canonical branch gating."
+        )
+
+    is_hrl = any(item["is_hrl"] for item in per_seed)
+    is_recurrent = any(item["is_recurrent"] for item in per_seed)
+
+    return {
+        "algorithms": unique_algorithms,
+        "is_hrl": is_hrl,
+        "is_recurrent": is_recurrent,
+        "hrl_branch": {
+            "should_run": is_hrl,
+            "reason": "detected HRL algorithm in saved seed config"
+            if is_hrl
+            else "no HRL algorithm detected in saved seed config",
+        },
+        "lstm_probe_branch": {
+            "should_run": is_recurrent,
+            "reason": "detected recurrent algorithm in saved seed config"
+            if is_recurrent
+            else "no recurrent algorithm detected in saved seed config",
+        },
+    }
 
 
 def wrap_environment_for_hrl(
@@ -567,11 +639,21 @@ def analyze_experiment(
     # ===== Part 1: Generate ensemble/single-agent plots =====
     print(f"  Generating {'ensemble' if aggregate_by_seed else 'single-agent'} plots...")
     
-    # Check if this is an HRL run
-    first_config = models_and_configs[0][2]
-    is_hrl = is_hrl_run(first_config)
+    # Detect canonical branch applicability from saved seed configs
+    branch_detection = detect_analysis_branches(
+        configs=[cfg for _, _, cfg, _ in models_and_configs]
+    )
+    is_hrl = branch_detection["is_hrl"]
+    is_recurrent = branch_detection["is_recurrent"]
     if is_hrl:
         print(f"  Detected HRL run; using OptionsWrapper for environment")
+    else:
+        print(f"  [SKIP] Canonical HRL branch: {branch_detection['hrl_branch']['reason']}")
+
+    if is_recurrent:
+        print(f"  Detected recurrent run; canonical LSTM probe branch is eligible")
+    else:
+        print(f"  [SKIP] Canonical recurrent/LSTM branch: {branch_detection['lstm_probe_branch']['reason']}")
     
     try:
         # Extract just the models
@@ -680,6 +762,7 @@ def analyze_experiment(
         "seed_labels": seed_labels,
         "has_action_attributes": bool(action_rows),
         "has_plots": True,
+        "branch_detection": branch_detection,
     }
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)

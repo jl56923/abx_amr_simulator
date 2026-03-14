@@ -17,7 +17,9 @@ import numpy as np
 import yaml
 
 from abx_amr_simulator.analysis.evaluative_plots import (
+    detect_analysis_branches,
     is_hrl_run,
+    is_recurrent_run,
     wrap_environment_for_hrl,
     run_evaluation_episodes,
 )
@@ -92,6 +94,76 @@ class TestIsHrlRun:
         # Should handle gracefully without crashing
         result = is_hrl_run(config=config)
         assert isinstance(result, bool)
+
+
+class TestIsRecurrentRun:
+    """Test is_recurrent_run function for recurrent branch detection."""
+
+    def test_detects_recurrent_ppo_flat_structure(self):
+        config = {
+            "algorithm": "RecurrentPPO",
+        }
+        assert is_recurrent_run(config=config) is True
+
+    def test_detects_hrl_rppo_as_recurrent(self):
+        config = {
+            "algorithm": "HRL_RPPO",
+        }
+        assert is_recurrent_run(config=config) is True
+
+    def test_detects_recurrent_nested_structure(self):
+        config = {
+            "agent_algorithm": {
+                "algorithm": "RecurrentPPO",
+            }
+        }
+        assert is_recurrent_run(config=config) is True
+
+    def test_rejects_non_recurrent(self):
+        config = {
+            "algorithm": "PPO",
+        }
+        assert is_recurrent_run(config=config) is False
+
+
+class TestDetectAnalysisBranches:
+    """Test canonical per-prefix branch detection aggregation."""
+
+    def test_detects_hrl_and_recurrent_from_single_config(self):
+        branch_info = detect_analysis_branches(
+            configs=[{"algorithm": "HRL_RPPO"}]
+        )
+
+        assert branch_info["is_hrl"] is True
+        assert branch_info["is_recurrent"] is True
+        assert branch_info["hrl_branch"]["should_run"] is True
+        assert branch_info["lstm_probe_branch"]["should_run"] is True
+
+    def test_detects_non_hrl_non_recurrent_from_single_config(self):
+        branch_info = detect_analysis_branches(
+            configs=[{"algorithm": "PPO"}]
+        )
+
+        assert branch_info["is_hrl"] is False
+        assert branch_info["is_recurrent"] is False
+        assert branch_info["hrl_branch"]["should_run"] is False
+        assert branch_info["lstm_probe_branch"]["should_run"] is False
+
+    def test_aggregates_any_seed_applicability(self):
+        branch_info = detect_analysis_branches(
+            configs=[
+                {"algorithm": "PPO"},
+                {"algorithm": "RecurrentPPO"},
+            ]
+        )
+
+        assert branch_info["is_hrl"] is False
+        assert branch_info["is_recurrent"] is True
+        assert branch_info["lstm_probe_branch"]["should_run"] is True
+
+    def test_raises_on_empty_config_list(self):
+        with pytest.raises(ValueError, match="at least one config"):
+            detect_analysis_branches(configs=[])
 
 
 class TestWrapEnvironmentForHrl:
