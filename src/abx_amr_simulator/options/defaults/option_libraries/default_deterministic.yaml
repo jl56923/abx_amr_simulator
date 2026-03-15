@@ -6,7 +6,6 @@ options:
   - option_name: "no_treatment_5"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "no_treatment"
       duration: 5
@@ -14,7 +13,6 @@ options:
   - option_name: "no_treatment_10"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "no_treatment"
       duration: 10
@@ -22,7 +20,6 @@ options:
   - option_name: "no_treatment_15"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "no_treatment"
       duration: 15
@@ -30,7 +27,6 @@ options:
   - option_name: "A_5"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "A"
       duration: 5
@@ -38,7 +34,6 @@ options:
   - option_name: "A_10"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "A"
       duration: 10
@@ -46,7 +41,6 @@ options:
   - option_name: "A_15"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "A"
       duration: 15
@@ -54,7 +48,6 @@ options:
   - option_name: "B_5"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "B"
       duration: 5
@@ -62,7 +55,6 @@ options:
   - option_name: "B_10"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "B"
       duration: 10
@@ -70,7 +62,6 @@ options:
   - option_name: "B_15"
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "B"
       duration: 15
@@ -78,7 +69,6 @@ options:
   - option_name: "ALT_AABBA"
     option_type: "alternation"
     option_subconfig_file: "../option_types/alternation/alternation_option_default_config.yaml"
-    loader_module: "../option_types/alternation/alternation_option_loader.py"
     config_params_override:
       sequence:
         - "A"
@@ -90,7 +80,6 @@ options:
   - option_name: "ALT_BBAAB"
     option_type: "alternation"
     option_subconfig_file: "../option_types/alternation/alternation_option_default_config.yaml"
-    loader_module: "../option_types/alternation/alternation_option_loader.py"
     config_params_override:
       sequence:
         - "B"
@@ -102,7 +91,6 @@ options:
   - option_name: "ALT_A_NO_RX_B_A_NO_RX"
     option_type: "alternation"
     option_subconfig_file: "../option_types/alternation/alternation_option_default_config.yaml"
-    loader_module: "../option_types/alternation/alternation_option_loader.py"
     config_params_override:
       sequence:
         - "A"
