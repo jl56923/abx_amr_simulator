@@ -149,6 +149,8 @@ The package includes three built-in option types:
 
 `loader_module` supports two formats:
 
+This is the same plugin seam mechanism used by `PatientGenerator`, `RewardCalculator`, and AMR dynamics; see the [Plugin Seam Guide](./plugin_seam_guide.md) for details.
+
 ### Format 1: Relative file path (for bundled loaders)
 
 ```yaml
