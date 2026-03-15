@@ -412,11 +412,16 @@ class TestOptionLibraryLoaderErrors:
         _write_yaml(path=config_path, data=lib_config)
 
         env = create_mock_environment(antibiotic_names=['A'])
-        with pytest.raises(RuntimeError, match='legacy top-level loader keys'):
+        with pytest.raises(RuntimeError, match='legacy top-level loader keys') as exc_info:
             OptionLibraryLoader.load_library(
                 library_config_path=str(config_path),
                 env=env,
             )
+
+        error_message = str(exc_info.value)
+        assert "Migration required" in error_message
+        assert "option_type='custom'" in error_message
+        assert 'plugin.loader_module + plugin.loader_function' in error_message
 
     def test_custom_plugin_loader_wrong_return_type_fails_loudly(self, tmp_path):
         lib_dir = tmp_path / 'option_libraries'
