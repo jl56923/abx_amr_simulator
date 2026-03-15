@@ -23,6 +23,7 @@ from .config import (
 from .factories import (
     create_reward_calculator,
     create_patient_generator,
+    create_amr_dynamics,
     create_environment,
     wrap_environment_for_hrl,
     create_agent,
@@ -32,6 +33,8 @@ from .factories import (
     save_option_library_config,
     save_training_summary,
 )
+
+from .plugin_loader import load_plugin_component
 
 # Re-export from registry module
 from .registry import (
@@ -70,6 +73,7 @@ __all__ = [
     # Factories
     'create_reward_calculator',
     'create_patient_generator',
+    'create_amr_dynamics',
     'create_environment',
     'create_agent',
     'setup_callbacks',
@@ -94,4 +98,5 @@ __all__ = [
     'run_episode_and_get_trajectory',
     'plot_metrics_trained_agent',
     'plot_metrics_ensemble_agents',
+    'load_plugin_component',
 ]
