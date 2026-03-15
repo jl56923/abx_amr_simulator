@@ -12,6 +12,10 @@ def _write_yaml(path: Path, data: dict) -> None:
     path.write_text(yaml.safe_dump(data), encoding='utf-8')
 
 
+def _write_text(path: Path, content: str) -> None:
+    path.write_text(data=content, encoding='utf-8')
+
+
 class TestOptionLibraryLoaderBasic:
     """Basic tests for OptionLibraryLoader."""
 
@@ -194,6 +198,71 @@ class TestOptionLibraryLoaderMultipleOptions:
         assert lib['OPT_2'].k == 10
         assert lib['OPT_3'].k == 15
 
+    def test_load_custom_option_via_plugin_framework_relative_module_path(self, tmp_path):
+        """Test custom option routing through plugin loader with relative module path."""
+        lib_dir = tmp_path / 'option_libraries'
+        plugin_dir = tmp_path / 'plugins'
+        lib_dir.mkdir()
+        plugin_dir.mkdir()
+
+        subconfig_path = tmp_path / 'custom_option_default.yaml'
+        _write_yaml(path=subconfig_path, data={'duration': 4, 'constant_action': 'A'})
+
+        plugin_module_path = plugin_dir / 'custom_option_loader.py'
+        _write_text(
+            path=plugin_module_path,
+            content=(
+                "import numpy as np\n"
+                "from abx_amr_simulator.hrl.base_option import OptionBase\n\n"
+                "class TestCustomOption(OptionBase):\n"
+                "    REQUIRES_OBSERVATION_ATTRIBUTES = []\n"
+                "    REQUIRES_AMR_LEVELS = False\n"
+                "    PROVIDES_TERMINATION_CONDITION = False\n\n"
+                "    def __init__(self, name, duration, constant_action):\n"
+                "        super().__init__(name=name, k=duration)\n"
+                "        self.constant_action = constant_action\n\n"
+                "    def decide(self, env_state):\n"
+                "        return np.full(shape=env_state['num_patients'], fill_value=self.constant_action, dtype=object)\n\n"
+                "    def get_referenced_antibiotics(self):\n"
+                "        return [self.constant_action]\n\n"
+                "def load_custom_option(config):\n"
+                "    return TestCustomOption(\n"
+                "        name=config['option_name'],\n"
+                "        duration=config['duration'],\n"
+                "        constant_action=config['constant_action'],\n"
+                "    )\n"
+            ),
+        )
+
+        lib_config = {
+            'library_name': 'custom_lib',
+            'options': [
+                {
+                    'option_name': 'CUSTOM_A_4',
+                    'option_type': 'custom',
+                    'option_subconfig_file': '../custom_option_default.yaml',
+                    'plugin': {
+                        'loader_module': '../plugins/custom_option_loader.py',
+                        'loader_function': 'load_custom_option',
+                    },
+                }
+            ],
+        }
+        lib_config_path = lib_dir / 'custom_lib.yaml'
+        _write_yaml(path=lib_config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib, resolved = OptionLibraryLoader.load_library(
+            library_config_path=str(lib_config_path),
+            env=env,
+        )
+
+        assert len(lib) == 1
+        assert 'CUSTOM_A_4' in lib.options
+        assert lib['CUSTOM_A_4'].k == 4
+        assert resolved['options'][0]['option_type'] == 'custom'
+        assert resolved['options'][0]['merged_config']['duration'] == 4
+
 
 class TestOptionLibraryLoaderErrors:
     """Test error handling in loader."""
@@ -344,6 +413,48 @@ class TestOptionLibraryLoaderErrors:
 
         env = create_mock_environment(antibiotic_names=['A'])
         with pytest.raises(RuntimeError, match='legacy top-level loader keys'):
+            OptionLibraryLoader.load_library(
+                library_config_path=str(config_path),
+                env=env,
+            )
+
+    def test_custom_plugin_loader_wrong_return_type_fails_loudly(self, tmp_path):
+        lib_dir = tmp_path / 'option_libraries'
+        plugin_dir = tmp_path / 'plugins'
+        lib_dir.mkdir()
+        plugin_dir.mkdir()
+
+        subconfig_path = tmp_path / 'custom_option_default.yaml'
+        _write_yaml(path=subconfig_path, data={'duration': 3})
+
+        plugin_module_path = plugin_dir / 'bad_custom_option_loader.py'
+        _write_text(
+            path=plugin_module_path,
+            content=(
+                "def load_custom_option(config):\n"
+                "    return {'not': 'an option'}\n"
+            ),
+        )
+
+        lib_config = {
+            'library_name': 'bad_custom_lib',
+            'options': [
+                {
+                    'option_name': 'BAD_CUSTOM',
+                    'option_type': 'custom',
+                    'option_subconfig_file': '../custom_option_default.yaml',
+                    'plugin': {
+                        'loader_module': '../plugins/bad_custom_option_loader.py',
+                        'loader_function': 'load_custom_option',
+                    },
+                }
+            ],
+        }
+        config_path = lib_dir / 'bad_custom_lib.yaml'
+        _write_yaml(path=config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A'])
+        with pytest.raises(RuntimeError, match='Plugin loader returned invalid type'):
             OptionLibraryLoader.load_library(
                 library_config_path=str(config_path),
                 env=env,

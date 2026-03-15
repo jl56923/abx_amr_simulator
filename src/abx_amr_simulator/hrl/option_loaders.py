@@ -8,9 +8,7 @@ The OptionLibraryLoader handles the orchestration of:
 5. Building a resolved config for reproducibility
 """
 
-import os
 import importlib
-import importlib.util
 from typing import Dict, Any, Tuple, List
 from pathlib import Path
 
@@ -18,6 +16,7 @@ import yaml
 
 from abx_amr_simulator.hrl.base_option import OptionBase
 from abx_amr_simulator.hrl.options import OptionLibrary
+from abx_amr_simulator.utils.plugin_loader import load_plugin_component
 
 
 class OptionLibraryLoader:
@@ -219,15 +218,42 @@ class OptionLibraryLoader:
                 raise ValueError(
                     f"Option '{name}' with option_type 'custom' must provide 'plugin' as a dictionary."
                 )
+            custom_component_config = {
+                **merged_config,
+                'option_name': name,
+                'option_type': option_type,
+                'plugin': plugin_config,
+            }
+            try:
+                option = load_plugin_component(
+                    component_config=custom_component_config,
+                    expected_base_class=OptionBase,
+                    default_loader_fn_name='load_custom_option',
+                    config_dir_hint=str(base_dir),
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to load custom option '{name}' (type '{option_type}') via plugin framework: {e}"
+                ) from e
 
-            loader_module = plugin_config['loader_module']
-            loader_function = plugin_config['loader_function']
-            loader_func = OptionLibraryLoader._resolve_custom_loader_function(
-                option_name=name,
-                loader_module=loader_module,
-                loader_function=loader_function,
-                base_dir=base_dir,
-            )
+            if option is None:
+                raise RuntimeError(
+                    f"Failed to load custom option '{name}' (type '{option_type}'): plugin configuration was present "
+                    "but no option instance was returned by the plugin framework."
+                )
+
+            resolved_config = {
+                'option_name': name,
+                'option_type': option_type,
+                'default_config': default_config,
+                'overrides': config_override,
+                'merged_config': merged_config,
+                'k': option.k if option.k != float('inf') else 'inf',
+                'requires_observation_attrs': option.REQUIRES_OBSERVATION_ATTRIBUTES,
+                'requires_amr_levels': option.REQUIRES_AMR_LEVELS,
+            }
+
+            return option, resolved_config
 
         # Call loader function
         try:
@@ -331,136 +357,3 @@ class OptionLibraryLoader:
             )
 
         return load_fn
-
-    @staticmethod
-    def _resolve_custom_loader_function(
-        option_name: str,
-        loader_module: str,
-        loader_function: str,
-        base_dir: Path,
-    ):
-        loader_module_mode, loader_module_path = OptionLibraryLoader._resolve_loader_module(
-            loader_module=loader_module,
-            base_dir=base_dir,
-        )
-
-        if loader_module_mode == "module":
-            return OptionLibraryLoader._import_loader_function_by_name_from_module(
-                loader_module=loader_module,
-                loader_function=loader_function,
-            )
-
-        if loader_module_path is None:
-            raise FileNotFoundError(
-                f"Option '{option_name}' plugin loader module not found: {loader_module}"
-            )
-
-        return OptionLibraryLoader._import_loader_function_by_name(
-            loader_module_path=loader_module_path,
-            loader_function=loader_function,
-        )
-
-    @staticmethod
-    def _import_loader_function_by_name(
-        loader_module_path: Path,
-        loader_function: str,
-    ):
-        # Create module spec from file
-        spec = importlib.util.spec_from_file_location(
-            name=f'option_loaders_custom_{loader_module_path.stem}',
-            location=str(loader_module_path),
-        )
-        if spec is None or spec.loader is None:
-            raise RuntimeError(
-                f"Failed to create module spec for {loader_module_path}"
-            )
-
-        # Load module
-        module = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(module)
-        except SyntaxError as e:
-            raise SyntaxError(
-                f"Syntax error in loader module {loader_module_path}: {e}"
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Error loading module {loader_module_path}: {e}"
-            )
-
-        if not hasattr(module, loader_function):
-            available_funcs = [
-                name for name in dir(module)
-                if not name.startswith('_') and callable(getattr(module, name))
-            ]
-            raise RuntimeError(
-                f"Loader module {loader_module_path} missing '{loader_function}'. "
-                f"Available functions: {available_funcs}"
-            )
-
-        resolved_loader_function = getattr(module, loader_function)
-        if not callable(resolved_loader_function):
-            raise RuntimeError(
-                f"'{loader_function}' in {loader_module_path} is not callable"
-            )
-
-        return resolved_loader_function
-
-    @staticmethod
-    def _import_loader_function_by_name_from_module(
-        loader_module: str,
-        loader_function: str,
-    ):
-        try:
-            module = importlib.import_module(loader_module)
-        except Exception as e:
-            raise RuntimeError(
-                f"Error importing module {loader_module}: {e}"
-            )
-
-        if not hasattr(module, loader_function):
-            available_funcs = [
-                name for name in dir(module)
-                if not name.startswith('_') and callable(getattr(module, name))
-            ]
-            raise RuntimeError(
-                f"Loader module {loader_module} missing '{loader_function}'. "
-                f"Available functions: {available_funcs}"
-            )
-
-        resolved_loader_function = getattr(module, loader_function)
-        if not callable(resolved_loader_function):
-            raise RuntimeError(
-                f"'{loader_function}' in {loader_module} is not callable"
-            )
-
-        return resolved_loader_function
-
-    @staticmethod
-    def _resolve_loader_module(
-        loader_module: str,
-        base_dir: Path,
-    ) -> Tuple[str, Path | None]:
-        """Resolve loader module as file path or module path.
-
-        Returns:
-            Tuple[str, Path | None]: ("file" | "module", resolved_path_if_file)
-        """
-        has_path_separator = "/" in loader_module or "\\" in loader_module
-        is_py_file = loader_module.endswith(".py")
-
-        if os.path.isabs(loader_module) or is_py_file or has_path_separator:
-            loader_path = Path(loader_module)
-            if not loader_path.is_absolute():
-                loader_path = (base_dir / loader_path).resolve()
-            else:
-                loader_path = loader_path.resolve()
-            if not loader_path.exists():
-                raise FileNotFoundError(f"Loader module not found: {loader_path}")
-            return "file", loader_path
-
-        relative_candidate = (base_dir / loader_module).resolve()
-        if relative_candidate.exists():
-            return "file", relative_candidate
-
-        return "module", None
