@@ -31,7 +31,10 @@ from abx_amr_simulator.core import (
     PatientGenerator,
     PatientGeneratorMixer,
 )
+from abx_amr_simulator.core.base_patient_generator import PatientGeneratorBase
+from abx_amr_simulator.core.base_reward_calculator import RewardCalculatorBase
 from abx_amr_simulator.core.reward_calculator import BalancedReward
+from abx_amr_simulator.utils.plugin_loader import load_plugin_component
 
 # Import for type hints only (avoid circular imports at runtime)
 if TYPE_CHECKING:
@@ -40,6 +43,11 @@ if TYPE_CHECKING:
 
 def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
     """Instantiate RewardCalculator from experiment configuration.
+
+    If `reward_calculator.plugin.loader_module` is configured, this factory calls
+    `load_reward_calculator_component(config: Dict[str, Any]) -> RewardCalculatorBase`
+    through the shared plugin loader utility and returns the plugin-provided
+    instance directly.
     
     Extracts 'reward_calculator' section from config, injects seed from 'training.seed',
     and passes config dict directly to RewardCalculator constructor. This factory ensures
@@ -59,6 +67,16 @@ def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
         >>> rc = create_reward_calculator(config)
         >>> # rc.seed now matches config['training']['seed']
     """
+    reward_config_for_plugin = config.get('reward_calculator', {})
+    plugin_result = load_plugin_component(
+        component_config=reward_config_for_plugin,
+        expected_base_class=RewardCalculatorBase,
+        default_loader_fn_name='load_reward_calculator_component',
+        config_dir_hint=config.get('_umbrella_config_dir'),
+    )
+    if plugin_result is not None:
+        return plugin_result
+
     reward_config = config.get('reward_calculator', {}).copy()
     # Get seed from training config if available
     training_config = config.get('training', {})
@@ -70,6 +88,11 @@ def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
 def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
     """
     Instantiate PatientGenerator or PatientGeneratorMixer from config.
+
+    If `patient_generator.plugin.loader_module` is configured, this factory calls
+    `load_patient_generator_component(config: Dict[str, Any]) -> PatientGeneratorBase`
+    through the shared plugin loader utility and returns the plugin-provided
+    instance directly.
     
     Supports two configuration styles:
     1. Regular PatientGenerator (default):
@@ -102,6 +125,15 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
             "Missing 'patient_generator' config section. "
             "PatientGenerator must be configured with required parameters including 'visible_patient_attributes'."
         )
+
+    plugin_result = load_plugin_component(
+        component_config=patient_gen_config,
+        expected_base_class=PatientGeneratorBase,
+        default_loader_fn_name='load_patient_generator_component',
+        config_dir_hint=config.get('_umbrella_config_dir'),
+    )
+    if plugin_result is not None:
+        return plugin_result
     
     # Get seed from training config if available
     training_config = config.get('training', {})
