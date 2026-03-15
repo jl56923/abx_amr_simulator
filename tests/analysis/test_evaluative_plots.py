@@ -449,6 +449,20 @@ class TestRunEvaluationEpisodesActionHandling:
         def predict(self, obs, deterministic=True):
             return self._action, None
 
+    class _DummyRecurrentModel:
+        def predict(self, obs, state=None, episode_start=None, deterministic=True):
+            _ = obs
+            _ = episode_start
+            action = np.array([0], dtype=int)
+            if state is None:
+                hidden = np.ones((1, 1, 4), dtype=float)
+                cell = np.ones((1, 1, 4), dtype=float) * 2.0
+            else:
+                hidden, cell = state
+                hidden = hidden + 1.0
+                cell = cell + 1.0
+            return action, (hidden, cell)
+
     class _HrlEnv:
         def reset(self):
             return np.zeros((3,), dtype=float), {}
@@ -468,6 +482,26 @@ class TestRunEvaluationEpisodesActionHandling:
                 raise TypeError(f"Expected ndarray action, got {type(action).__name__}")
             obs = np.zeros((3,), dtype=float)
             return obs, 0.0, True, False, {}
+
+    class _RecurrentEnv:
+        def __init__(self):
+            self.step_idx = 0
+
+        def reset(self):
+            self.step_idx = 0
+            return np.zeros((3,), dtype=float), {}
+
+        def step(self, action):
+            self.step_idx += 1
+            obs = np.zeros((3,), dtype=float)
+            info = {
+                "actual_amr_levels": {
+                    "amr_a": 0.2 + 0.1 * self.step_idx,
+                    "amr_b": 0.4 + 0.1 * self.step_idx,
+                }
+            }
+            done = self.step_idx >= 3
+            return obs, 0.0, done, False, info
 
     def test_hrl_coerces_scalar_action(self):
         """HRL evaluation should coerce scalar ndarray actions to int."""
@@ -496,6 +530,31 @@ class TestRunEvaluationEpisodesActionHandling:
         )
 
         assert results["episode_lengths"] == [1]
+
+    def test_recurrent_logging_writes_episode_npz(self, tmp_path: Path):
+        """Recurrent evaluative logging writes episode_*.npz with hidden state and AMR arrays."""
+        model = self._DummyRecurrentModel()
+        env = self._RecurrentEnv()
+        log_dir = tmp_path / "lstm_probe" / "logs" / "seed_1"
+
+        results = run_evaluation_episodes(
+            model=model,
+            env=env,
+            num_episodes=2,
+            is_hrl=False,
+            is_recurrent=True,
+            recurrent_log_dir=log_dir,
+        )
+
+        assert results["episode_lengths"] == [3, 3]
+        assert (log_dir / "episode_0000.npz").exists()
+        assert (log_dir / "episode_0001.npz").exists()
+
+        episode_data = np.load(log_dir / "episode_0000.npz")
+        assert "hidden_states" in episode_data
+        assert "true_amr" in episode_data
+        assert episode_data["hidden_states"].shape[0] == 3
+        assert episode_data["true_amr"].shape[0] == 3
 
 
 # ==================== HRL Diagnostics Tests ====================
@@ -780,15 +839,17 @@ class TestRunLstmProbeDiagnostics:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         result = run_lstm_probe_diagnostics(
-            run_dirs=[run_dir],
+            log_dirs=[run_dir / "lstm_logs"],
             seed_labels=["seed_1"],
             output_dir=output_dir,
+            num_eval_episodes_per_seed=3,
         )
 
         lstm_probe_dir = output_dir / "lstm_probe"
         assert result is True
         assert lstm_probe_dir.is_dir(), "lstm_probe/ must be created at evaluation/lstm_probe/"
         assert (lstm_probe_dir / "lstm_probe_summary.json").exists()
+        assert (lstm_probe_dir / "lstm_probe_raw_vals.json").exists()
         assert (lstm_probe_dir / "lstm_probe_seed_1.json").exists()
 
     def test_partial_seed_failure_continues_and_returns_true(self, tmp_path: Path, capsys):
@@ -802,15 +863,17 @@ class TestRunLstmProbeDiagnostics:
         output_dir = self._tmp_output_dir(tmp_path=tmp_path)
 
         result = run_lstm_probe_diagnostics(
-            run_dirs=[bad_run_dir, good_run_dir],
+            log_dirs=[bad_run_dir / "lstm_logs", good_run_dir / "lstm_logs"],
             seed_labels=["seed_2", "seed_1"],
             output_dir=output_dir,
+            num_eval_episodes_per_seed=3,
         )
 
         captured = capsys.readouterr()
         assert result is True
         assert "[WARN]" in captured.out
         assert (output_dir / "lstm_probe" / "lstm_probe_summary.json").exists()
+        assert (output_dir / "lstm_probe" / "lstm_probe_raw_vals.json").exists()
 
     def test_all_seeds_fail_returns_false(self, tmp_path: Path):
         """When all seeds fail probe loading, function returns False and no summary is written."""
@@ -822,9 +885,10 @@ class TestRunLstmProbeDiagnostics:
         output_dir = self._tmp_output_dir(tmp_path=tmp_path)
 
         result = run_lstm_probe_diagnostics(
-            run_dirs=[bad_run_dir_a, bad_run_dir_b],
+            log_dirs=[bad_run_dir_a / "lstm_logs", bad_run_dir_b / "lstm_logs"],
             seed_labels=["seed_1", "seed_2"],
             output_dir=output_dir,
+            num_eval_episodes_per_seed=3,
         )
 
         assert result is False

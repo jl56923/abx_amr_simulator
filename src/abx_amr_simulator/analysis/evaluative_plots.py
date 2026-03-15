@@ -558,7 +558,22 @@ def compute_lstm_probe_stats(
     """Compute per-seed LSTM probe statistics from one run's ``lstm_logs`` directory."""
     from abx_amr_simulator.analysis.probe_hidden_belief import fit_probe, load_episodes
 
+    episode_files = sorted(log_dir.glob("episode_*.npz"))
+    if len(episode_files) == 0:
+        raise ValueError(f"No episode_*.npz logs found in {log_dir}")
+
     hidden_states, true_amr, _ = load_episodes(log_dir=log_dir)
+    if hidden_states.ndim < 2 or hidden_states.shape[0] == 0:
+        raise ValueError("LSTM probe failed: hidden states must be non-empty with shape (N, features)")
+    if true_amr.ndim < 2 or true_amr.shape[0] == 0:
+        raise ValueError("LSTM probe failed: true AMR must be non-empty with shape (N, num_antibiotics)")
+    if hidden_states.shape[0] != true_amr.shape[0]:
+        raise ValueError("LSTM probe failed: hidden-state and true-AMR timestep counts do not match")
+    if not np.all(np.isfinite(hidden_states)):
+        raise ValueError("LSTM probe failed: hidden states contain non-finite values")
+    if not np.all(np.isfinite(true_amr)):
+        raise ValueError("LSTM probe failed: true AMR contains non-finite values")
+
     probe_results = fit_probe(
         hidden_states=hidden_states,
         true_amr=true_amr,
@@ -583,6 +598,7 @@ def compute_lstm_probe_stats(
 
     seed_stats: Dict[str, Any] = {
         "log_dir": str(log_dir),
+        "num_logged_episodes": len(episode_files),
         "num_timesteps": int(hidden_states.shape[0]) if hasattr(hidden_states, "shape") and hidden_states.shape else 0,
         "hidden_state_shape": list(hidden_states.shape) if hasattr(hidden_states, "shape") else [],
         "true_amr_shape": list(true_amr.shape) if hasattr(true_amr, "shape") else [],
@@ -653,9 +669,10 @@ def aggregate_lstm_probe_stats(per_seed_stats: List[Dict[str, Any]]) -> Dict[str
 
 
 def run_lstm_probe_diagnostics(
-    run_dirs: List[Path],
+    log_dirs: List[Path],
     seed_labels: List[str],
     output_dir: Path,
+    num_eval_episodes_per_seed: Optional[int] = None,
 ) -> bool:
     """Run recurrent LSTM probe branch and write aggregated stats to ``lstm_probe/``.
 
@@ -669,13 +686,13 @@ def run_lstm_probe_diagnostics(
     succeeded_labels: List[str] = []
     failed_labels: List[str] = []
 
-    for run_dir, label in zip(run_dirs, seed_labels):
+    for log_dir, label in zip(log_dirs, seed_labels):
         try:
-            log_dir = run_dir / "lstm_logs"
             if not log_dir.exists() or not log_dir.is_dir():
                 raise FileNotFoundError(f"missing lstm_logs directory at {log_dir}")
 
             seed_stats, probe_results = compute_lstm_probe_stats(log_dir=log_dir)
+            seed_stats["seed_label"] = label
             per_seed_stats.append(seed_stats)
             succeeded_labels.append(label)
 
@@ -708,9 +725,32 @@ def run_lstm_probe_diagnostics(
             f"({', '.join(failed_labels)}); aggregating from {len(per_seed_stats)} successful seed(s)"
         )
 
+    num_logged_episodes_total = int(
+        sum(int(seed_stat.get("num_logged_episodes", 0)) for seed_stat in per_seed_stats)
+    )
+
+    raw_vals_payload: Dict[str, Any] = {
+        "num_seeds_requested": len(seed_labels),
+        "num_seeds_succeeded": len(per_seed_stats),
+        "num_seeds_failed": len(failed_labels),
+        "num_eval_episodes_per_seed": num_eval_episodes_per_seed,
+        "num_logged_episodes_total": num_logged_episodes_total,
+        "seed_labels_requested": seed_labels,
+        "seed_labels_succeeded": succeeded_labels,
+        "seed_labels_failed": failed_labels,
+        "per_seed": per_seed_stats,
+    }
+    raw_vals_path = lstm_probe_dir / "lstm_probe_raw_vals.json"
+    with open(raw_vals_path, "w") as fh:
+        json.dump(raw_vals_payload, fp=fh, indent=2)
+
     aggregated = aggregate_lstm_probe_stats(per_seed_stats=per_seed_stats)
     aggregated["prefix_seed_labels"] = succeeded_labels
     aggregated["failed_seeds"] = failed_labels
+    aggregated["num_seeds_requested"] = len(seed_labels)
+    aggregated["num_seeds_succeeded"] = len(per_seed_stats)
+    aggregated["num_eval_episodes_per_seed"] = num_eval_episodes_per_seed
+    aggregated["num_logged_episodes_total"] = num_logged_episodes_total
 
     summary_path = lstm_probe_dir / "lstm_probe_summary.json"
     with open(summary_path, "w") as fh:
@@ -729,6 +769,8 @@ def run_evaluation_episodes(
     env: Any,
     num_episodes: int = 50,
     is_hrl: bool = False,
+    is_recurrent: bool = False,
+    recurrent_log_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Run evaluation episodes and collect trajectory data.
@@ -761,6 +803,9 @@ def run_evaluation_episodes(
     episode_rewards = []
     episode_lengths = []
     episode_data = []
+
+    if is_recurrent and recurrent_log_dir is not None:
+        recurrent_log_dir.mkdir(parents=True, exist_ok=True)
     
     for ep in range(num_episodes):
         # Reset at the START of each episode to ensure independence
@@ -776,13 +821,65 @@ def run_evaluation_episodes(
         }
         
         done = False
+        recurrent_state = None
+        recurrent_episode_start = np.array([True], dtype=bool)
+        recurrent_hidden_states: List[np.ndarray] = []
+        recurrent_true_amr: List[np.ndarray] = []
+        recurrent_timesteps: List[int] = []
         while not done:
-            action, _ = model.predict(obs, deterministic=True)
+            if is_recurrent:
+                action, recurrent_state = model.predict(
+                    obs,
+                    state=recurrent_state,
+                    episode_start=recurrent_episode_start,
+                    deterministic=True,
+                )
+            else:
+                action, _ = model.predict(obs, deterministic=True)
+
             if is_hrl and isinstance(action, np.ndarray):
                 if action.size == 1:
                     action = int(action.item())
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+
+            if is_recurrent:
+                if recurrent_state is None:
+                    raise ValueError("Recurrent evaluation failed: model did not return recurrent state")
+
+                hidden_state = recurrent_state[0] if isinstance(recurrent_state, tuple) else recurrent_state
+                hidden_state_array = np.array(hidden_state, dtype=float)
+                if hidden_state_array.size == 0:
+                    raise ValueError("Recurrent evaluation failed: empty hidden state")
+
+                if hidden_state_array.ndim == 3 and hidden_state_array.shape[1] > 0:
+                    hidden_state_array = hidden_state_array[:, 0, :]
+                hidden_state_array = hidden_state_array.reshape(-1)
+                if not np.all(np.isfinite(hidden_state_array)):
+                    raise ValueError("Recurrent evaluation failed: hidden state contains non-finite values")
+
+                if not isinstance(info, dict):
+                    raise ValueError("Recurrent evaluation failed: env info is not a dict")
+
+                amr_source = info.get("actual_amr_levels", info.get("amr_levels", None))
+                if not isinstance(amr_source, dict) or not amr_source:
+                    raise ValueError(
+                        "Recurrent evaluation failed: env info missing actual_amr_levels/amr_levels dict"
+                    )
+
+                amr_values = np.array(
+                    [float(amr_source[key]) for key in sorted(amr_source.keys())],
+                    dtype=float,
+                )
+                if amr_values.size == 0:
+                    raise ValueError("Recurrent evaluation failed: true AMR vector is empty")
+                if not np.all(np.isfinite(amr_values)):
+                    raise ValueError("Recurrent evaluation failed: true AMR contains non-finite values")
+
+                recurrent_hidden_states.append(hidden_state_array)
+                recurrent_true_amr.append(amr_values)
+                recurrent_timesteps.append(ep_length)
+                recurrent_episode_start = np.array([done], dtype=bool)
             
             ep_reward += float(reward)
             ep_length += 1
@@ -798,6 +895,30 @@ def run_evaluation_episodes(
         episode_rewards.append(ep_reward)
         episode_lengths.append(ep_length)
         episode_data.append(ep_trajectory)
+
+        if is_recurrent and recurrent_log_dir is not None:
+            if not recurrent_hidden_states:
+                raise ValueError(f"Recurrent evaluation failed: no hidden states captured for episode {ep}")
+            if len(recurrent_hidden_states) != len(recurrent_true_amr):
+                raise ValueError("Recurrent evaluation failed: hidden-state and AMR lengths are mismatched")
+
+            hidden_arr = np.array(recurrent_hidden_states, dtype=float)
+            true_amr_arr = np.array(recurrent_true_amr, dtype=float)
+            if hidden_arr.ndim < 2 or hidden_arr.shape[0] == 0:
+                raise ValueError("Recurrent evaluation failed: invalid hidden-state array shape")
+            if true_amr_arr.ndim < 2 or true_amr_arr.shape[0] == 0:
+                raise ValueError("Recurrent evaluation failed: invalid true-AMR array shape")
+            if hidden_arr.shape[0] != true_amr_arr.shape[0]:
+                raise ValueError(
+                    "Recurrent evaluation failed: hidden-state and true-AMR timestep counts differ"
+                )
+
+            np.savez_compressed(
+                recurrent_log_dir / f"episode_{ep:04d}.npz",
+                hidden_states=hidden_arr,
+                true_amr=true_amr_arr,
+                timesteps=np.array(recurrent_timesteps, dtype=int),
+            )
     
     return {
         "episode_rewards": episode_rewards,
@@ -1162,6 +1283,7 @@ def analyze_experiment(
     print(f"  Running individual evaluations...")
     all_eval_data = []
     seed_labels = []
+    recurrent_probe_log_dirs: List[Path] = []
     
     for seed, model, config, run_dir in models_and_configs:
         label = f"seed {seed}" if seed >= 0 else "run"
@@ -1182,9 +1304,19 @@ def analyze_experiment(
                 env=env,
                 num_episodes=num_eval_episodes,
                 is_hrl=is_hrl,
+                is_recurrent=is_recurrent,
+                recurrent_log_dir=(
+                    output_dir / "lstm_probe" / "logs" / (f"seed_{seed}" if seed >= 0 else "run")
+                    if is_recurrent
+                    else None
+                ),
             )
             all_eval_data.append(eval_data)
             seed_labels.append(f"seed_{seed}" if seed >= 0 else "run")
+            if is_recurrent:
+                recurrent_probe_log_dirs.append(
+                    output_dir / "lstm_probe" / "logs" / (f"seed_{seed}" if seed >= 0 else "run")
+                )
             
             env.close()
         except Exception as e:
@@ -1209,12 +1341,11 @@ def analyze_experiment(
     lstm_probe_ok = False
     if is_recurrent:
         print(f"  Running recurrent LSTM probe branch...")
-        probe_run_dirs = [run_dir for _, _, _, run_dir in models_and_configs]
-        probe_seed_labels = [f"seed_{seed}" if seed >= 0 else "run" for seed, _, _, _ in models_and_configs]
         lstm_probe_ok = run_lstm_probe_diagnostics(
-            run_dirs=probe_run_dirs,
-            seed_labels=probe_seed_labels,
+            log_dirs=recurrent_probe_log_dirs,
+            seed_labels=seed_labels,
             output_dir=output_dir,
+            num_eval_episodes_per_seed=num_eval_episodes,
         )
 
     # ===== Part 4: Compute action-attribute associations (skip for HRL) =====
