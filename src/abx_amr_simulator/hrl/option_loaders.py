@@ -437,53 +437,6 @@ class OptionLibraryLoader:
         return resolved_loader_function
 
     @staticmethod
-    def _import_loader_function(
-        option_type: str,
-        loader_module_path: Path,
-    ):
-        """Dynamically import and return loader function.
-        
-        Args:
-            option_type: Option type name (e.g., 'block').
-            loader_module_path: Full path to loader module (.py file).
-        
-        Returns:
-            The loader function (e.g., load_block_option).
-        
-        Raises:
-            RuntimeError: If loader function not found.
-            SyntaxError: If module has syntax errors.
-        """
-        expected_func_name = f'load_{option_type}_option'
-        return OptionLibraryLoader._import_loader_function_by_name(
-            loader_module_path=loader_module_path,
-            loader_function=expected_func_name,
-        )
-
-    @staticmethod
-    def _import_loader_function_from_module(
-        option_type: str,
-        loader_module: str,
-    ):
-        """Import loader function from a Python module path.
-
-        Args:
-            option_type: Option type name (e.g., 'block').
-            loader_module: Python module path (e.g., 'abx_amr_simulator.options.heuristic_loader').
-
-        Returns:
-            The loader function (e.g., load_block_option).
-
-        Raises:
-            RuntimeError: If loader function not found or import fails.
-        """
-        expected_func_name = f'load_{option_type}_option'
-        return OptionLibraryLoader._import_loader_function_by_name_from_module(
-            loader_module=loader_module,
-            loader_function=expected_func_name,
-        )
-
-    @staticmethod
     def _resolve_loader_module(
         loader_module: str,
         base_dir: Path,

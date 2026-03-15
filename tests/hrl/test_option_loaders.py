@@ -51,6 +51,82 @@ class TestOptionLibraryLoaderBasic:
         assert resolved['library_name'] == 'test_lib'
         assert len(resolved['options']) == 1
 
+    def test_load_library_from_yaml_canonical_alternation(self, tmp_path):
+        """Test canonical alternation option loads via built-in loader mapping."""
+        lib_dir = tmp_path / 'option_libraries'
+        lib_dir.mkdir()
+
+        default_config = {'sequence': ['A', 'B', 'A']}
+        default_config_path = tmp_path / 'alternation_option_default_config.yaml'
+        _write_yaml(path=default_config_path, data=default_config)
+
+        lib_config = {
+            'library_name': 'test_alternation_lib',
+            'options': [
+                {
+                    'option_name': 'ALT_A_B',
+                    'option_type': 'alternation',
+                    'option_subconfig_file': str(default_config_path),
+                }
+            ]
+        }
+        lib_config_path = lib_dir / 'test_alternation_lib.yaml'
+        _write_yaml(path=lib_config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib, resolved = OptionLibraryLoader.load_library(
+            library_config_path=str(lib_config_path),
+            env=env,
+        )
+
+        assert len(lib) == 1
+        assert 'ALT_A_B' in lib.options
+        assert lib['ALT_A_B'].k == 3
+        assert resolved['options'][0]['option_type'] == 'alternation'
+        assert resolved['options'][0]['merged_config']['sequence'] == ['A', 'B', 'A']
+
+    def test_load_library_from_yaml_canonical_heuristic(self, tmp_path):
+        """Test canonical heuristic option loads via built-in loader mapping."""
+        lib_dir = tmp_path / 'option_libraries'
+        lib_dir.mkdir()
+
+        default_config = {
+            'duration': 7,
+            'action_thresholds': {
+                'prescribe_A': 0.5,
+                'prescribe_B': 0.5,
+                'no_treatment': 0.0,
+            },
+            'uncertainty_threshold': 2.0,
+        }
+        default_config_path = tmp_path / 'heuristic_option_default_config.yaml'
+        _write_yaml(path=default_config_path, data=default_config)
+
+        lib_config = {
+            'library_name': 'test_heuristic_lib',
+            'options': [
+                {
+                    'option_name': 'HEURISTIC_BASE',
+                    'option_type': 'heuristic',
+                    'option_subconfig_file': str(default_config_path),
+                }
+            ]
+        }
+        lib_config_path = lib_dir / 'test_heuristic_lib.yaml'
+        _write_yaml(path=lib_config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib, resolved = OptionLibraryLoader.load_library(
+            library_config_path=str(lib_config_path),
+            env=env,
+        )
+
+        assert len(lib) == 1
+        assert 'HEURISTIC_BASE' in lib.options
+        assert lib['HEURISTIC_BASE'].k == 7
+        assert resolved['options'][0]['option_type'] == 'heuristic'
+        assert resolved['options'][0]['merged_config']['duration'] == 7
+
     def test_load_library_missing_file(self):
         """Test loading from nonexistent file."""
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
