@@ -18,7 +18,6 @@ def create_test_option(
     name: str = "simple",
     requires_observation_attributes: list | None = None,
     requires_amr_levels: bool = False,
-    requires_step_number: bool = False,
     provides_termination: bool = False,
     referenced_antibiotics: list | None = None,
     k: int | float | None = None,
@@ -32,7 +31,6 @@ def create_test_option(
             else ["prob_infected"]
         )
         REQUIRES_AMR_LEVELS = requires_amr_levels
-        REQUIRES_STEP_NUMBER = requires_step_number
         PROVIDES_TERMINATION_CONDITION = provides_termination
 
         def __init__(self, name: str = name, k: int | float | None = k):
@@ -402,20 +400,6 @@ class TestValidationEnvironmentCompatibility:
         with pytest.raises(ValueError, match="no antibiotics configured"):
             library.validate_environment_compatibility(env=env, patient_generator=pg)
 
-    def test_validate_requires_step_number_with_step(self):
-        """Test validation passes when option requires step and env has it."""
-        env = create_mock_environment(antibiotic_names=["A"])
-        pg = create_mock_patient_generator()
-        option = create_test_option(
-            name="needs_step",
-            requires_step_number=True,
-        )
-        library = OptionLibrary(env=env)
-        library.add_option(option=option)
-
-        # Should not raise; mock environment has current_time_step
-        library.validate_environment_compatibility(env=env, patient_generator=pg)
-
     def test_validate_requires_amr_levels_missing_amr_raises(self):
         """Test that missing AMR tracking raises ValueError."""
         env = create_mock_environment(antibiotic_names=["A"])
@@ -433,22 +417,28 @@ class TestValidationEnvironmentCompatibility:
         with pytest.raises(ValueError, match="requires AMR levels"):
             library.validate_environment_compatibility(env=env, patient_generator=pg)
 
-    def test_validate_requires_step_number_missing_step_raises(self):
-        """Test that missing current_time_step raises ValueError."""
+    def test_validate_requires_step_number_is_deprecated(self):
+        """Test that requires_step_number attribute is not used (Phase A: removed).
+        
+        This test verifies that the system no longer supports step number requirements
+        for options. Options are now designed to be step-agnostic and use clipping
+        metadata instead.
+        """
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
-        option = create_test_option(
-            name="needs_step",
-            requires_step_number=True,
-        )
+        # Create an option and verify it doesn't have REQUIRES_STEP_NUMBER
+        option = create_test_option(name="test_option")
+        
+        # Verify that the OptionBase class doesn't have REQUIRES_STEP_NUMBER anymore
+        assert not hasattr(option, "REQUIRES_STEP_NUMBER"), \
+            "REQUIRES_STEP_NUMBER should be removed from OptionBase (Phase A cleanup)"
+        
+        # Verify validation still works without step number requirements
         library = OptionLibrary(env=env)
         library.add_option(option=option)
-
-        if hasattr(env.unwrapped, "current_time_step"):
-            delattr(env.unwrapped, "current_time_step")
-
-        with pytest.raises(ValueError, match="requires step number"):
-            library.validate_environment_compatibility(env=env, patient_generator=pg)
+        
+        # Should not raise - step numbers are no longer required
+        library.validate_environment_compatibility(env=env, patient_generator=pg)
 
     def test_validate_injects_observable_attributes(self):
         """Test that validation injects observable attributes into options."""

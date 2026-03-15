@@ -129,7 +129,6 @@ class OptionLibrary:
             1. All options' REQUIRES_OBSERVATION_ATTRIBUTES are provided by patient_generator.
             2. All options' referenced antibiotics are in the environment's action space.
             3. If REQUIRES_AMR_LEVELS=True, environment has current AMR levels accessible.
-            4. If REQUIRES_STEP_NUMBER=True, environment provides current step count.
         
         Args:
             env: The unwrapped environment (ABXAMREnv).
@@ -266,15 +265,6 @@ class OptionLibrary:
                         f"Option '{option_name}' requires AMR levels (REQUIRES_AMR_LEVELS=True), "
                         f"but environment doesn't provide amr_balloon_models. "
                         f"Ensure environment is ABXAMREnv with AMR tracking enabled."
-                    )
-            # Check 4: Step number requirement
-            if option.REQUIRES_STEP_NUMBER:
-                has_step = hasattr(env.unwrapped, 'current_time_step')
-                if not has_step:
-                    raise ValueError(
-                        f"Option '{option_name}' requires step number (REQUIRES_STEP_NUMBER=True), "
-                        f"but environment doesn't track current_time_step. "
-                        f"Ensure environment is ABXAMREnv with step tracking enabled."
                     )
 
             # Check 5: Termination condition flag consistency
@@ -427,7 +417,6 @@ class OptionLibrary:
                 'k': opt.k if opt.k != float('inf') else 'inf',
                 'requires_observation_attrs': opt.REQUIRES_OBSERVATION_ATTRIBUTES,
                 'requires_amr_levels': opt.REQUIRES_AMR_LEVELS,
-                'requires_step_number': opt.REQUIRES_STEP_NUMBER,
                 'provides_termination': opt.PROVIDES_TERMINATION_CONDITION,
             })
         

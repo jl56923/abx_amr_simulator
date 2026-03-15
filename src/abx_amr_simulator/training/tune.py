@@ -115,6 +115,8 @@ import sys
 import tempfile
 import subprocess
 import shutil
+import math
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
@@ -460,9 +462,14 @@ def run_training_trial(
         param_overrides['training.total_num_training_episodes'] = truncated_episodes
         param_overrides['training.run_name'] = f"{trial_run_prefix}_seed{seed}"
         
-        # Optimize evaluation for tuning: do ONE final evaluation to get reward metric
-        # Set eval_freq to trigger only at the very end (truncated_episodes + 1 ensures one eval at end)
-        param_overrides['training.eval_freq_every_n_episodes'] = truncated_episodes  # Eval at end only
+        # Ensure at least one evaluation occurs during tuning even when episodes
+        # terminate early (e.g., HRL boundary clipping). The train.py callback
+        # converts eval_freq_every_n_episodes to timesteps using max_time_steps,
+        # so using truncated_episodes here can miss evaluation entirely when
+        # EpisodeCounterCallback stops training before that timestep threshold.
+        # Using 1 guarantees frequent evaluation and avoids non-finite rewards
+        # caused by never-running EvalCallback.
+        param_overrides['training.eval_freq_every_n_episodes'] = 1
         param_overrides['training.save_freq_every_n_episodes'] = 999999  # Save only final model
         param_overrides['training.log_patient_trajectories'] = False  # Disable trajectory logging
         
@@ -512,14 +519,41 @@ def run_training_trial(
                 continue
             
             # Parse output to extract final mean reward
-            reward = parse_reward_from_output(result.stdout)
-            if reward == float('-inf'):
-                print(f"\nWarning: Could not extract reward from training output for seed {seed}")
-                print(f"stdout (last 20 lines):")
+            reward, parsed_successfully, matched_line, reward_signal_lines = parse_reward_from_output_detailed(result.stdout)
+
+            if not parsed_successfully:
+                print(f"\nWarning: Failed to parse reward from training output for seed {seed}")
+                if reward_signal_lines:
+                    print("Detected reward-related lines (unparseable values):")
+                    for line in reward_signal_lines[-10:]:
+                        print(f"  {line}")
+                print(f"stdout (last 40 lines):")
                 stdout_lines = result.stdout.split('\n')
-                for line in stdout_lines[-20:]:
+                for line in stdout_lines[-40:]:
                     if line.strip():
                         print(f"  {line}")
+                if result.stderr.strip():
+                    print(f"stderr (last 20 lines):")
+                    stderr_lines = result.stderr.split('\n')
+                    for line in stderr_lines[-20:]:
+                        if line.strip():
+                            print(f"  {line}")
+            elif not math.isfinite(reward):
+                print(f"\nWarning: Parsed non-finite reward for seed {seed}: {reward}")
+                if matched_line is not None:
+                    print(f"Matched reward line: {matched_line}")
+                print("This indicates training reported a non-finite evaluation metric (not a parser failure).")
+                print(f"stdout (last 40 lines):")
+                stdout_lines = result.stdout.split('\n')
+                for line in stdout_lines[-40:]:
+                    if line.strip():
+                        print(f"  {line}")
+                if result.stderr.strip():
+                    print(f"stderr (last 20 lines):")
+                    stderr_lines = result.stderr.split('\n')
+                    for line in stderr_lines[-20:]:
+                        if line.strip():
+                            print(f"  {line}")
             rewards.append(reward)
             
         except subprocess.TimeoutExpired:
@@ -532,40 +566,65 @@ def run_training_trial(
     return rewards
 
 
-def parse_reward_from_output(output: str) -> float:
-    """Extract final mean reward from training output.
-    
-    Looks for lines like:
-    - "Mean reward: -123.45"
-    - "Final mean reward: -123.45"
-    - "mean_reward: -123.45"
-    
-    Args:
-        output: stdout from training script
-    
-    Returns:
-        float: Extracted reward value, or -inf if not found
+def _parse_numeric_token_from_line(line: str) -> Optional[float]:
+    """Extract a numeric token from a reward line.
+
+    Supports finite floats and non-finite tokens (`inf`, `-inf`, `nan`).
     """
-    for line in output.split('\n'):
-        line_lower = line.lower().strip()
-        
-        if 'mean reward' in line_lower or 'mean_reward' in line_lower:
-            try:
-                # Extract number after colon or equals
-                if ':' in line:
-                    parts = line.split(':')
-                elif '=' in line:
-                    parts = line.split('=')
-                else:
-                    continue
-                
-                if len(parts) >= 2:
-                    return float(parts[-1].strip())
-            except (ValueError, IndexError):
-                continue
-    
-    # If we didn't find a reward, return -inf
-    return float('-inf')
+    token_pattern = r'[-+]?(?:\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|inf|nan)'
+
+    if ':' in line:
+        candidate = line.split(':', 1)[1].strip()
+        match = re.search(token_pattern, candidate, flags=re.IGNORECASE)
+        if match:
+            return float(match.group(0))
+
+    if '=' in line:
+        candidate = line.split('=', 1)[1].strip()
+        match = re.search(token_pattern, candidate, flags=re.IGNORECASE)
+        if match:
+            return float(match.group(0))
+
+    return None
+
+
+def parse_reward_from_output_detailed(output: str) -> Tuple[float, bool, Optional[str], List[str]]:
+    """Extract final mean reward from training output with parse diagnostics.
+
+    Returns tuple:
+      (reward_value, parsed_successfully, matched_line, reward_signal_lines)
+    """
+    lines = output.split('\n')
+    reward_signal_lines = [
+        line.strip()
+        for line in lines
+        if ('mean reward' in line.lower()) or ('mean_reward' in line.lower())
+    ]
+
+    prioritized_patterns = [
+        'final mean reward',
+        'mean_reward',
+        'mean reward',
+    ]
+
+    for pattern in prioritized_patterns:
+        for line in lines:
+            line_stripped = line.strip()
+            if pattern in line_stripped.lower():
+                parsed_value = _parse_numeric_token_from_line(line_stripped)
+                if parsed_value is not None:
+                    return parsed_value, True, line_stripped, reward_signal_lines
+
+    return float('-inf'), False, None, reward_signal_lines
+
+
+def parse_reward_from_output(output: str) -> float:
+    """Backward-compatible reward parsing helper.
+
+    Returns only the parsed reward value.
+    """
+    reward, _, _, _ = parse_reward_from_output_detailed(output)
+    return reward
 
 
 def create_objective_function(

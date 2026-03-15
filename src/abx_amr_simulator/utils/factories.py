@@ -19,6 +19,9 @@ import gymnasium as gym
 from stable_baselines3 import PPO, A2C
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
+
+# Import masked variants for HRL
+from abx_amr_simulator.hrl.rl_algorithms import PPO_Masked, RecurrentPPO_Masked
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
@@ -507,7 +510,13 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
         ppo_config = config.get('ppo', {})
         learning_rate = ppo_config.get('learning_rate', 3.0e-4)
         
-        agent = PPO(
+        # Check if masking should be used for clipped transitions
+        hrl_config = config.get('hrl', {})
+        exclude_clipped = hrl_config.get('exclude_clipped_manager_steps_from_training', False)
+        
+        PPOClass = PPO_Masked if exclude_clipped else PPO
+        
+        agent = PPOClass(
             policy='MlpPolicy',
             env=env,
             learning_rate=learning_rate,
@@ -539,7 +548,13 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
             'enable_critic_lstm': lstm_kwargs_config.get('enable_critic_lstm', True),
         })
 
-        agent = RecurrentPPO(
+        # Check if masking should be used for clipped transitions
+        hrl_config = config.get('hrl', {})
+        exclude_clipped = hrl_config.get('exclude_clipped_manager_steps_from_training', False)
+        
+        RecurrentPPOClass = RecurrentPPO_Masked if exclude_clipped else RecurrentPPO
+
+        agent = RecurrentPPOClass(
             policy='MlpLstmPolicy',
             env=env,
             learning_rate=learning_rate,
@@ -563,12 +578,15 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
     return agent
 
 
-def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym.Env] = None) -> list:
+def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym.Env] = None, stop_after_n_episodes: Optional[int] = None) -> list:
     """Set up stable-baselines3 training callbacks.
     
-    Creates PatientStatsLoggingCallback (always active), DetailedEvalCallback or
-    standard EvalCallback (if eval_env provided), and CheckpointCallback. Automatically
-    creates subdirectories in run_dir for logs, checkpoints, and eval_logs.
+    Creates PatientStatsLoggingCallback (always active), EpisodeCounterCallback
+    (always active; optionally stops training after a target number of actual
+    episodes — correct under variable-length/boundary-clipped episodes),
+    DetailedEvalCallback or standard EvalCallback (if eval_env provided), and
+    CheckpointCallback. Automatically creates subdirectories in run_dir for
+    logs, checkpoints, and eval_logs.
     
     Args:
         config (Dict[str, Any]): Full experiment config dictionary. Uses 'training'
@@ -582,15 +600,22 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
         eval_env (gym.Env, optional): Evaluation environment instance. If None, no
             evaluation callback created. Should be a separate env instance from
             training env to avoid state pollution.
+        stop_after_n_episodes (int, optional): If provided, an EpisodeCounterCallback
+            will stop training after this many actual completed episodes. This makes
+            the training budget accurate under variable-length episodes (e.g. when
+            HRL boundary clipping terminates episodes early). When None, the
+            EpisodeCounterCallback is still added but only counts/logs episodes;
+            training budget is controlled solely by model.learn(total_timesteps=...).
     
     Returns:
         list: List of callback instances to pass to agent.learn(callback=...).
     
     Example:
-        >>> callbacks = setup_callbacks(config, run_dir, eval_env=eval_env)
-        >>> agent.learn(total_timesteps=100000, callback=callbacks)
+        >>> callbacks = setup_callbacks(config, run_dir, eval_env=eval_env,
+        ...                             stop_after_n_episodes=total_episodes)
+        >>> agent.learn(total_timesteps=total_episodes * max_time_steps, callback=callbacks)
     """
-    from abx_amr_simulator.callbacks import PatientStatsLoggingCallback, DetailedEvalCallback
+    from abx_amr_simulator.callbacks import PatientStatsLoggingCallback, DetailedEvalCallback, EpisodeCounterCallback
     
     callbacks = []
     
@@ -600,10 +625,37 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
     num_eval_episodes = training_config.get('num_eval_episodes', 10)
     save_freq = training_config.get('_converted_save_freq', training_config.get('save_freq', 10000))
     log_patient_trajectories = training_config.get('log_patient_trajectories', False)
+    log_personalized_patient_attributes = training_config.get('log_personalized_patient_attributes', False)
+
+    # Resolve sentinel value from patient generator config when personalized logging is enabled.
+    # Fail loudly if the toggle is on but the patient generator config does not supply the
+    # sentinel so that misconfigured runs are caught immediately rather than silently producing
+    # artifacts that cannot be used for downstream subgroup analysis.
+    patient_generator_config = config.get('patient_generator', {})
+    personalized_sentinel_value: Optional[float] = patient_generator_config.get(
+        'personalized_missing_prediction_fill_value', None
+    )
+    if log_personalized_patient_attributes and personalized_sentinel_value is None:
+        raise ValueError(
+            "training.log_personalized_patient_attributes is True, but "
+            "patient_generator.personalized_missing_prediction_fill_value is not set. "
+            "Provide this value in the patient generator config so the sentinel can be "
+            "persisted in evaluation trajectory artifacts for downstream subgroup inference."
+        )
     
     # Patient stats logging callback (always active during training)
     patient_stats_callback = PatientStatsLoggingCallback()
     callbacks.append(patient_stats_callback)
+
+    # Episode counter callback (always active).
+    # When stop_after_n_episodes is set, training terminates after exactly that
+    # many actual episodes — important under HRL boundary clipping where episodes
+    # can be shorter than max_time_steps.
+    episode_counter_callback = EpisodeCounterCallback(
+        stop_after_n_episodes=stop_after_n_episodes,
+        verbose=1,
+    )
+    callbacks.append(episode_counter_callback)
     
     # Evaluation callback (only if an eval_env is provided)
     if eval_env is not None:
@@ -621,6 +673,8 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
                 best_model_save_path=os.path.join(run_dir, 'checkpoints'),
                 deterministic=True,
                 render=False,
+                log_personalized_patient_attributes=log_personalized_patient_attributes,
+                personalized_sentinel_value=personalized_sentinel_value,
             )
         else:
             # Use standard EvalCallback

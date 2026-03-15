@@ -6,6 +6,8 @@ Provides:
 - DetailedEvalCallback: Extends EvalCallback to collect and save full patient trajectories during eval
 - EarlyStoppingCallback: Stops training when performance metric plateaus
 - LSTMStateLogger: Logs LSTM hidden states for belief probing analysis
+- EpisodeCounterCallback: Counts completed episodes, logs to TensorBoard, and can stop training
+  after a target number of actual episodes (correct under variable-length / boundary-clipped episodes)
 """
 
 import os
@@ -17,7 +19,7 @@ from stable_baselines3.common.vec_env import VecEnv, sync_envs_normalization
 from .early_stopping import EarlyStoppingCallback
 from .lstm_state_logger import LSTMStateLogger
 
-__all__ = ['PatientStatsLoggingCallback', 'DetailedEvalCallback', 'EarlyStoppingCallback', 'LSTMStateLogger']
+__all__ = ['PatientStatsLoggingCallback', 'DetailedEvalCallback', 'EarlyStoppingCallback', 'LSTMStateLogger', 'EpisodeCounterCallback']
 
 
 class PatientStatsLoggingCallback(BaseCallback):
@@ -164,6 +166,8 @@ class DetailedEvalCallback(EvalCallback):
         verbose: int = 1,
         warn: bool = True,
         save_patient_trajectories: bool = True,
+        log_personalized_patient_attributes: bool = False,
+        personalized_sentinel_value: Optional[float] = None,
     ):
         """Initialize the DetailedEvalCallback.
         
@@ -186,7 +190,23 @@ class DetailedEvalCallback(EvalCallback):
             warn (bool): If True, warn about evaluation issues. Default: True.
             save_patient_trajectories (bool): If True, save full patient trajectories
                 to .npz files. Default: True.
+            log_personalized_patient_attributes (bool): If True, enriched personalized
+                subgroup logging is enabled. The sentinel value will be written to
+                every .npz artifact so downstream analysis can recover subgroup
+                membership via sentinel inference. Default: False.
+            personalized_sentinel_value (float, optional): The fill value used for
+                patients without a personalized prediction (i.e.
+                ``personalized_missing_prediction_fill_value`` from the patient
+                generator config). Required (must not be None) when
+                ``log_personalized_patient_attributes=True``.
         """
+        if log_personalized_patient_attributes and personalized_sentinel_value is None:
+            raise ValueError(
+                "personalized_sentinel_value must be provided when "
+                "log_personalized_patient_attributes=True. "
+                "Set personalized_missing_prediction_fill_value in the patient generator config."
+            )
+
         super().__init__(
             eval_env=eval_env,
             callback_on_new_best=callback_on_new_best,
@@ -202,6 +222,8 @@ class DetailedEvalCallback(EvalCallback):
         )
         
         self.save_patient_trajectories = save_patient_trajectories
+        self.log_personalized_patient_attributes = log_personalized_patient_attributes
+        self.personalized_sentinel_value = personalized_sentinel_value
         self.eval_count = 0
         
         # Create eval_logs directory if saving trajectories
@@ -276,9 +298,15 @@ class DetailedEvalCallback(EvalCallback):
                 'patient_stats': [],
                 'actions': [],
                 'rewards': [],
+                'patients_actually_infected': [],
+                'individual_rewards': [],
                 'actual_amr_levels': [],
                 'visible_amr_levels': [],
                 'antibiotic_names': antibiotic_names,
+                # Phase B: Clipping metadata for variable-length episodes and manager masking
+                'manager_clipped': [],              # Whether macro-action was clipped at boundary
+                'steps_clipped': [],                # Number of steps clipped
+                'manager_transition_trainable': [],  # Trainability flag for manager training
             }
             
             done = False
@@ -296,8 +324,19 @@ class DetailedEvalCallback(EvalCallback):
                     episode_data['patient_stats'].append(info['patient_stats'])
                     episode_data['actions'].append(action)
                     episode_data['rewards'].append(float(reward))
+                    episode_data['patients_actually_infected'].append(
+                        info.get('patients_actually_infected', None)
+                    )
+                    episode_data['individual_rewards'].append(
+                        info.get('individual_rewards', None)
+                    )
                     episode_data['actual_amr_levels'].append(info.get('actual_amr_levels', {}))
                     episode_data['visible_amr_levels'].append(info.get('visible_amr_levels', {}))
+                    
+                    # Phase B: Store clipping metadata
+                    episode_data['manager_clipped'].append(info.get('manager_clipped', False))
+                    episode_data['steps_clipped'].append(info.get('steps_clipped', 0))
+                    episode_data['manager_transition_trainable'].append(info.get('manager_transition_trainable', True))
                 
                 episode_reward += reward
                 episode_length += 1
@@ -370,12 +409,20 @@ class DetailedEvalCallback(EvalCallback):
             for env in self.eval_env.envs:
                 try:
                     env.unwrapped.log_full_patient_attributes = value
+                    if hasattr(env.unwrapped, 'log_personalized_patient_attributes'):
+                        env.unwrapped.log_personalized_patient_attributes = bool(
+                            value and self.log_personalized_patient_attributes
+                        )
                 except AttributeError:
                     pass
         else:
             # Single env or wrapped env
             try:
                 self.eval_env.unwrapped.log_full_patient_attributes = value
+                if hasattr(self.eval_env.unwrapped, 'log_personalized_patient_attributes'):
+                    self.eval_env.unwrapped.log_personalized_patient_attributes = bool(
+                        value and self.log_personalized_patient_attributes
+                    )
             except AttributeError:
                 pass
     
@@ -414,10 +461,27 @@ class DetailedEvalCallback(EvalCallback):
 
         if antibiotic_names:
             save_dict['antibiotic_names'] = np.array(antibiotic_names)
+
+        # When enriched personalized logging is enabled, persist the sentinel value so
+        # downstream analysis scripts can recover subgroup membership via sentinel inference
+        # without hardcoding the fill value.
+        if self.log_personalized_patient_attributes:
+            if self.personalized_sentinel_value is None:
+                raise ValueError(
+                    "log_personalized_patient_attributes is True but personalized_sentinel_value "
+                    "is None — cannot write sentinel metadata to trajectory artifact."
+                )
+            save_dict['personalized_sentinel_value'] = np.float64(self.personalized_sentinel_value)
         
         # Save each episode's data
         for ep_idx, traj in enumerate(trajectories):
             ep_prefix = f'episode_{ep_idx}'
+
+            if self.log_personalized_patient_attributes:
+                self._validate_personalized_logging_contract(
+                    trajectory=traj,
+                    episode_prefix=ep_prefix,
+                )
             
             # Save patient data
             if traj['patient_full_data']:
@@ -447,6 +511,18 @@ class DetailedEvalCallback(EvalCallback):
             save_dict[f'{ep_prefix}/actions'] = np.array(traj['actions'])
             save_dict[f'{ep_prefix}/rewards'] = np.array(traj['rewards'])
 
+            if traj.get('patients_actually_infected'):
+                save_dict[f'{ep_prefix}/patients_actually_infected'] = np.array(
+                    traj['patients_actually_infected'],
+                    dtype=np.float64,
+                )
+
+            if traj.get('individual_rewards'):
+                save_dict[f'{ep_prefix}/individual_rewards'] = np.array(
+                    traj['individual_rewards'],
+                    dtype=np.float64,
+                )
+
             # Store AMR time series if available
             if antibiotic_names and traj['actual_amr_levels']:
                 num_steps_amr = len(traj['actual_amr_levels'])
@@ -465,3 +541,219 @@ class DetailedEvalCallback(EvalCallback):
         
         if self.verbose >= 1:
             print(f"Saved evaluation trajectories to {filename}")
+
+    def _validate_personalized_logging_contract(
+        self,
+        trajectory: Dict[str, Any],
+        episode_prefix: str,
+    ) -> None:
+        patient_full_data = trajectory.get('patient_full_data', [])
+        if not patient_full_data:
+            raise ValueError(
+                f"{episode_prefix}: personalized logging contract requires non-empty patient_full_data"
+            )
+
+        required_step_keys = {
+            'has_personalized_prediction',
+        }
+
+        personalized_observed_prefix = 'personalized_predicted_resistance__'
+        sentinel_value = float(self.personalized_sentinel_value)
+        expected_num_steps = len(patient_full_data)
+
+        infected_rows = trajectory.get('patients_actually_infected', [])
+        if len(infected_rows) != expected_num_steps:
+            raise ValueError(
+                f"{episode_prefix}: expected patients_actually_infected for each step "
+                f"({expected_num_steps}), got {len(infected_rows)}"
+            )
+
+        individual_reward_rows = trajectory.get('individual_rewards', [])
+        if len(individual_reward_rows) != expected_num_steps:
+            raise ValueError(
+                f"{episode_prefix}: expected individual_rewards for each step "
+                f"({expected_num_steps}), got {len(individual_reward_rows)}"
+            )
+
+        for step_index, step_data in enumerate(patient_full_data):
+            if 'true' not in step_data or 'observed' not in step_data:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: patient_full_data must contain 'true' and 'observed'"
+                )
+
+            true_payload = step_data['true']
+            observed_payload = step_data['observed']
+
+            for required_key in required_step_keys:
+                if required_key not in true_payload or required_key not in observed_payload:
+                    raise ValueError(
+                        f"{episode_prefix} step {step_index}: missing required personalized field '{required_key}'"
+                    )
+
+            has_prediction_values = []
+            for patient_index, raw_value in enumerate(observed_payload['has_personalized_prediction']):
+                numeric_value = float(raw_value)
+                if numeric_value not in (0.0, 1.0):
+                    raise ValueError(
+                        f"{episode_prefix} step {step_index}: has_personalized_prediction for patient "
+                        f"{patient_index} must be 0.0 or 1.0, got {numeric_value}"
+                    )
+                has_prediction_values.append(bool(int(numeric_value)))
+
+            personalized_attribute_names = sorted(
+                attribute_name
+                for attribute_name in observed_payload.keys()
+                if attribute_name.startswith(personalized_observed_prefix)
+            )
+            if not personalized_attribute_names:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: no personalized prediction attributes found "
+                    f"(expected keys starting with '{personalized_observed_prefix}')"
+                )
+
+            expected_num_patients = len(has_prediction_values)
+            if expected_num_patients == 0:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: has_personalized_prediction is empty"
+                )
+
+            infected_row = infected_rows[step_index]
+            reward_row = individual_reward_rows[step_index]
+            if infected_row is None or reward_row is None:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: missing reward/outcome payload "
+                    "(patients_actually_infected or individual_rewards)"
+                )
+            if len(infected_row) != expected_num_patients:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: patients_actually_infected length "
+                    f"{len(infected_row)} != expected {expected_num_patients}"
+                )
+            if len(reward_row) != expected_num_patients:
+                raise ValueError(
+                    f"{episode_prefix} step {step_index}: individual_rewards length "
+                    f"{len(reward_row)} != expected {expected_num_patients}"
+                )
+
+            for attribute_name in personalized_attribute_names:
+                predicted_values = observed_payload[attribute_name]
+                if len(predicted_values) != expected_num_patients:
+                    raise ValueError(
+                        f"{episode_prefix} step {step_index}: field '{attribute_name}' length "
+                        f"{len(predicted_values)} != expected {expected_num_patients}"
+                    )
+
+                for patient_index, predicted_value_raw in enumerate(predicted_values):
+                    predicted_value = float(predicted_value_raw)
+                    has_prediction = has_prediction_values[patient_index]
+
+                    if has_prediction:
+                        if not 0.0 <= predicted_value <= 1.0:
+                            raise ValueError(
+                                f"{episode_prefix} step {step_index}: covered patient {patient_index} "
+                                f"field '{attribute_name}' must be in [0, 1], got {predicted_value}"
+                            )
+                    else:
+                        if predicted_value != sentinel_value:
+                            raise ValueError(
+                                f"{episode_prefix} step {step_index}: uncovered patient {patient_index} "
+                                f"field '{attribute_name}' must equal sentinel "
+                                f"{sentinel_value}, got {predicted_value}"
+                            )
+
+
+class EpisodeCounterCallback(BaseCallback):
+    """Count completed training episodes and optionally stop after a target number.
+
+    SB3's ``model.learn(total_timesteps=N)`` controls the training budget in
+    timesteps.  When HRL boundary clipping is active, episodes may terminate
+    early, so a fixed timestep budget corresponds to *more* actual episodes than
+    expected (each episode consumes fewer timesteps than ``max_time_steps``).
+    This callback counts **actual** completed episodes and stops training once
+    the desired number is reached, regardless of remaining timestep budget.
+
+    The intended usage is:
+    1. Set ``total_timesteps = total_num_training_episodes * max_time_steps`` in
+       ``model.learn()`` as a safe upper-bound ceiling.
+    2. Pass an ``EpisodeCounterCallback(stop_after_n_episodes=total_num_training_episodes)``
+       so that training always terminates after exactly the desired number of
+       actual episodes, even when episodes are shorter than ``max_time_steps``.
+
+    In the no-clipping case both limits fire at roughly the same time; there is
+    no change in training behaviour.  When clipping is active the callback is
+    the binding constraint and the timestep ceiling is never reached.
+
+    Attributes:
+        n_episodes (int): Number of completed episodes observed so far.
+
+    Example:
+        >>> counter = EpisodeCounterCallback(
+        ...     stop_after_n_episodes=1000,
+        ...     verbose=1,
+        ... )
+        >>> agent.learn(
+        ...     total_timesteps=1000 * max_time_steps,  # safe ceiling
+        ...     callback=counter,
+        ... )
+    """
+
+    def __init__(
+        self,
+        stop_after_n_episodes: Optional[int] = None,
+        verbose: int = 0,
+    ):
+        """Initialise the EpisodeCounterCallback.
+
+        Args:
+            stop_after_n_episodes: If not None, training stops (via ``return
+                False`` from ``_on_step``) once this many actual episodes have
+                been completed.  If None, the callback only counts and logs
+                episodes without forcing a stop.
+            verbose: Verbosity level.  0 = silent; 1 = print a message when
+                the stop target is reached.
+        """
+        super().__init__(verbose=verbose)
+        if stop_after_n_episodes is not None and stop_after_n_episodes <= 0:
+            raise ValueError(
+                f"stop_after_n_episodes must be a positive integer, got {stop_after_n_episodes}"
+            )
+        self.stop_after_n_episodes = stop_after_n_episodes
+        self.n_episodes: int = 0
+
+    def _on_step(self) -> bool:
+        """Called after every environment step during training.
+
+        Increments ``n_episodes`` for each environment that signals ``done``
+        in the current step.  For vectorised environments, every entry in
+        ``dones`` is inspected independently.
+
+        Returns:
+            True to continue training; False to stop when ``stop_after_n_episodes``
+            has been reached.
+        """
+        dones = self.locals.get('dones', self.locals.get('done', []))
+        # Normalise: a bare bool (non-vectorised) becomes a one-element list.
+        if isinstance(dones, (bool, np.bool_)):
+            dones = [bool(dones)]
+
+        for done in dones:
+            if done:
+                self.n_episodes += 1
+
+        # Log completed episode count to TensorBoard at every step.
+        # SB3 deduplicates identical values, so this is low overhead.
+        self.logger.record('training/completed_episodes', self.n_episodes)
+
+        if (
+            self.stop_after_n_episodes is not None
+            and self.n_episodes >= self.stop_after_n_episodes
+        ):
+            if self.verbose >= 1:
+                print(
+                    f"[EpisodeCounterCallback] Reached target of "
+                    f"{self.n_episodes} completed episodes. Stopping training."
+                )
+            return False
+
+        return True
+

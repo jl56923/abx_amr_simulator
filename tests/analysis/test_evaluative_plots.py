@@ -4,6 +4,7 @@ Tests cover:
 1. HRL run detection (is_hrl_run function)
 2. Environment wrapping for HRL (wrap_environment_for_hrl function)
 3. Integration test: generating plots for HRL agents
+4. HRL diagnostics: compute_hrl_option_stats, aggregate_hrl_option_stats, run_hrl_diagnostics
 """
 
 from __future__ import annotations
@@ -17,9 +18,15 @@ import numpy as np
 import yaml
 
 from abx_amr_simulator.analysis.evaluative_plots import (
+    detect_analysis_branches,
     is_hrl_run,
+    is_recurrent_run,
     wrap_environment_for_hrl,
     run_evaluation_episodes,
+    compute_hrl_option_stats,
+    aggregate_hrl_option_stats,
+    run_hrl_diagnostics,
+    run_lstm_probe_diagnostics,
 )
 from abx_amr_simulator.utils import (
     create_reward_calculator,
@@ -92,6 +99,76 @@ class TestIsHrlRun:
         # Should handle gracefully without crashing
         result = is_hrl_run(config=config)
         assert isinstance(result, bool)
+
+
+class TestIsRecurrentRun:
+    """Test is_recurrent_run function for recurrent branch detection."""
+
+    def test_detects_recurrent_ppo_flat_structure(self):
+        config = {
+            "algorithm": "RecurrentPPO",
+        }
+        assert is_recurrent_run(config=config) is True
+
+    def test_detects_hrl_rppo_as_recurrent(self):
+        config = {
+            "algorithm": "HRL_RPPO",
+        }
+        assert is_recurrent_run(config=config) is True
+
+    def test_detects_recurrent_nested_structure(self):
+        config = {
+            "agent_algorithm": {
+                "algorithm": "RecurrentPPO",
+            }
+        }
+        assert is_recurrent_run(config=config) is True
+
+    def test_rejects_non_recurrent(self):
+        config = {
+            "algorithm": "PPO",
+        }
+        assert is_recurrent_run(config=config) is False
+
+
+class TestDetectAnalysisBranches:
+    """Test canonical per-prefix branch detection aggregation."""
+
+    def test_detects_hrl_and_recurrent_from_single_config(self):
+        branch_info = detect_analysis_branches(
+            configs=[{"algorithm": "HRL_RPPO"}]
+        )
+
+        assert branch_info["is_hrl"] is True
+        assert branch_info["is_recurrent"] is True
+        assert branch_info["hrl_branch"]["should_run"] is True
+        assert branch_info["lstm_probe_branch"]["should_run"] is True
+
+    def test_detects_non_hrl_non_recurrent_from_single_config(self):
+        branch_info = detect_analysis_branches(
+            configs=[{"algorithm": "PPO"}]
+        )
+
+        assert branch_info["is_hrl"] is False
+        assert branch_info["is_recurrent"] is False
+        assert branch_info["hrl_branch"]["should_run"] is False
+        assert branch_info["lstm_probe_branch"]["should_run"] is False
+
+    def test_aggregates_any_seed_applicability(self):
+        branch_info = detect_analysis_branches(
+            configs=[
+                {"algorithm": "PPO"},
+                {"algorithm": "RecurrentPPO"},
+            ]
+        )
+
+        assert branch_info["is_hrl"] is False
+        assert branch_info["is_recurrent"] is True
+        assert branch_info["lstm_probe_branch"]["should_run"] is True
+
+    def test_raises_on_empty_config_list(self):
+        with pytest.raises(ValueError, match="at least one config"):
+            detect_analysis_branches(configs=[])
 
 
 class TestWrapEnvironmentForHrl:
@@ -372,6 +449,20 @@ class TestRunEvaluationEpisodesActionHandling:
         def predict(self, obs, deterministic=True):
             return self._action, None
 
+    class _DummyRecurrentModel:
+        def predict(self, obs, state=None, episode_start=None, deterministic=True):
+            _ = obs
+            _ = episode_start
+            action = np.array([0], dtype=int)
+            if state is None:
+                hidden = np.ones((1, 1, 4), dtype=float)
+                cell = np.ones((1, 1, 4), dtype=float) * 2.0
+            else:
+                hidden, cell = state
+                hidden = hidden + 1.0
+                cell = cell + 1.0
+            return action, (hidden, cell)
+
     class _HrlEnv:
         def reset(self):
             return np.zeros((3,), dtype=float), {}
@@ -391,6 +482,26 @@ class TestRunEvaluationEpisodesActionHandling:
                 raise TypeError(f"Expected ndarray action, got {type(action).__name__}")
             obs = np.zeros((3,), dtype=float)
             return obs, 0.0, True, False, {}
+
+    class _RecurrentEnv:
+        def __init__(self):
+            self.step_idx = 0
+
+        def reset(self):
+            self.step_idx = 0
+            return np.zeros((3,), dtype=float), {}
+
+        def step(self, action):
+            self.step_idx += 1
+            obs = np.zeros((3,), dtype=float)
+            info = {
+                "actual_amr_levels": {
+                    "amr_a": 0.2 + 0.1 * self.step_idx,
+                    "amr_b": 0.4 + 0.1 * self.step_idx,
+                }
+            }
+            done = self.step_idx >= 3
+            return obs, 0.0, done, False, info
 
     def test_hrl_coerces_scalar_action(self):
         """HRL evaluation should coerce scalar ndarray actions to int."""
@@ -419,3 +530,366 @@ class TestRunEvaluationEpisodesActionHandling:
         )
 
         assert results["episode_lengths"] == [1]
+
+    def test_recurrent_logging_writes_episode_npz(self, tmp_path: Path):
+        """Recurrent evaluative logging writes episode_*.npz with hidden state and AMR arrays."""
+        model = self._DummyRecurrentModel()
+        env = self._RecurrentEnv()
+        log_dir = tmp_path / "lstm_probe" / "logs" / "seed_1"
+
+        results = run_evaluation_episodes(
+            model=model,
+            env=env,
+            num_episodes=2,
+            is_hrl=False,
+            is_recurrent=True,
+            recurrent_log_dir=log_dir,
+        )
+
+        assert results["episode_lengths"] == [3, 3]
+        assert (log_dir / "episode_0000.npz").exists()
+        assert (log_dir / "episode_0001.npz").exists()
+
+        episode_data = np.load(log_dir / "episode_0000.npz")
+        assert "hidden_states" in episode_data
+        assert "true_amr" in episode_data
+        assert episode_data["hidden_states"].shape[0] == 3
+        assert episode_data["true_amr"].shape[0] == 3
+
+
+# ==================== HRL Diagnostics Tests ====================
+
+
+def _make_eval_data(num_episodes: int = 3, steps_per_ep: int = 4, num_options: int = 2) -> Dict[str, Any]:
+    """Helper: build a synthetic eval_data dict matching run_evaluation_episodes() output."""
+    rng = np.random.default_rng(seed=0)
+    episodes = []
+    episode_lengths = []
+    for _ in range(num_episodes):
+        actions = rng.integers(low=0, high=num_options, size=steps_per_ep).tolist()
+        rewards = rng.uniform(low=-1.0, high=1.0, size=steps_per_ep).tolist()
+        episodes.append({"actions": actions, "rewards": rewards, "obs": [], "amr_levels": []})
+        episode_lengths.append(steps_per_ep)
+    return {
+        "episode_rewards": [sum(ep["rewards"]) for ep in episodes],
+        "episode_lengths": episode_lengths,
+        "episodes": episodes,
+    }
+
+
+class TestComputeHrlOptionStats:
+    """Tests for compute_hrl_option_stats()."""
+
+    def test_returns_expected_keys(self):
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=4, num_options=3)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+
+        assert "option_counts" in stats
+        assert "option_frequencies" in stats
+        assert "option_reward_stats" in stats
+        assert "episode_length_stats" in stats
+        assert "total_steps" in stats
+        assert "num_episodes" in stats
+
+    def test_total_steps_matches_sum_of_lengths(self):
+        eval_data = _make_eval_data(num_episodes=3, steps_per_ep=5, num_options=2)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        assert stats["total_steps"] == 15
+
+    def test_frequencies_sum_to_one(self):
+        eval_data = _make_eval_data(num_episodes=4, steps_per_ep=6, num_options=3)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        total_freq = sum(stats["option_frequencies"].values())
+        assert abs(total_freq - 1.0) < 1e-9, f"Option frequencies sum to {total_freq}, expected 1.0"
+
+    def test_handles_ndarray_actions(self):
+        """Actions as 1-element ndarrays (typical HRL manager output) are handled correctly."""
+        eval_data = {
+            "episode_lengths": [2],
+            "episodes": [
+                {
+                    "actions": [np.array([0]), np.array([1])],
+                    "rewards": [1.0, -0.5],
+                    "obs": [],
+                    "amr_levels": [],
+                }
+            ],
+            "episode_rewards": [0.5],
+        }
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        assert stats["total_steps"] == 2
+        assert "0" in stats["option_counts"]
+        assert "1" in stats["option_counts"]
+
+    def test_num_episodes_matches(self):
+        eval_data = _make_eval_data(num_episodes=5, steps_per_ep=3, num_options=2)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        assert stats["num_episodes"] == 5
+
+    def test_episode_length_stats_keys(self):
+        eval_data = _make_eval_data(num_episodes=3, steps_per_ep=4, num_options=2)
+        stats = compute_hrl_option_stats(eval_data=eval_data)
+        ep_stats = stats["episode_length_stats"]
+        for key in ("mean", "std", "min", "max"):
+            assert key in ep_stats, f"Missing episode_length_stats key: {key}"
+
+
+class TestAggregateHrlOptionStats:
+    """Tests for aggregate_hrl_option_stats()."""
+
+    def test_empty_input_returns_zero_seeds(self):
+        result = aggregate_hrl_option_stats(per_seed_stats=[])
+        assert result["num_seeds"] == 0
+        assert result["options"] == []
+
+    def test_single_seed_aggregation(self):
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=6, num_options=2)
+        single_stats = compute_hrl_option_stats(eval_data=eval_data)
+        result = aggregate_hrl_option_stats(per_seed_stats=[single_stats])
+
+        assert result["num_seeds"] == 1
+        assert len(result["options"]) >= 1
+
+    def test_multi_seed_aggregation_contains_all_options(self):
+        """Options seen in any seed appear in the aggregate."""
+        # Seed A only uses option 0
+        seed_a_data: Dict[str, Any] = {
+            "episode_lengths": [2],
+            "episodes": [{"actions": [0, 0], "rewards": [1.0, 1.0], "obs": [], "amr_levels": []}],
+            "episode_rewards": [2.0],
+        }
+        # Seed B only uses option 1
+        seed_b_data: Dict[str, Any] = {
+            "episode_lengths": [2],
+            "episodes": [{"actions": [1, 1], "rewards": [0.5, 0.5], "obs": [], "amr_levels": []}],
+            "episode_rewards": [1.0],
+        }
+        stats_a = compute_hrl_option_stats(eval_data=seed_a_data)
+        stats_b = compute_hrl_option_stats(eval_data=seed_b_data)
+        result = aggregate_hrl_option_stats(per_seed_stats=[stats_a, stats_b])
+
+        assert result["num_seeds"] == 2
+        assert "0" in result["options"]
+        assert "1" in result["options"]
+
+    def test_option_statistics_contain_expected_fields(self):
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=4, num_options=2)
+        single_stats = compute_hrl_option_stats(eval_data=eval_data)
+        result = aggregate_hrl_option_stats(per_seed_stats=[single_stats])
+
+        for opt_id in result["options"]:
+            opt_stat = result["option_statistics"][opt_id]
+            for field in (
+                "frequency_mean",
+                "frequency_std",
+                "frequency_median",
+                "frequency_min",
+                "frequency_max",
+                "frequency_p25",
+                "frequency_p75",
+                "mean_reward_mean",
+                "mean_reward_std",
+            ):
+                assert field in opt_stat, f"Missing field {field!r} for option {opt_id!r}"
+
+
+class TestRunHrlDiagnostics:
+    """Tests for run_hrl_diagnostics() — output directory mapping and partial failure path."""
+
+    def _tmp_output_dir(self, tmp_path: Path) -> Path:
+        out = tmp_path / "evaluation"
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+
+    def test_creates_hrl_stats_subfolder(self, tmp_path: Path):
+        """hrl_stats/ subfolder is created under the given output_dir."""
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=3, num_options=2)
+
+        result = run_hrl_diagnostics(
+            all_eval_data=[eval_data],
+            seed_labels=["seed_1"],
+            output_dir=output_dir,
+        )
+
+        assert result is True
+        assert (output_dir / "hrl_stats").is_dir()
+
+    def test_writes_summary_and_per_seed_files(self, tmp_path: Path):
+        """Summary JSON and per-seed JSON files are written to hrl_stats/."""
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+        eval_data = _make_eval_data(num_episodes=2, steps_per_ep=3, num_options=2)
+
+        run_hrl_diagnostics(
+            all_eval_data=[eval_data],
+            seed_labels=["seed_1"],
+            output_dir=output_dir,
+        )
+
+        hrl_stats_dir = output_dir / "hrl_stats"
+        assert (hrl_stats_dir / "hrl_stats_summary.json").exists()
+        assert (hrl_stats_dir / "hrl_stats_seed_1.json").exists()
+        assert (hrl_stats_dir / "option_usage.csv").exists()
+
+    def test_output_path_contract(self, tmp_path: Path):
+        """Output directory correctly maps to analysis_output/<prefix>/evaluation/hrl_stats/."""
+        # Simulate canonical layout: analysis_output/my_prefix/evaluation/
+        output_dir = tmp_path / "analysis_output" / "my_prefix" / "evaluation"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        eval_data = _make_eval_data(num_episodes=1, steps_per_ep=2, num_options=2)
+
+        run_hrl_diagnostics(
+            all_eval_data=[eval_data],
+            seed_labels=["seed_0"],
+            output_dir=output_dir,
+        )
+
+        expected_stats_dir = tmp_path / "analysis_output" / "my_prefix" / "evaluation" / "hrl_stats"
+        assert expected_stats_dir.is_dir(), "hrl_stats/ must be created at evaluation/hrl_stats/"
+
+    def test_partial_seed_failure_continues_and_returns_true(self, tmp_path: Path, capsys):
+        """If one seed fails, a warning is emitted, other seeds succeed, and True is returned."""
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+
+        # Good seed
+        good_eval_data = _make_eval_data(num_episodes=2, steps_per_ep=3, num_options=2)
+        # Bad seed: corrupt structure that will raise inside compute_hrl_option_stats
+        bad_eval_data: Dict[str, Any] = {
+            "episode_lengths": None,  # None instead of list — will crash sum()
+            "episodes": [],
+            "episode_rewards": [],
+        }
+
+        result = run_hrl_diagnostics(
+            all_eval_data=[bad_eval_data, good_eval_data],
+            seed_labels=["bad_seed", "good_seed"],
+            output_dir=output_dir,
+        )
+
+        captured = capsys.readouterr()
+        assert result is True, "Should return True when at least one seed's diagnostics succeed"
+        assert "[WARN]" in captured.out, "Should emit a [WARN] message for the failed seed"
+        assert (output_dir / "hrl_stats" / "hrl_stats_summary.json").exists()
+
+    def test_all_seeds_fail_returns_false(self, tmp_path: Path):
+        """If all seeds fail, returns False and no summary is written."""
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+
+        bad_eval_data: Dict[str, Any] = {
+            "episode_lengths": None,
+            "episodes": [],
+            "episode_rewards": [],
+        }
+
+        result = run_hrl_diagnostics(
+            all_eval_data=[bad_eval_data],
+            seed_labels=["bad_seed"],
+            output_dir=output_dir,
+        )
+
+        assert result is False
+        assert not (output_dir / "hrl_stats" / "hrl_stats_summary.json").exists()
+
+
+def _write_valid_lstm_logs(
+    run_dir: Path,
+    num_episodes: int = 2,
+    steps_per_episode: int = 24,
+    hidden_dim: int = 4,
+    num_antibiotics: int = 3,
+) -> Path:
+    """Create synthetic LSTM probe logs with required arrays."""
+    log_dir = run_dir / "lstm_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed=123)
+
+    projection = rng.normal(loc=0.0, scale=0.5, size=(hidden_dim, num_antibiotics))
+
+    for episode_idx in range(num_episodes):
+        hidden_states = rng.normal(loc=0.0, scale=1.0, size=(steps_per_episode, hidden_dim))
+        noise = rng.normal(loc=0.0, scale=0.05, size=(steps_per_episode, num_antibiotics))
+        true_amr = np.clip(hidden_states @ projection + noise, a_min=0.0, a_max=1.0)
+        timesteps = np.arange(steps_per_episode)
+
+        np.savez(
+            file=log_dir / f"episode_{episode_idx:04d}.npz",
+            hidden_states=hidden_states,
+            true_amr=true_amr,
+            timesteps=timesteps,
+        )
+
+    return log_dir
+
+
+class TestRunLstmProbeDiagnostics:
+    """Tests for run_lstm_probe_diagnostics() output contract + partial failure handling."""
+
+    def _tmp_output_dir(self, tmp_path: Path) -> Path:
+        out = tmp_path / "evaluation"
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+
+    def test_output_path_contract(self, tmp_path: Path):
+        """Artifacts are written under analysis_output/<prefix>/evaluation/lstm_probe/."""
+        run_dir = tmp_path / "results" / "exp_recurrent_seed1_20260101_000001"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        _write_valid_lstm_logs(run_dir=run_dir)
+
+        output_dir = tmp_path / "analysis_output" / "my_prefix" / "evaluation"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        result = run_lstm_probe_diagnostics(
+            log_dirs=[run_dir / "lstm_logs"],
+            seed_labels=["seed_1"],
+            output_dir=output_dir,
+            num_eval_episodes_per_seed=3,
+        )
+
+        lstm_probe_dir = output_dir / "lstm_probe"
+        assert result is True
+        assert lstm_probe_dir.is_dir(), "lstm_probe/ must be created at evaluation/lstm_probe/"
+        assert (lstm_probe_dir / "lstm_probe_summary.json").exists()
+        assert (lstm_probe_dir / "lstm_probe_raw_vals.json").exists()
+        assert (lstm_probe_dir / "lstm_probe_seed_1.json").exists()
+
+    def test_partial_seed_failure_continues_and_returns_true(self, tmp_path: Path, capsys):
+        """One failed seed emits warning while successful seed still yields aggregate output."""
+        good_run_dir = tmp_path / "results" / "exp_recurrent_seed1_20260101_000001"
+        bad_run_dir = tmp_path / "results" / "exp_recurrent_seed2_20260101_000002"
+        good_run_dir.mkdir(parents=True, exist_ok=True)
+        bad_run_dir.mkdir(parents=True, exist_ok=True)
+        _write_valid_lstm_logs(run_dir=good_run_dir)
+
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+
+        result = run_lstm_probe_diagnostics(
+            log_dirs=[bad_run_dir / "lstm_logs", good_run_dir / "lstm_logs"],
+            seed_labels=["seed_2", "seed_1"],
+            output_dir=output_dir,
+            num_eval_episodes_per_seed=3,
+        )
+
+        captured = capsys.readouterr()
+        assert result is True
+        assert "[WARN]" in captured.out
+        assert (output_dir / "lstm_probe" / "lstm_probe_summary.json").exists()
+        assert (output_dir / "lstm_probe" / "lstm_probe_raw_vals.json").exists()
+
+    def test_all_seeds_fail_returns_false(self, tmp_path: Path):
+        """When all seeds fail probe loading, function returns False and no summary is written."""
+        bad_run_dir_a = tmp_path / "results" / "exp_recurrent_seed1_20260101_000001"
+        bad_run_dir_b = tmp_path / "results" / "exp_recurrent_seed2_20260101_000002"
+        bad_run_dir_a.mkdir(parents=True, exist_ok=True)
+        bad_run_dir_b.mkdir(parents=True, exist_ok=True)
+
+        output_dir = self._tmp_output_dir(tmp_path=tmp_path)
+
+        result = run_lstm_probe_diagnostics(
+            log_dirs=[bad_run_dir_a / "lstm_logs", bad_run_dir_b / "lstm_logs"],
+            seed_labels=["seed_1", "seed_2"],
+            output_dir=output_dir,
+            num_eval_episodes_per_seed=3,
+        )
+
+        assert result is False
+        assert not (output_dir / "lstm_probe" / "lstm_probe_summary.json").exists()

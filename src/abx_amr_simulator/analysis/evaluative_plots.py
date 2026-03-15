@@ -5,6 +5,17 @@ Generates publication-quality evaluation plots from trained policies.
 Merges ensemble performance plotting with action-attribute association analysis.
 Automatically detects new experiments and generates plots for evaluation-ready policies.
 
+Variable-length episode support:
+    When HRL boundary clipping is active, episodes may terminate before
+    ``env.max_time_steps``.  All evaluation functions in this module are
+    designed to handle episodes of heterogeneous realized lengths:
+    - ``run_evaluation_episodes()`` resets the environment at the start of
+      every episode and records the true realized step count.
+    - ``compute_action_attribute_associations()`` uses the actual length of
+      each episode's trajectory rather than assuming a fixed horizon.
+    Downstream analysis (e.g. ``plot_metrics_ensemble_agents`` in metrics.py)
+    uses NaN-padding to aggregate trajectories of different lengths.
+
 How to use:
     # Auto mode: Generate plots for all new exp_* experiments
     python -m abx_amr_simulator.analysis.evaluative_plots
@@ -112,25 +123,97 @@ def load_config_from_run(run_folder: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _extract_algorithm_name(config: Dict[str, Any]) -> str:
+    """Extract configured algorithm name from flat or nested config structures."""
+    if not isinstance(config, dict):
+        return ""
+
+    if "algorithm" in config and config.get("algorithm") is not None:
+        return str(config.get("algorithm", ""))
+
+    agent_algo = config.get("agent_algorithm", {})
+    if isinstance(agent_algo, dict):
+        return str(agent_algo.get("algorithm", ""))
+
+    return ""
+
+
 def is_hrl_run(config: Dict[str, Any]) -> bool:
     """Check if config indicates an HRL run."""
     try:
-        # Check flat structure first (most common after load_config())
-        if "algorithm" in config:
-            algo = config.get("algorithm", "")
-            if "HRL" in str(algo).upper():
-                return True
-        
-        # Check nested structure
-        agent_algo = config.get("agent_algorithm", {})
-        if isinstance(agent_algo, dict):
-            algo = agent_algo.get("algorithm", "")
-            if "HRL" in str(algo).upper():
-                return True
-        
-        return False
+        algo_upper = _extract_algorithm_name(config=config).upper()
+        return "HRL" in algo_upper
     except Exception:
         return False
+
+
+def is_recurrent_run(config: Dict[str, Any]) -> bool:
+    """Check if config indicates recurrent-policy usage (canonical or HRL-recurrent)."""
+    try:
+        algo_upper = _extract_algorithm_name(config=config).upper()
+        if not algo_upper:
+            return False
+        return ("RECURRENT" in algo_upper) or ("RPPO" in algo_upper)
+    except Exception:
+        return False
+
+
+def detect_analysis_branches(configs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Detect canonical branch applicability across one experiment prefix's seed configs."""
+    if not configs:
+        raise ValueError("detect_analysis_branches() requires at least one config")
+
+    per_seed = []
+    for cfg in configs:
+        algo = _extract_algorithm_name(config=cfg)
+        per_seed.append(
+            {
+                "algorithm": algo,
+                "is_hrl": is_hrl_run(config=cfg),
+                "is_recurrent": is_recurrent_run(config=cfg),
+            }
+        )
+
+    unique_algorithms = sorted({item["algorithm"] for item in per_seed})
+    unique_hrl = {item["is_hrl"] for item in per_seed}
+    unique_recurrent = {item["is_recurrent"] for item in per_seed}
+
+    if len(unique_algorithms) > 1:
+        print(
+            f"  [WARN] Mixed algorithm labels across seeds: {unique_algorithms}. "
+            "Branch detection will use any-seed applicability."
+        )
+    if len(unique_hrl) > 1:
+        print(
+            "  [WARN] Mixed HRL detection across seeds; using any-seed applicability "
+            "for canonical branch gating."
+        )
+    if len(unique_recurrent) > 1:
+        print(
+            "  [WARN] Mixed recurrent detection across seeds; using any-seed applicability "
+            "for canonical branch gating."
+        )
+
+    is_hrl = any(item["is_hrl"] for item in per_seed)
+    is_recurrent = any(item["is_recurrent"] for item in per_seed)
+
+    return {
+        "algorithms": unique_algorithms,
+        "is_hrl": is_hrl,
+        "is_recurrent": is_recurrent,
+        "hrl_branch": {
+            "should_run": is_hrl,
+            "reason": "detected HRL algorithm in saved seed config"
+            if is_hrl
+            else "no HRL algorithm detected in saved seed config",
+        },
+        "lstm_probe_branch": {
+            "should_run": is_recurrent,
+            "reason": "detected recurrent algorithm in saved seed config"
+            if is_recurrent
+            else "no recurrent algorithm detected in saved seed config",
+        },
+    }
 
 
 def wrap_environment_for_hrl(
@@ -174,6 +257,511 @@ def wrap_environment_for_hrl(
         return None
 
 
+# ==================== HRL Diagnostics ====================
+
+def compute_hrl_option_stats(eval_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute per-option statistics from a single seed's evaluation trajectories.
+
+    Args:
+        eval_data: Output dict from ``run_evaluation_episodes()`` for one seed.
+
+    Returns:
+        Dict containing:
+        - ``option_counts`` (Dict[int, int]): raw selection counts per option ID.
+        - ``option_frequencies`` (Dict[int, float]): relative frequency per option ID.
+        - ``option_reward_stats`` (Dict[int, Dict]): mean/std reward per option ID.
+        - ``episode_length_stats`` (Dict): mean/std/min/max of episode lengths.
+        - ``total_steps`` (int): total steps across all episodes.
+        - ``num_episodes`` (int): number of evaluation episodes.
+    """
+    episode_lengths = eval_data.get("episode_lengths", [])
+    episodes = eval_data.get("episodes", [])
+
+    total_steps = sum(episode_lengths)
+    option_counts: Dict[int, int] = {}
+    option_reward_totals: Dict[int, float] = {}
+    option_reward_counts: Dict[int, int] = {}
+
+    for episode in episodes:
+        actions = episode.get("actions", [])
+        rewards = episode.get("rewards", [])
+
+        for step_idx, action in enumerate(actions):
+            # Actions for HRL are manager-level option IDs (int or 1-element array)
+            if isinstance(action, np.ndarray):
+                if action.size == 1:
+                    action_id = int(action.item())
+                else:
+                    action_id = int(action.flat[0])
+            else:
+                action_id = int(action)
+
+            option_counts[action_id] = option_counts.get(action_id, 0) + 1
+
+            step_reward = float(rewards[step_idx]) if step_idx < len(rewards) else 0.0
+            option_reward_totals[action_id] = option_reward_totals.get(action_id, 0.0) + step_reward
+            option_reward_counts[action_id] = option_reward_counts.get(action_id, 0) + 1
+
+    # Relative frequencies
+    option_frequencies: Dict[int, float] = {}
+    for opt_id, count in option_counts.items():
+        option_frequencies[opt_id] = count / total_steps if total_steps > 0 else 0.0
+
+    # Per-option reward stats
+    option_reward_stats: Dict[int, Dict[str, float]] = {}
+    for opt_id in option_counts:
+        cnt = option_reward_counts.get(opt_id, 0)
+        mean_reward = option_reward_totals.get(opt_id, 0.0) / cnt if cnt > 0 else 0.0
+        option_reward_stats[opt_id] = {"mean_reward": mean_reward, "count": cnt}
+
+    # Episode length statistics
+    ep_lengths_arr = np.array(episode_lengths, dtype=float) if episode_lengths else np.array([0.0])
+    episode_length_stats: Dict[str, float] = {
+        "mean": float(np.mean(ep_lengths_arr)),
+        "std": float(np.std(ep_lengths_arr)),
+        "min": float(np.min(ep_lengths_arr)),
+        "max": float(np.max(ep_lengths_arr)),
+    }
+
+    return {
+        "option_counts": {str(k): v for k, v in option_counts.items()},
+        "option_frequencies": {str(k): v for k, v in option_frequencies.items()},
+        "option_reward_stats": {str(k): v for k, v in option_reward_stats.items()},
+        "episode_length_stats": episode_length_stats,
+        "total_steps": total_steps,
+        "num_episodes": len(episode_lengths),
+    }
+
+
+def aggregate_hrl_option_stats(per_seed_stats: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate per-seed HRL option statistics into ensemble summary.
+
+    Args:
+        per_seed_stats: List of dicts from ``compute_hrl_option_stats()``.
+
+    Returns:
+        Dict with ensemble option statistics (mean/std/median/min/max per option).
+    """
+    if not per_seed_stats:
+        return {
+            "num_seeds": 0,
+            "options": [],
+            "option_statistics": {},
+            "episode_length_statistics": {},
+        }
+
+    # Collect all option IDs seen across seeds
+    all_option_ids = sorted(
+        {opt_id for seed_stat in per_seed_stats for opt_id in seed_stat.get("option_frequencies", {}).keys()}
+    )
+
+    option_statistics: Dict[str, Any] = {}
+    for opt_id in all_option_ids:
+        freq_values = np.array(
+            [seed_stat.get("option_frequencies", {}).get(opt_id, 0.0) for seed_stat in per_seed_stats]
+        )
+        reward_values = np.array(
+            [
+                seed_stat.get("option_reward_stats", {}).get(opt_id, {}).get("mean_reward", 0.0)
+                for seed_stat in per_seed_stats
+            ]
+        )
+        option_statistics[opt_id] = {
+            "frequency_mean": float(np.mean(freq_values)),
+            "frequency_std": float(np.std(freq_values)),
+            "frequency_median": float(np.median(freq_values)),
+            "frequency_min": float(np.min(freq_values)),
+            "frequency_max": float(np.max(freq_values)),
+            "frequency_p25": float(np.percentile(freq_values, 25)),
+            "frequency_p75": float(np.percentile(freq_values, 75)),
+            "mean_reward_mean": float(np.mean(reward_values)),
+            "mean_reward_std": float(np.std(reward_values)),
+        }
+
+    # Aggregate episode length statistics across seeds
+    all_ep_means = np.array([s.get("episode_length_stats", {}).get("mean", 0.0) for s in per_seed_stats])
+    episode_length_statistics: Dict[str, float] = {
+        "mean_of_seed_means": float(np.mean(all_ep_means)),
+        "std_of_seed_means": float(np.std(all_ep_means)),
+    }
+
+    return {
+        "num_seeds": len(per_seed_stats),
+        "options": all_option_ids,
+        "option_statistics": option_statistics,
+        "episode_length_statistics": episode_length_statistics,
+    }
+
+
+def run_hrl_diagnostics(
+    all_eval_data: List[Dict[str, Any]],
+    seed_labels: List[str],
+    output_dir: Path,
+) -> bool:
+    """Run HRL diagnostics branch and write aggregated stats to ``hrl_stats/`` subfolder.
+
+    Processes pre-collected evaluation trajectories for each seed with
+    warning-and-continue behavior: if a single seed's diagnostics fail, a warning
+    is emitted and aggregation proceeds from the remaining successful seeds.
+    The branch succeeds as long as at least one seed produces valid diagnostics.
+
+    Args:
+        all_eval_data: List of eval data dicts (one per seed) as returned by
+            ``run_evaluation_episodes()``.  Must be the same length as
+            ``seed_labels``.
+        seed_labels: Human-readable label for each entry in ``all_eval_data``
+            (e.g. ``["seed_1", "seed_2"]``).
+        output_dir: Base evaluation output directory
+            (``analysis_output/<prefix>/evaluation/``).  The ``hrl_stats/``
+            subfolder will be created inside it.
+
+    Returns:
+        True if at least one seed's diagnostics were successfully collected
+        and written; False otherwise.
+    """
+    hrl_stats_dir = output_dir / "hrl_stats"
+    hrl_stats_dir.mkdir(parents=True, exist_ok=True)
+
+    per_seed_stats: List[Dict[str, Any]] = []
+    succeeded_labels: List[str] = []
+    failed_labels: List[str] = []
+
+    for eval_data, label in zip(all_eval_data, seed_labels):
+        try:
+            seed_stats = compute_hrl_option_stats(eval_data=eval_data)
+            per_seed_stats.append(seed_stats)
+            succeeded_labels.append(label)
+
+            # Write per-seed diagnostics file
+            per_seed_path = hrl_stats_dir / f"hrl_stats_{label}.json"
+            with open(per_seed_path, "w") as fh:
+                json.dump(seed_stats, fp=fh, indent=2)
+
+        except Exception as exc:
+            print(f"      [WARN] HRL diagnostics failed for {label}: {exc}; skipping seed")
+            failed_labels.append(label)
+            continue
+
+    if not per_seed_stats:
+        print(f"    [ERROR] HRL diagnostics: no seeds succeeded; skipping hrl_stats output")
+        return False
+
+    if failed_labels:
+        print(
+            f"    [WARN] HRL diagnostics: {len(failed_labels)} seed(s) failed "
+            f"({', '.join(failed_labels)}); aggregating from {len(per_seed_stats)} successful seed(s)"
+        )
+
+    # Aggregate across seeds
+    aggregated = aggregate_hrl_option_stats(per_seed_stats=per_seed_stats)
+    aggregated["prefix_seed_labels"] = succeeded_labels
+    aggregated["failed_seeds"] = failed_labels
+
+    summary_path = hrl_stats_dir / "hrl_stats_summary.json"
+    with open(summary_path, "w") as fh:
+        json.dump(aggregated, fp=fh, indent=2)
+
+    # Write option_usage.csv for convenient downstream inspection
+    option_usage_path = hrl_stats_dir / "option_usage.csv"
+    option_stats = aggregated.get("option_statistics", {})
+    csv_headers = [
+        "option_id",
+        "frequency_mean",
+        "frequency_std",
+        "frequency_median",
+        "frequency_min",
+        "frequency_max",
+        "frequency_p25",
+        "frequency_p75",
+        "mean_reward_mean",
+        "mean_reward_std",
+    ]
+    csv_lines = [",".join(csv_headers)]
+    for opt_id in aggregated.get("options", []):
+        stats = option_stats.get(opt_id, {})
+        row = [
+            str(opt_id),
+            str(stats.get("frequency_mean", "")),
+            str(stats.get("frequency_std", "")),
+            str(stats.get("frequency_median", "")),
+            str(stats.get("frequency_min", "")),
+            str(stats.get("frequency_max", "")),
+            str(stats.get("frequency_p25", "")),
+            str(stats.get("frequency_p75", "")),
+            str(stats.get("mean_reward_mean", "")),
+            str(stats.get("mean_reward_std", "")),
+        ]
+        csv_lines.append(",".join(row))
+    option_usage_path.write_text("\n".join(csv_lines))
+
+    # Optional: generate a simple bar-chart for option frequencies when matplotlib is available
+    if plt is not None and option_stats:
+        try:
+            options_list = aggregated.get("options", [])
+            means = [option_stats[opt].get("frequency_mean", 0.0) for opt in options_list]
+            stds = [option_stats[opt].get("frequency_std", 0.0) for opt in options_list]
+
+            fig, ax = plt.subplots(figsize=(max(8, len(options_list) * 1.2), 5))
+            x_pos = np.arange(len(options_list))
+            ax.bar(
+                x_pos,
+                means,
+                yerr=stds,
+                capsize=5,
+                alpha=0.75,
+                edgecolor="black",
+                linewidth=1.2,
+                error_kw={"linewidth": 1.5},
+            )
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels([f"opt_{o}" for o in options_list], rotation=45, ha="right")
+            ax.set_ylabel("Mean Selection Frequency (across seeds)")
+            ax.set_xlabel("Option ID")
+            ax.set_title("HRL Option Selection Frequency (Ensemble)")
+            ax.set_ylim(0.0, min(1.0, max(means) * 1.3 + 0.05) if means else 1.0)
+            ax.grid(axis="y", alpha=0.3)
+            plt.tight_layout()
+            plot_path = hrl_stats_dir / "option_frequency_ensemble.png"
+            fig.savefig(plot_path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            print(f"    Saved option frequency plot to hrl_stats/option_frequency_ensemble.png")
+        except Exception as exc:
+            print(f"    [WARN] Could not generate HRL option frequency plot: {exc}")
+
+    print(
+        f"    Saved HRL diagnostics for {len(per_seed_stats)} seed(s) to {hrl_stats_dir}"
+    )
+    return True
+
+
+# ==================== Recurrent LSTM Probe Diagnostics ====================
+
+def _safe_metric_mean(values: List[Any]) -> Optional[float]:
+    numeric_values = [float(v) for v in values if isinstance(v, (int, float, np.floating)) and np.isfinite(v)]
+    if not numeric_values:
+        return None
+    return float(np.mean(np.array(numeric_values, dtype=float)))
+
+
+def _safe_metric_std(values: List[Any]) -> Optional[float]:
+    numeric_values = [float(v) for v in values if isinstance(v, (int, float, np.floating)) and np.isfinite(v)]
+    if not numeric_values:
+        return None
+    return float(np.std(np.array(numeric_values, dtype=float)))
+
+
+def compute_lstm_probe_stats(
+    log_dir: Path,
+    test_size: float = 0.2,
+    random_state: int = 42,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Compute per-seed LSTM probe statistics from one run's ``lstm_logs`` directory."""
+    from abx_amr_simulator.analysis.probe_hidden_belief import fit_probe, load_episodes
+
+    episode_files = sorted(log_dir.glob("episode_*.npz"))
+    if len(episode_files) == 0:
+        raise ValueError(f"No episode_*.npz logs found in {log_dir}")
+
+    hidden_states, true_amr, _ = load_episodes(log_dir=log_dir)
+    if hidden_states.ndim < 2 or hidden_states.shape[0] == 0:
+        raise ValueError("LSTM probe failed: hidden states must be non-empty with shape (N, features)")
+    if true_amr.ndim < 2 or true_amr.shape[0] == 0:
+        raise ValueError("LSTM probe failed: true AMR must be non-empty with shape (N, num_antibiotics)")
+    if hidden_states.shape[0] != true_amr.shape[0]:
+        raise ValueError("LSTM probe failed: hidden-state and true-AMR timestep counts do not match")
+    if not np.all(np.isfinite(hidden_states)):
+        raise ValueError("LSTM probe failed: hidden states contain non-finite values")
+    if not np.all(np.isfinite(true_amr)):
+        raise ValueError("LSTM probe failed: true AMR contains non-finite values")
+
+    probe_results = fit_probe(
+        hidden_states=hidden_states,
+        true_amr=true_amr,
+        test_size=test_size,
+        random_state=random_state,
+    )
+
+    per_antibiotic: List[Dict[str, Any]] = []
+    for result in probe_results.get("results", []):
+        per_antibiotic.append(
+            {
+                "antibiotic_idx": int(result.get("antibiotic_idx", -1)),
+                "train_r2": float(result.get("train_r2", 0.0)),
+                "test_r2": float(result.get("test_r2", 0.0)),
+                "train_mae": float(result.get("train_mae", 0.0)),
+                "test_mae": float(result.get("test_mae", 0.0)),
+            }
+        )
+
+    mean_test_r2 = _safe_metric_mean(values=[item.get("test_r2") for item in per_antibiotic])
+    mean_test_mae = _safe_metric_mean(values=[item.get("test_mae") for item in per_antibiotic])
+
+    seed_stats: Dict[str, Any] = {
+        "log_dir": str(log_dir),
+        "num_logged_episodes": len(episode_files),
+        "num_timesteps": int(hidden_states.shape[0]) if hasattr(hidden_states, "shape") and hidden_states.shape else 0,
+        "hidden_state_shape": list(hidden_states.shape) if hasattr(hidden_states, "shape") else [],
+        "true_amr_shape": list(true_amr.shape) if hasattr(true_amr, "shape") else [],
+        "num_antibiotics": len(per_antibiotic),
+        "per_antibiotic": per_antibiotic,
+        "metrics": {
+            "mean_test_r2": mean_test_r2,
+            "mean_test_mae": mean_test_mae,
+        },
+    }
+
+    return seed_stats, probe_results
+
+
+def aggregate_lstm_probe_stats(per_seed_stats: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate per-seed recurrent LSTM probe stats into ensemble summary."""
+    if not per_seed_stats:
+        return {
+            "num_seeds": 0,
+            "mean_test_r2": None,
+            "std_test_r2": None,
+            "mean_test_mae": None,
+            "std_test_mae": None,
+            "per_antibiotic": {},
+        }
+
+    mean_test_r2_vals = [seed_stat.get("metrics", {}).get("mean_test_r2") for seed_stat in per_seed_stats]
+    mean_test_mae_vals = [seed_stat.get("metrics", {}).get("mean_test_mae") for seed_stat in per_seed_stats]
+
+    per_antibiotic_metrics: Dict[str, Dict[str, Any]] = {}
+    antibiotic_ids = sorted(
+        {
+            int(abx_stat.get("antibiotic_idx", -1))
+            for seed_stat in per_seed_stats
+            for abx_stat in seed_stat.get("per_antibiotic", [])
+            if int(abx_stat.get("antibiotic_idx", -1)) >= 0
+        }
+    )
+
+    for abx_idx in antibiotic_ids:
+        test_r2_vals = [
+            abx_stat.get("test_r2")
+            for seed_stat in per_seed_stats
+            for abx_stat in seed_stat.get("per_antibiotic", [])
+            if int(abx_stat.get("antibiotic_idx", -1)) == abx_idx
+        ]
+        test_mae_vals = [
+            abx_stat.get("test_mae")
+            for seed_stat in per_seed_stats
+            for abx_stat in seed_stat.get("per_antibiotic", [])
+            if int(abx_stat.get("antibiotic_idx", -1)) == abx_idx
+        ]
+        per_antibiotic_metrics[str(abx_idx)] = {
+            "mean_test_r2": _safe_metric_mean(values=test_r2_vals),
+            "std_test_r2": _safe_metric_std(values=test_r2_vals),
+            "mean_test_mae": _safe_metric_mean(values=test_mae_vals),
+            "std_test_mae": _safe_metric_std(values=test_mae_vals),
+        }
+
+    return {
+        "num_seeds": len(per_seed_stats),
+        "mean_test_r2": _safe_metric_mean(values=mean_test_r2_vals),
+        "std_test_r2": _safe_metric_std(values=mean_test_r2_vals),
+        "mean_test_mae": _safe_metric_mean(values=mean_test_mae_vals),
+        "std_test_mae": _safe_metric_std(values=mean_test_mae_vals),
+        "per_antibiotic": per_antibiotic_metrics,
+    }
+
+
+def run_lstm_probe_diagnostics(
+    log_dirs: List[Path],
+    seed_labels: List[str],
+    output_dir: Path,
+    num_eval_episodes_per_seed: Optional[int] = None,
+) -> bool:
+    """Run recurrent LSTM probe branch and write aggregated stats to ``lstm_probe/``.
+
+    Warning-and-continue behavior: if one seed fails, remaining seeds continue.
+    Branch succeeds if at least one seed probe succeeds.
+    """
+    lstm_probe_dir = output_dir / "lstm_probe"
+    lstm_probe_dir.mkdir(parents=True, exist_ok=True)
+
+    per_seed_stats: List[Dict[str, Any]] = []
+    succeeded_labels: List[str] = []
+    failed_labels: List[str] = []
+
+    for log_dir, label in zip(log_dirs, seed_labels):
+        try:
+            if not log_dir.exists() or not log_dir.is_dir():
+                raise FileNotFoundError(f"missing lstm_logs directory at {log_dir}")
+
+            seed_stats, probe_results = compute_lstm_probe_stats(log_dir=log_dir)
+            seed_stats["seed_label"] = label
+            per_seed_stats.append(seed_stats)
+            succeeded_labels.append(label)
+
+            per_seed_path = lstm_probe_dir / f"lstm_probe_{label}.json"
+            with open(per_seed_path, "w") as fh:
+                json.dump(seed_stats, fp=fh, indent=2)
+
+            try:
+                from abx_amr_simulator.analysis.probe_hidden_belief import plot_predictions
+
+                plot_predictions(
+                    probe_results=probe_results,
+                    output_dir=lstm_probe_dir / label,
+                )
+            except Exception as exc:
+                print(f"      [WARN] LSTM probe plotting failed for {label}: {exc}; continuing without plot")
+
+        except Exception as exc:
+            print(f"      [WARN] LSTM probe failed for {label}: {exc}; skipping seed")
+            failed_labels.append(label)
+            continue
+
+    if not per_seed_stats:
+        print(f"    [ERROR] LSTM probe diagnostics: no seeds succeeded; skipping lstm_probe output")
+        return False
+
+    if failed_labels:
+        print(
+            f"    [WARN] LSTM probe diagnostics: {len(failed_labels)} seed(s) failed "
+            f"({', '.join(failed_labels)}); aggregating from {len(per_seed_stats)} successful seed(s)"
+        )
+
+    num_logged_episodes_total = int(
+        sum(int(seed_stat.get("num_logged_episodes", 0)) for seed_stat in per_seed_stats)
+    )
+
+    raw_vals_payload: Dict[str, Any] = {
+        "num_seeds_requested": len(seed_labels),
+        "num_seeds_succeeded": len(per_seed_stats),
+        "num_seeds_failed": len(failed_labels),
+        "num_eval_episodes_per_seed": num_eval_episodes_per_seed,
+        "num_logged_episodes_total": num_logged_episodes_total,
+        "seed_labels_requested": seed_labels,
+        "seed_labels_succeeded": succeeded_labels,
+        "seed_labels_failed": failed_labels,
+        "per_seed": per_seed_stats,
+    }
+    raw_vals_path = lstm_probe_dir / "lstm_probe_raw_vals.json"
+    with open(raw_vals_path, "w") as fh:
+        json.dump(raw_vals_payload, fp=fh, indent=2)
+
+    aggregated = aggregate_lstm_probe_stats(per_seed_stats=per_seed_stats)
+    aggregated["prefix_seed_labels"] = succeeded_labels
+    aggregated["failed_seeds"] = failed_labels
+    aggregated["num_seeds_requested"] = len(seed_labels)
+    aggregated["num_seeds_succeeded"] = len(per_seed_stats)
+    aggregated["num_eval_episodes_per_seed"] = num_eval_episodes_per_seed
+    aggregated["num_logged_episodes_total"] = num_logged_episodes_total
+
+    summary_path = lstm_probe_dir / "lstm_probe_summary.json"
+    with open(summary_path, "w") as fh:
+        json.dump(aggregated, fp=fh, indent=2)
+
+    print(
+        f"    Saved LSTM probe diagnostics for {len(per_seed_stats)} seed(s) to {lstm_probe_dir}"
+    )
+    return True
+
+
 # ==================== Evaluation ====================
 
 def run_evaluation_episodes(
@@ -181,18 +769,48 @@ def run_evaluation_episodes(
     env: Any,
     num_episodes: int = 50,
     is_hrl: bool = False,
+    is_recurrent: bool = False,
+    recurrent_log_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Run evaluation episodes and collect trajectory data.
-    
-    Returns dict with episode metrics and trajectory data.
+
+    Each episode starts with a fresh ``env.reset()``, ensuring episode
+    independence. Episodes are not assumed to have equal lengths: when boundary
+    clipping is active in HRL (or the environment terminates early for any
+    reason) the realized episode length may be less than ``env.max_time_steps``.
+    The returned ``episode_lengths`` list reflects the true realized length of
+    each episode; downstream callers must not assume all lengths are equal.
+
+    Args:
+        model: Trained policy that implements ``predict(obs, deterministic)``.
+        env: Gymnasium-compatible environment. Must support the
+            ``(obs, info) = env.reset()`` and
+            ``(obs, reward, terminated, truncated, info) = env.step(action)``
+            interfaces.
+        num_episodes: Number of independent evaluation episodes to run.
+        is_hrl: If True, unwraps scalar array actions produced by the HRL
+            manager before passing them to ``env.step``.
+
+    Returns:
+        Dict with keys:
+            - ``episode_rewards`` (List[float]): total undiscounted reward per episode.
+            - ``episode_lengths`` (List[int]): realized step count per episode
+              (may vary across episodes if early termination occurs).
+            - ``episodes`` (List[Dict]): per-episode trajectory dicts with keys
+              ``obs``, ``actions``, ``rewards``, ``amr_levels``.
     """
     episode_rewards = []
     episode_lengths = []
     episode_data = []
+
+    if is_recurrent and recurrent_log_dir is not None:
+        recurrent_log_dir.mkdir(parents=True, exist_ok=True)
     
-    obs, info = env.reset()
     for ep in range(num_episodes):
+        # Reset at the START of each episode to ensure independence
+        obs, info = env.reset()
+        
         ep_reward = 0.0
         ep_length = 0
         ep_trajectory = {
@@ -203,13 +821,65 @@ def run_evaluation_episodes(
         }
         
         done = False
+        recurrent_state = None
+        recurrent_episode_start = np.array([True], dtype=bool)
+        recurrent_hidden_states: List[np.ndarray] = []
+        recurrent_true_amr: List[np.ndarray] = []
+        recurrent_timesteps: List[int] = []
         while not done:
-            action, _ = model.predict(obs, deterministic=True)
+            if is_recurrent:
+                action, recurrent_state = model.predict(
+                    obs,
+                    state=recurrent_state,
+                    episode_start=recurrent_episode_start,
+                    deterministic=True,
+                )
+            else:
+                action, _ = model.predict(obs, deterministic=True)
+
             if is_hrl and isinstance(action, np.ndarray):
                 if action.size == 1:
                     action = int(action.item())
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+
+            if is_recurrent:
+                if recurrent_state is None:
+                    raise ValueError("Recurrent evaluation failed: model did not return recurrent state")
+
+                hidden_state = recurrent_state[0] if isinstance(recurrent_state, tuple) else recurrent_state
+                hidden_state_array = np.array(hidden_state, dtype=float)
+                if hidden_state_array.size == 0:
+                    raise ValueError("Recurrent evaluation failed: empty hidden state")
+
+                if hidden_state_array.ndim == 3 and hidden_state_array.shape[1] > 0:
+                    hidden_state_array = hidden_state_array[:, 0, :]
+                hidden_state_array = hidden_state_array.reshape(-1)
+                if not np.all(np.isfinite(hidden_state_array)):
+                    raise ValueError("Recurrent evaluation failed: hidden state contains non-finite values")
+
+                if not isinstance(info, dict):
+                    raise ValueError("Recurrent evaluation failed: env info is not a dict")
+
+                amr_source = info.get("actual_amr_levels", info.get("amr_levels", None))
+                if not isinstance(amr_source, dict) or not amr_source:
+                    raise ValueError(
+                        "Recurrent evaluation failed: env info missing actual_amr_levels/amr_levels dict"
+                    )
+
+                amr_values = np.array(
+                    [float(amr_source[key]) for key in sorted(amr_source.keys())],
+                    dtype=float,
+                )
+                if amr_values.size == 0:
+                    raise ValueError("Recurrent evaluation failed: true AMR vector is empty")
+                if not np.all(np.isfinite(amr_values)):
+                    raise ValueError("Recurrent evaluation failed: true AMR contains non-finite values")
+
+                recurrent_hidden_states.append(hidden_state_array)
+                recurrent_true_amr.append(amr_values)
+                recurrent_timesteps.append(ep_length)
+                recurrent_episode_start = np.array([done], dtype=bool)
             
             ep_reward += float(reward)
             ep_length += 1
@@ -225,6 +895,30 @@ def run_evaluation_episodes(
         episode_rewards.append(ep_reward)
         episode_lengths.append(ep_length)
         episode_data.append(ep_trajectory)
+
+        if is_recurrent and recurrent_log_dir is not None:
+            if not recurrent_hidden_states:
+                raise ValueError(f"Recurrent evaluation failed: no hidden states captured for episode {ep}")
+            if len(recurrent_hidden_states) != len(recurrent_true_amr):
+                raise ValueError("Recurrent evaluation failed: hidden-state and AMR lengths are mismatched")
+
+            hidden_arr = np.array(recurrent_hidden_states, dtype=float)
+            true_amr_arr = np.array(recurrent_true_amr, dtype=float)
+            if hidden_arr.ndim < 2 or hidden_arr.shape[0] == 0:
+                raise ValueError("Recurrent evaluation failed: invalid hidden-state array shape")
+            if true_amr_arr.ndim < 2 or true_amr_arr.shape[0] == 0:
+                raise ValueError("Recurrent evaluation failed: invalid true-AMR array shape")
+            if hidden_arr.shape[0] != true_amr_arr.shape[0]:
+                raise ValueError(
+                    "Recurrent evaluation failed: hidden-state and true-AMR timestep counts differ"
+                )
+
+            np.savez_compressed(
+                recurrent_log_dir / f"episode_{ep:04d}.npz",
+                hidden_states=hidden_arr,
+                true_amr=true_amr_arr,
+                timesteps=np.array(recurrent_timesteps, dtype=int),
+            )
     
     return {
         "episode_rewards": episode_rewards,
@@ -328,6 +1022,8 @@ def compute_action_attribute_associations(
                 obs = obs[:, np.newaxis, :]  # (steps, 1, features)
             
             steps = min(obs.shape[0], len(actions), len(rewards))
+            # Note: episodes may have different lengths (variable-length support);
+            # `steps` is the realized step count for this specific episode.
             
             for s in range(steps):
                 action_val = int(actions[s])
@@ -529,11 +1225,21 @@ def analyze_experiment(
     # ===== Part 1: Generate ensemble/single-agent plots =====
     print(f"  Generating {'ensemble' if aggregate_by_seed else 'single-agent'} plots...")
     
-    # Check if this is an HRL run
-    first_config = models_and_configs[0][2]
-    is_hrl = is_hrl_run(first_config)
+    # Detect canonical branch applicability from saved seed configs
+    branch_detection = detect_analysis_branches(
+        configs=[cfg for _, _, cfg, _ in models_and_configs]
+    )
+    is_hrl = branch_detection["is_hrl"]
+    is_recurrent = branch_detection["is_recurrent"]
     if is_hrl:
         print(f"  Detected HRL run; using OptionsWrapper for environment")
+    else:
+        print(f"  [SKIP] Canonical HRL branch: {branch_detection['hrl_branch']['reason']}")
+
+    if is_recurrent:
+        print(f"  Detected recurrent run; canonical LSTM probe branch is eligible")
+    else:
+        print(f"  [SKIP] Canonical recurrent/LSTM branch: {branch_detection['lstm_probe_branch']['reason']}")
     
     try:
         # Extract just the models
@@ -577,6 +1283,7 @@ def analyze_experiment(
     print(f"  Running individual evaluations...")
     all_eval_data = []
     seed_labels = []
+    recurrent_probe_log_dirs: List[Path] = []
     
     for seed, model, config, run_dir in models_and_configs:
         label = f"seed {seed}" if seed >= 0 else "run"
@@ -597,9 +1304,19 @@ def analyze_experiment(
                 env=env,
                 num_episodes=num_eval_episodes,
                 is_hrl=is_hrl,
+                is_recurrent=is_recurrent,
+                recurrent_log_dir=(
+                    output_dir / "lstm_probe" / "logs" / (f"seed_{seed}" if seed >= 0 else "run")
+                    if is_recurrent
+                    else None
+                ),
             )
             all_eval_data.append(eval_data)
             seed_labels.append(f"seed_{seed}" if seed >= 0 else "run")
+            if is_recurrent:
+                recurrent_probe_log_dirs.append(
+                    output_dir / "lstm_probe" / "logs" / (f"seed_{seed}" if seed >= 0 else "run")
+                )
             
             env.close()
         except Exception as e:
@@ -610,7 +1327,28 @@ def analyze_experiment(
         print(f"  [ERROR] No successful evaluations for {prefix}")
         return False, None, None
     
-    # ===== Part 3: Compute action-attribute associations (skip for HRL) =====
+    # ===== Part 3: HRL diagnostics branch =====
+    hrl_diagnostics_ok = False
+    if is_hrl:
+        print(f"  Running HRL diagnostics branch...")
+        hrl_diagnostics_ok = run_hrl_diagnostics(
+            all_eval_data=all_eval_data,
+            seed_labels=seed_labels,
+            output_dir=output_dir,
+        )
+
+    # ===== Part 3b: Recurrent LSTM probe branch =====
+    lstm_probe_ok = False
+    if is_recurrent:
+        print(f"  Running recurrent LSTM probe branch...")
+        lstm_probe_ok = run_lstm_probe_diagnostics(
+            log_dirs=recurrent_probe_log_dirs,
+            seed_labels=seed_labels,
+            output_dir=output_dir,
+            num_eval_episodes_per_seed=num_eval_episodes,
+        )
+
+    # ===== Part 4: Compute action-attribute associations (skip for HRL) =====
     if is_hrl:
         print(f"  Skipping action-attribute associations for HRL run (actions are option IDs, not antibiotics)")
         action_rows = []
@@ -642,6 +1380,9 @@ def analyze_experiment(
         "seed_labels": seed_labels,
         "has_action_attributes": bool(action_rows),
         "has_plots": True,
+        "branch_detection": branch_detection,
+        "hrl_diagnostics_ok": hrl_diagnostics_ok,
+        "lstm_probe_ok": lstm_probe_ok,
     }
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)

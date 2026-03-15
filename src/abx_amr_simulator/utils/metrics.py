@@ -1249,11 +1249,26 @@ def plot_metrics_trained_agent(model, env, experiment_folder, deterministic=True
     )
     
     # Also compute the final AMR levels at the end of the episode, and add to the summary dict.
-    final_actual_amr_levels = {abx_name: sum(actual_AMR_levels_over_time[abx_name][-10:])/len(actual_AMR_levels_over_time[abx_name][-10:]) for abx_name in antibiotic_names}
+    # Use min(10, length) to handle short episodes from boundary clipping
+    final_actual_amr_levels = {}
+    for abx_name in antibiotic_names:
+        tail = actual_AMR_levels_over_time[abx_name][-min(10, len(actual_AMR_levels_over_time[abx_name])):]
+        if len(tail) > 0:
+            final_actual_amr_levels[abx_name] = sum(tail) / len(tail)
+        else:
+            # Episode is empty - fail loudly
+            raise ValueError(f"Episode for antibiotic {abx_name} has zero length (no primitive steps recorded)")
     
     overall_outcomes_summary_dict['final_actual_amr_levels'] = final_actual_amr_levels
     
-    final_visible_amr_levels = {abx_name: sum(visible_AMR_levels_over_time[abx_name][-10:])/len(visible_AMR_levels_over_time[abx_name][-10:]) for abx_name in antibiotic_names}
+    final_visible_amr_levels = {}
+    for abx_name in antibiotic_names:
+        tail = visible_AMR_levels_over_time[abx_name][-min(10, len(visible_AMR_levels_over_time[abx_name])):]
+        if len(tail) > 0:
+            final_visible_amr_levels[abx_name] = sum(tail) / len(tail)
+        else:
+            # Episode is empty - fail loudly
+            raise ValueError(f"Episode for antibiotic {abx_name} has zero length (no primitive steps recorded)")
     
     overall_outcomes_summary_dict['final_visible_amr_levels'] = final_visible_amr_levels
      
@@ -1649,14 +1664,24 @@ def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_fol
     final_actual_amr_levels = {}
     
     for antibiotic_name in antibiotic_names:
-        final_actual_amr_levels[antibiotic_name] = sum(actual_AMR_levels_over_time[antibiotic_name][-10:])/len(actual_AMR_levels_over_time[antibiotic_name][-10:])
+        tail = actual_AMR_levels_over_time[antibiotic_name][-min(10, len(actual_AMR_levels_over_time[antibiotic_name])):]
+        if len(tail) > 0:
+            final_actual_amr_levels[antibiotic_name] = sum(tail) / len(tail)
+        else:
+            # Episode is empty - fail loudly
+            raise ValueError(f"Episode for antibiotic {antibiotic_name} has zero length (no primitive steps recorded)")
     
     overall_outcomes_summary_dict['final_actual_amr_levels'] = final_actual_amr_levels
     
     final_visible_amr_levels = {}
     
     for antibiotic_name in antibiotic_names:
-        final_visible_amr_levels[antibiotic_name] = sum(visible_AMR_levels_over_time[antibiotic_name][-10:])/len(visible_AMR_levels_over_time[antibiotic_name][-10:])
+        tail = visible_AMR_levels_over_time[antibiotic_name][-min(10, len(visible_AMR_levels_over_time[antibiotic_name])):]
+        if len(tail) > 0:
+            final_visible_amr_levels[antibiotic_name] = sum(tail) / len(tail)
+        else:
+            # Episode is empty - fail loudly
+            raise ValueError(f"Episode for antibiotic {antibiotic_name} has zero length (no primitive steps recorded)")
     
     overall_outcomes_summary_dict['final_visible_amr_levels'] = final_visible_amr_levels
     
@@ -1665,6 +1690,92 @@ def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_fol
         json.dump(overall_outcomes_summary_dict, f, indent=4)
     
     return
+
+
+def aggregate_trajectories(trajectories_list, apply_cumsum=False):
+    """Aggregate a list of trajectories supporting variable lengths via NaN-padding.
+
+    Handles both fixed-length and variable-length episodes (e.g. from boundary
+    clipping in HRL).  Each trajectory is placed left-aligned in a
+    ``(num_trajectories, max_len)`` array padded with ``NaN``.  All summary
+    statistics are then computed with NaN-aware operations so that trajectories
+    that ended early do not bias later timesteps.
+
+    Args:
+        trajectories_list: List of 1-D sequences (lists or arrays) where each
+            element is the per-timestep value for one trajectory.  Trajectories
+            may have different lengths.
+        apply_cumsum: If True, the cumulative sum is applied per-trajectory
+            (on the valid, non-NaN prefix) before aggregation.
+
+    Returns:
+        Dict with keys:
+            ``mean``, ``median``, ``p10``, ``p90``, ``p25``, ``p75``, ``iqm``,
+            ``timesteps``, ``n_active_trajectories``.
+
+    Raises:
+        ValueError: If ``trajectories_list`` is empty.
+    """
+    if len(trajectories_list) == 0:
+        raise ValueError("trajectories_list is empty")
+
+    trajectory_lengths = [len(traj) for traj in trajectories_list]
+    max_len = max(trajectory_lengths)
+    num_trajectories = len(trajectories_list)
+
+    # Create NaN-padded array for variable-length support
+    # Shape: (num_trajectories, max_len) filled with NaN
+    padded = np.full((num_trajectories, max_len), np.nan, dtype=np.float64)
+
+    # Copy each trajectory into left-aligned prefix of its row
+    for i, traj in enumerate(trajectories_list):
+        padded[i, :len(traj)] = np.asarray(traj)
+
+    # Apply cumsum if needed (operates on non-NaN values per trajectory first)
+    if apply_cumsum:
+        for i in range(num_trajectories):
+            valid_idx = ~np.isnan(padded[i, :])
+            if valid_idx.sum() > 0:
+                padded[i, valid_idx] = np.cumsum(padded[i, valid_idx])
+
+    # Compute n_active_trajectories: count of non-NaN values at each timestep
+    n_active = np.sum(~np.isnan(padded), axis=0)
+
+    # Use NaN-aware statistics
+    mean = np.nanmean(padded, axis=0)
+    median = np.nanpercentile(padded, 50, axis=0)
+    p10 = np.nanpercentile(padded, 10, axis=0)
+    p90 = np.nanpercentile(padded, 90, axis=0)
+    p25 = np.nanpercentile(padded, 25, axis=0)
+    p75 = np.nanpercentile(padded, 75, axis=0)
+
+    # Compute IQM (Interquartile Mean) with NaN handling
+    iqm = np.zeros(max_len)
+    for t in range(max_len):
+        values_t = padded[:, t]
+        valid_mask = ~np.isnan(values_t)
+        if valid_mask.sum() > 0:
+            valid_values = values_t[valid_mask]
+            # Recompute percentiles for this timestep using only valid values
+            p25_t = np.percentile(valid_values, 25)
+            p75_t = np.percentile(valid_values, 75)
+            iqm_mask = (valid_values >= p25_t) & (valid_values <= p75_t)
+            iqm[t] = np.mean(valid_values[iqm_mask]) if iqm_mask.sum() > 0 else np.nanmean(valid_values)
+        else:
+            iqm[t] = np.nan
+
+    timesteps = np.arange(max_len)
+    return {
+        'mean': mean,
+        'median': median,
+        'p10': p10,
+        'p90': p90,
+        'p25': p25,
+        'p75': p75,
+        'iqm': iqm,
+        'timesteps': timesteps,
+        'n_active_trajectories': n_active,  # Track contributor count for visualization
+    }
 
 
 def plot_metrics_ensemble_agents(
@@ -1901,74 +2012,6 @@ def plot_metrics_from_collected_trajectories_ensemble(
         os.makedirs(experiment_figures_folder)
 
     print("Aggregating trajectories...")
-
-    def aggregate_trajectories(trajectories_list, apply_cumsum=False):
-        if len(trajectories_list) == 0:
-            raise ValueError("trajectories_list is empty")
-
-        trajectory_lengths = [len(traj) for traj in trajectories_list]
-        unique_lengths = set(trajectory_lengths)
-
-        if len(unique_lengths) > 1:
-            min_len = min(trajectory_lengths)
-            max_len = max(trajectory_lengths)
-            length_distribution = {}
-            for length in trajectory_lengths:
-                length_distribution[length] = length_distribution.get(length, 0) + 1
-
-            error_msg = (
-                f"\n{'='*80}\n"
-                f"ERROR: Trajectory length mismatch detected!\n"
-                f"{'='*80}\n"
-                f"All episodes in abx_amr_simulator environments MUST have exactly the same length.\n"
-                f"Expected: All trajectories have length = max_time_steps\n"
-                f"Found: {len(trajectories_list)} trajectories with {len(unique_lengths)} different lengths\n\n"
-                f"Length distribution:\n"
-            )
-            for length, count in sorted(length_distribution.items()):
-                error_msg += f"  Length {length}: {count} trajectories\n"
-            error_msg += (
-                f"\nMin length: {min_len}\n"
-                f"Max length: {max_len}\n\n"
-                f"Possible causes:\n"
-                f"  1. HRL wrapper: Trajectories collected at manager level (option selections)\n"
-                f"     instead of primitive level (individual timesteps)\n"
-                f"  2. Mixed data from experiments with different max_time_steps settings\n"
-                f"  3. Data corruption or incomplete episode recording\n\n"
-                f"For HRL agents: plot_metrics_ensemble_agents may need modification to handle\n"
-                f"manager-level trajectory granularity vs primitive-level AMR dynamics.\n"
-                f"{'='*80}"
-            )
-            raise ValueError(error_msg)
-
-        arr = np.array(trajectories_list)
-        if apply_cumsum:
-            arr = np.cumsum(arr, axis=1)
-
-        mean = np.mean(arr, axis=0)
-        median = np.percentile(arr, 50, axis=0)
-        p10 = np.percentile(arr, 10, axis=0)
-        p90 = np.percentile(arr, 90, axis=0)
-        p25 = np.percentile(arr, 25, axis=0)
-        p75 = np.percentile(arr, 75, axis=0)
-
-        iqm = np.zeros(arr.shape[1])
-        for t in range(arr.shape[1]):
-            values_t = arr[:, t]
-            mask = (values_t >= p25[t]) & (values_t <= p75[t])
-            iqm[t] = np.mean(values_t[mask]) if mask.sum() > 0 else mean[t]
-
-        timesteps = np.arange(len(median))
-        return {
-            'mean': mean,
-            'median': median,
-            'p10': p10,
-            'p90': p90,
-            'p25': p25,
-            'p75': p75,
-            'iqm': iqm,
-            'timesteps': timesteps,
-        }
 
     aggregated = {}
     aggregated['actual_AMR_levels'] = {}
@@ -2272,15 +2315,15 @@ def plot_metrics_from_collected_trajectories_ensemble(
     list_of_final_amr_levels_per_trajectory_per_abx = []
 
     for traj_idx in range(num_trajectories):
-        list_of_final_amr_levels_per_trajectory_per_abx.append(
-            {
-                abx_name: {
-                    'actual': all_trajectories_data['actual_AMR_levels'][abx_name][traj_idx][-10:],
-                    'visible': all_trajectories_data['visible_AMR_levels'][abx_name][traj_idx][-10:],
-                }
-                for abx_name in antibiotic_names
+        final_amr_per_abx = {}
+        for abx_name in antibiotic_names:
+            actual_tail = all_trajectories_data['actual_AMR_levels'][abx_name][traj_idx][-min(10, len(all_trajectories_data['actual_AMR_levels'][abx_name][traj_idx])):]
+            visible_tail = all_trajectories_data['visible_AMR_levels'][abx_name][traj_idx][-min(10, len(all_trajectories_data['visible_AMR_levels'][abx_name][traj_idx])):]
+            final_amr_per_abx[abx_name] = {
+                'actual': actual_tail,
+                'visible': visible_tail,
             }
-        )
+        list_of_final_amr_levels_per_trajectory_per_abx.append(final_amr_per_abx)
 
         count_clinical_benefits_cumsum = np.cumsum(all_trajectories_data['count_clinical_benefits'][traj_idx])
         count_clinical_failures_cumsum = np.cumsum(all_trajectories_data['count_clinical_failures'][traj_idx])

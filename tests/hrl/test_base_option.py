@@ -26,7 +26,6 @@ class ConcreteTestOption(OptionBase):
     """Concrete implementation for testing."""
     REQUIRES_OBSERVATION_ATTRIBUTES = ['prob_infected']
     REQUIRES_AMR_LEVELS = False
-    REQUIRES_STEP_NUMBER = False
 
     def decide(self, env_state):
         num_patients = env_state['num_patients']
@@ -76,7 +75,6 @@ class TestOptionBaseClassVariables:
         """Test that subclass inherits class variables correctly."""
         assert ConcreteTestOption.REQUIRES_OBSERVATION_ATTRIBUTES == ['prob_infected']
         assert ConcreteTestOption.REQUIRES_AMR_LEVELS is False
-        assert ConcreteTestOption.REQUIRES_STEP_NUMBER is False
         assert ConcreteTestOption.PROVIDES_TERMINATION_CONDITION is False
 
 

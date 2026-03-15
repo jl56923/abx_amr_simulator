@@ -119,8 +119,7 @@ class OptionsWrapper(gym.Wrapper):
         1. Aggregate patient stats: len(visible_attrs) * 4 (mean, std, max, min)
         2. AMR trajectory: 2 * num_antibiotics (start + end for each)
         3. Option history: 2 + num_antibiotics (previous_option_id, consecutive_count, steps_since_prescribed for each)
-        4. Episode progress: 1 (current_step / max_steps)
-        5. Front-edge cohort features:
+        4. Front-edge cohort features:
            - If front_edge_use_full_vector: num_patients * len(visible_attrs)
            - Else: 2 * len(visible_attrs) (mean + std for each)
         
@@ -135,14 +134,13 @@ class OptionsWrapper(gym.Wrapper):
         aggregate_stats_dim = num_visible_attrs * 4
         amr_obs_dim = 2 * num_antibiotics
         option_history_dim = 2 + num_antibiotics
-        progress_dim = 1
         
         if self.front_edge_use_full_vector:
             front_edge_dim = num_patients * num_visible_attrs
         else:
             front_edge_dim = 2 * num_visible_attrs
         
-        total_dim = aggregate_stats_dim + amr_obs_dim + option_history_dim + progress_dim + front_edge_dim
+        total_dim = aggregate_stats_dim + amr_obs_dim + option_history_dim + front_edge_dim
         return total_dim
 
     def reset(self, seed=None, options=None):
@@ -181,11 +179,21 @@ class OptionsWrapper(gym.Wrapper):
     def step(self, manager_action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """Execute one macro-step (execute selected option for up to k steps).
         
+        The wrapper enforces episode boundaries by clipping macro-actions that would
+        extend beyond max_steps. Clipped transitions are marked explicitly via
+        'manager_clipped' and 'steps_clipped' keys in the info dict, and can be
+        excluded from manager training via the 'manager_transition_trainable' flag.
+        
         Args:
             manager_action: Integer in [0, len(option_library)) selecting which option to execute.
         
         Returns:
             Tuple of (manager_obs, aggregated_reward, terminated, truncated, info).
+            
+            Info dict includes:
+                - 'manager_clipped' (bool): True if macro-action was clipped at episode boundary
+                - 'steps_clipped' (int): Number of steps that were removed (0 if not clipped)
+                - 'manager_transition_trainable' (bool): False if clipped, True otherwise
         
         Raises:
             ValueError: If manager_action invalid or option.decide() returns invalid actions.
@@ -202,7 +210,24 @@ class OptionsWrapper(gym.Wrapper):
         # Get selected option
         option = self.option_library.get_option(manager_action)
 
-        # Execute option for up to k steps
+        # Calculate clipping: determine requested vs available steps
+        # Requested duration is option.k (or max_steps if infinite)
+        if option.k == float('inf'):
+            requested_steps = self.max_steps - self.current_step
+        else:
+            requested_steps = int(option.k)
+        
+        # Available steps before hitting episode boundary
+        available_steps = self.max_steps - self.current_step
+        
+        # Detect clipping: macro-action would extend beyond max_steps
+        manager_clipped = (requested_steps + self.current_step) > self.max_steps
+        steps_clipped = max(0, requested_steps - available_steps)
+        
+        # Limit the loop to available steps
+        max_substeps = min(requested_steps, available_steps)
+
+        # Execute option for up to k steps (or until episode boundary is reached)
         macro_reward = 0.0
         discount = 1.0
         episode_terminated = False
@@ -220,7 +245,7 @@ class OptionsWrapper(gym.Wrapper):
 
         current_obs = cast(np.ndarray, self.current_env_obs)
 
-        for substep in range(int(option.k) if option.k != float('inf') else self.max_steps):
+        for substep in range(max_substeps):
             # Build env_state
             env_state = self._build_env_state(current_obs)
 
@@ -271,19 +296,24 @@ class OptionsWrapper(gym.Wrapper):
         self._update_option_history(option_id=manager_action)
         manager_obs = self._build_manager_observation()
 
-        # Build info dict with both macro and primitive-level information
+        # Build info dict with macro and primitive-level information, plus clipping metadata
         step_info = {
-            'option_id': manager_action,                    # NEW: Macro-action (option ID)
+            'option_id': manager_action,                    # Macro-action (option ID)
             'option_name': option.name,
-            'option_duration': substep + 1,                 # Actual duration (may be less than k)
-            'macro_action_duration': substep + 1,           # NEW: Explicit duration field
-            'primitive_actions': primitive_actions,         # NEW: List of actions per primitive step
-            'primitive_infos': primitive_infos,             # NEW: List of info dicts per primitive step
+            'option_duration': substep + 1,                 # Actual duration executed (may be less than k)
+            'macro_action_duration': substep + 1,           # Explicit duration field
+            'primitive_actions': primitive_actions,         # List of actions per primitive step
+            'primitive_infos': primitive_infos,             # List of info dicts per primitive step
+            # Phase B: Clipping metadata for manager training masking
+            'manager_clipped': manager_clipped,             # True if macro-action was clipped at boundary
+            'steps_clipped': steps_clipped,                 # Number of steps that were clipped off
+            'manager_transition_trainable': not manager_clipped,  # Trainability flag for manager
         }
         if 'info' in locals() and isinstance(info, dict):
             step_info.update(info)
 
         return manager_obs, macro_reward, episode_terminated, episode_truncated, step_info
+
 
     def _build_env_state(self, observation: np.ndarray) -> Dict[str, Any]:
         """Build decoded env_state dict from current observation.
@@ -296,8 +326,6 @@ class OptionsWrapper(gym.Wrapper):
                 - 'patients': List of patient dicts
                 - 'num_patients': Number of patients
                 - 'current_amr_levels': Dict mapping antibiotic -> resistance
-                - 'current_step': Current episode timestep (from env.current_time_step)
-                - 'max_steps': Episode length limit
                 - 'option_library': Reference to OptionLibrary for accessing abx_name_to_index
                 - 'reward_calculator': Reference to RewardCalculator (for heuristic workers to access clinical params)
                 - 'patient_generator': Reference to PatientGenerator (for heuristic workers to access attribute count)
@@ -310,12 +338,6 @@ class OptionsWrapper(gym.Wrapper):
         # Extract AMR levels
         current_amr_levels = self._get_current_amr_levels()
 
-        # Get current step from environment (should be exposed as current_time_step)
-        try:
-            current_step = self._base_env.current_time_step
-        except AttributeError:
-            current_step = 0
-
         # Get use_relative_uncertainty flag from option library config (defaults to True)
         use_relative_uncertainty = getattr(
             self.option_library, 'use_relative_uncertainty', True
@@ -325,8 +347,6 @@ class OptionsWrapper(gym.Wrapper):
             'patients': patients,
             'num_patients': num_patients,
             'current_amr_levels': current_amr_levels,
-            'current_step': current_step,
-            'max_steps': self.max_steps,
             'option_library': self.option_library,  # Reference for options to access abx_name_to_index
             'reward_calculator': self._base_env.reward_calculator,  # For heuristic workers to access clinical params
             'patient_generator': self.patient_generator,  # For heuristic workers to access attribute metadata
@@ -434,10 +454,9 @@ class OptionsWrapper(gym.Wrapper):
             dtype=np.float32,
         )
 
-        progress = np.array([self.current_step / self.max_steps], dtype=np.float32)
         front_edge = self._build_front_edge_features()
 
-        return np.concatenate([aggregate_stats, amr_obs, option_history, progress, front_edge])
+        return np.concatenate([aggregate_stats, amr_obs, option_history, front_edge])
 
     def _build_front_edge_features(self) -> np.ndarray:
         """Build front-edge patient cohort features at the boundary timestep.

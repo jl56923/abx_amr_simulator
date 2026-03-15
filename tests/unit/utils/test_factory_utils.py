@@ -19,6 +19,7 @@ from abx_amr_simulator.utils import (
     create_run_directory,
     save_training_config,
     save_training_summary,
+    setup_callbacks,
 )
 
 
@@ -316,6 +317,69 @@ class TestSaveTrainingSummary:
             assert loaded_summary["algorithm"] == "A2C"
             assert loaded_summary["total_timesteps"] == 5000
             assert loaded_summary["total_episodes"] == 50
+
+class TestSetupCallbacksPersonalizedLogging:
+    """Tests for personalized logging toggle and sentinel metadata validation."""
+
+    def test_defaults_toggle_off_when_not_provided(self):
+        """Omitted toggle should default to OFF and callback setup should succeed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'training': {
+                    'log_patient_trajectories': True,
+                },
+                'patient_generator': {},
+            }
+
+            callbacks = setup_callbacks(
+                config=config,
+                run_dir=tmpdir,
+                eval_env=None,
+            )
+            assert isinstance(callbacks, list)
+            assert len(callbacks) >= 2
+
+    def test_toggle_on_with_sentinel_accepts_configuration(self):
+        """Toggle ON should be accepted when sentinel is provided in patient generator config."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'training': {
+                    'log_patient_trajectories': True,
+                    'log_personalized_patient_attributes': True,
+                },
+                'patient_generator': {
+                    'personalized_missing_prediction_fill_value': -1.0,
+                },
+            }
+
+            callbacks = setup_callbacks(
+                config=config,
+                run_dir=tmpdir,
+                eval_env=None,
+            )
+            assert isinstance(callbacks, list)
+            assert len(callbacks) >= 2
+
+    def test_toggle_on_without_sentinel_fails_loudly(self):
+        """Toggle ON without sentinel should raise a clear ValueError."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'training': {
+                    'log_patient_trajectories': True,
+                    'log_personalized_patient_attributes': True,
+                },
+                'patient_generator': {},
+            }
+
+            with pytest.raises(
+                expected_exception=ValueError,
+                match='patient_generator.personalized_missing_prediction_fill_value is not set',
+            ):
+                setup_callbacks(
+                    config=config,
+                    run_dir=tmpdir,
+                    eval_env=None,
+                )
 
 
 if __name__ == "__main__":
