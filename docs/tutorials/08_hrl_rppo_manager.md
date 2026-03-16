@@ -270,9 +270,47 @@ done
 
 ### Hidden State Analysis (Advanced)
 
-To probe what the LSTM learns, use the LSTM state logger callback:
+To probe what the LSTM learns, use the canonical evaluative analysis flow. For recurrent runs, evaluative rollouts automatically write LSTM probe logs and summary artifacts.
 
-**Add to training config:**
+**Run evaluative analysis:**
+
+```bash
+python -m abx_amr_simulator.analysis.evaluative_plots \
+  --experiment-name hrl_rppo_test \
+  --aggregate-by-seed \
+  --results-dir $(pwd)/results \
+  --analysis-dir $(pwd)/analysis
+```
+
+This writes probe artifacts under:
+
+```text
+analysis/<prefix>/evaluation/lstm_probe/
+├── logs/<seed_label>/episode_*.npz
+├── lstm_probe_<seed_label>.json
+├── lstm_probe_raw_vals.json
+└── lstm_probe_summary.json
+```
+
+### Interpreting `lstm_probe_summary.json` correctly
+
+- `mean_test_r2` and `std_test_r2` are aggregated across valid per-seed/per-antibiotic R² values.
+- R² can become extremely negative when the test target variance is near zero (almost-constant true AMR in test split).
+- To prevent pathological low-variance seeds from dominating aggregate R², those entries are excluded from R² aggregation (but their MAE is still included).
+- The summary includes transparency fields so exclusions are explicit:
+  - `num_r2_values_used`
+  - `num_r2_values_dropped_low_variance`
+  - `num_mae_values_used`
+  - `r2_min_target_variance_threshold`
+- Robust R² summary fields are also provided:
+  - `mean_test_r2_median`
+  - `iqr_test_r2`
+
+When `num_r2_values_dropped_low_variance` is non-zero, treat MAE as the more stable headline metric and use the robust R² fields for context.
+
+### Legacy callback-based logging (optional)
+
+You can still use the training callback for debugging model internals, but this is no longer required for canonical LSTM probe analysis:
 
 ```yaml
 # In umbrella config (advanced)
@@ -423,7 +461,7 @@ recurrent_ppo:
 
 **Next tutorials**:
 - **Tutorial 10**: [Experiment Set Runner](10_experiment_set_runner.md) — Run large parameter sweeps with JSON configs
-- **Tutorial 11**: [Advanced Heuristic Worker Subclassing](11_advanced_heuristic_worker_subclassing.md) — Implement sophisticated heuristic options
+- **Tutorial 10**: [Advanced Heuristic Worker Subclassing](10_advanced_heuristic_worker_subclassing.md) — Implement sophisticated heuristic options
 
 **Advanced topics (not covered in tutorials)**:
 - LSTM belief probing with `probe_hidden_belief`

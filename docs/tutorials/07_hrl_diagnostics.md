@@ -376,8 +376,8 @@ rm -f ._*
 ✅ You've learned to analyze HRL training with diagnostic plots!
 
 **Next tutorials**:
-- **Tutorial 09**: [HRL RPPO Manager](09_hrl_rppo_manager.md) — Use recurrent manager for temporal reasoning and partial observability
-- **Tutorial 11**: [Advanced Heuristic Worker Subclassing](11_advanced_heuristic_worker_subclassing.md) — Implement sophisticated heuristic options with attribute estimation
+- **Tutorial 08**: [HRL RPPO Manager](08_hrl_rppo_manager.md) — Use recurrent manager for temporal reasoning and partial observability
+- **Tutorial 10**: [Advanced Heuristic Worker Subclassing](10_advanced_heuristic_worker_subclassing.md) — Implement sophisticated heuristic options with attribute estimation
 
 ---
 

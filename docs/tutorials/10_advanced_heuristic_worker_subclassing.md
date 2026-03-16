@@ -69,27 +69,27 @@ class ClinicalReasoningHeuristicWorker(HeuristicWorker):
 
 
 def load_clinical_reasoning_heuristic_option(
-    name: str,
     config: Dict[str, Any],
 ) -> HeuristicWorker:
     """Loader function for custom worker.
 
-    NOTE: The loader name must match the pattern load_{option_type}_option.
-    If option_type is "clinical_reasoning_heuristic", the loader must be
-    named load_clinical_reasoning_heuristic_option.
+    Register this loader explicitly with `plugin.loader_function` on an
+    option entry whose `option_type` is `custom`.
     """
     # Validate and extract config using base loader validation logic
     if not isinstance(config, dict):
         raise TypeError(f"Config must be a dict, got {type(config).__name__}")
+
+    option_name = config.get('option_name', 'unknown')
     
     if 'duration' not in config:
-        raise ValueError(f"Worker '{name}' config missing required key 'duration'")
+        raise ValueError(f"Worker '{option_name}' config missing required key 'duration'")
     if 'action_thresholds' not in config:
-        raise ValueError(f"Worker '{name}' config missing required key 'action_thresholds'")
+        raise ValueError(f"Worker '{option_name}' config missing required key 'action_thresholds'")
     
     # Instantiate custom subclass
     return ClinicalReasoningHeuristicWorker(
-        name=name,
+        name=option_name,
         duration=config['duration'],
         action_thresholds=config['action_thresholds'],
         uncertainty_threshold=config.get('uncertainty_threshold', 2.0),
@@ -118,8 +118,7 @@ default_recovery_without_treatment_prob: 0.1
 
 ### Step 3: Reference Your Loader Module in the Library YAML
 
-Option libraries are loaded dynamically via `OptionLibraryLoader`, so you just point
-each option at its loader module and default config file.
+Custom heuristic workers now use `option_type: custom` plus a nested `plugin:` block.
 
 ```yaml
 # my_first_project/experiments/options/option_libraries/my_library.yaml
@@ -129,9 +128,11 @@ version: "1.0"
 
 options:
     - option_name: "CLINICAL_CONSERVATIVE"
-        option_type: "clinical_reasoning_heuristic"
+        option_type: "custom"
         option_subconfig_file: "../option_types/heuristic/my_custom_heuristic_config.yaml"
-        loader_module: "../option_types/heuristic/my_custom_heuristic.py"
+        plugin:
+            loader_module: "../option_types/heuristic/my_custom_heuristic.py"
+            loader_function: "load_clinical_reasoning_heuristic_option"
         config_params_override:
             action_thresholds:
                 prescribe_A: 0.8
@@ -139,9 +140,11 @@ options:
             uncertainty_threshold: 2.0
 
     - option_name: "CLINICAL_AGGRESSIVE"
-        option_type: "clinical_reasoning_heuristic"
+        option_type: "custom"
         option_subconfig_file: "../option_types/heuristic/my_custom_heuristic_config.yaml"
-        loader_module: "../option_types/heuristic/my_custom_heuristic.py"
+        plugin:
+            loader_module: "../option_types/heuristic/my_custom_heuristic.py"
+            loader_function: "load_clinical_reasoning_heuristic_option"
         config_params_override:
             action_thresholds:
                 prescribe_A: 0.5
@@ -540,11 +543,11 @@ class UncertaintyModulatedHeuristicWorker(HeuristicWorker):
 
 
 def load_uncertainty_modulated_heuristic_option(
-    name: str,
     config: Dict[str, Any],
 ) -> UncertaintyModulatedHeuristicWorker:
+    option_name = config.get('option_name', 'unknown')
     return UncertaintyModulatedHeuristicWorker(
-        name=name,
+        name=option_name,
         duration=config['duration'],
         action_thresholds=config['action_thresholds'],
         uncertainty_threshold=config.get('uncertainty_threshold', 2.0),
@@ -617,9 +620,11 @@ version: "1.0"
 
 options:
     - option_name: "RISK_AVERSE_CONSERVATIVE"
-        option_type: "uncertainty_modulated_heuristic"
+        option_type: "custom"
         option_subconfig_file: "../option_types/heuristic/uncertainty_modulated_heuristic_config.yaml"
-        loader_module: "../option_types/heuristic/uncertainty_modulated_heuristic_worker.py"
+        plugin:
+            loader_module: "../option_types/heuristic/uncertainty_modulated_heuristic_worker.py"
+            loader_function: "load_uncertainty_modulated_heuristic_option"
         config_params_override:
             action_thresholds:
                 prescribe_A: 0.5
@@ -628,17 +633,21 @@ options:
             uncertainty_modulation_alpha: 1.0
 
     - option_name: "RISK_NEUTRAL"
-        option_type: "uncertainty_modulated_heuristic"
+        option_type: "custom"
         option_subconfig_file: "../option_types/heuristic/uncertainty_modulated_heuristic_config.yaml"
-        loader_module: "../option_types/heuristic/uncertainty_modulated_heuristic_worker.py"
+        plugin:
+            loader_module: "../option_types/heuristic/uncertainty_modulated_heuristic_worker.py"
+            loader_function: "load_uncertainty_modulated_heuristic_option"
         config_params_override:
             uncertainty_modulation_type: "none"
             uncertainty_modulation_alpha: 0.0
 
     - option_name: "ULTRA_CONSERVATIVE"
-        option_type: "uncertainty_modulated_heuristic"
+        option_type: "custom"
         option_subconfig_file: "../option_types/heuristic/uncertainty_modulated_heuristic_config.yaml"
-        loader_module: "../option_types/heuristic/uncertainty_modulated_heuristic_worker.py"
+        plugin:
+            loader_module: "../option_types/heuristic/uncertainty_modulated_heuristic_worker.py"
+            loader_function: "load_uncertainty_modulated_heuristic_option"
         config_params_override:
             action_thresholds:
                 prescribe_A: 0.7
@@ -842,11 +851,14 @@ patient_generator:
 
 **Cause:** Using base `HeuristicWorker` instead of custom subclass
 
-**Solution:** Check option library type matches registered loader:
+**Solution:** Check the option entry uses `option_type: custom` and points at the expected loader function:
 ```yaml
 options:
-  MY_WORKER:
-    type: clinical_reasoning_heuristic  # Not 'heuristic'!
+    - option_name: "MY_WORKER"
+        option_type: "custom"
+        plugin:
+            loader_module: "../option_types/heuristic/my_custom_heuristic.py"
+            loader_function: "load_clinical_reasoning_heuristic_option"
 ```
 
 ### Issue: Estimated values seem wrong

@@ -1,6 +1,6 @@
 # Plugin Seam Guide
 
-**Goal**: Configure and load custom `PatientGenerator`, `RewardCalculator`, and AMR dynamics components using the package-standard plugin seam.
+**Goal**: Configure and load custom `PatientGenerator`, `RewardCalculator`, AMR dynamics, and HRL option components using the package-standard plugin seam.
 
 **Prerequisites**: Familiarity with YAML experiment configs and basic subclassing in Python.
 
@@ -14,7 +14,7 @@ Design philosophy:
 - **Config-driven**: plugin selection happens in config, not in wrapper scripts.
 - **Opt-in**: canonical behavior is unchanged unless plugin keys are provided.
 - **Fail-loud**: invalid plugin config raises immediately before training/tuning starts.
-- **Symmetric with options**: this uses the same loader-module pattern originally introduced for HRL options.
+- **Consistent across component families**: custom components use the same `plugin.loader_module` / `plugin.loader_function` seam, while canonical built-ins remain loader-free.
 
 ---
 
@@ -37,6 +37,27 @@ amr_dynamics:
   plugin:
     loader_module: my.module.path
     loader_function: load_amr_dynamics_component  # optional (default)
+```
+
+For HRL options, the same seam is used inside each option entry when `option_type: custom` is selected:
+
+```yaml
+options:
+    - option_name: "A_10"
+        option_type: "block"
+        option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
+        config_params_override:
+            antibiotic: "A"
+            duration: 10
+
+    - option_name: "MY_CUSTOM_OPTION"
+        option_type: "custom"
+        option_subconfig_file: "../option_types/heuristic/my_custom_option_config.yaml"
+        plugin:
+            loader_module: "../option_types/heuristic/my_custom_option.py"
+            loader_function: load_my_custom_option
+        config_params_override:
+            duration: 10
 ```
 
 ### Path resolution
@@ -68,9 +89,85 @@ If any of the following are invalid, execution stops immediately with a descript
 - Missing/non-callable loader function
 - Loader return type mismatch
 
+For HRL options, the loader contract is stricter:
+- canonical `option_type` values (`block`, `alternation`, `heuristic`) must not include plugin fields
+- `option_type: custom` must include both `plugin.loader_module` and `plugin.loader_function`
+- legacy flat top-level `loader_module` or `loader_function` keys on option specs are rejected with a migration error
+
 ---
 
-## 3) Subclassing Guide — `PatientGenerator`
+## 3) Options
+
+Options have the same plugin seam as the other extensibility points, but they support two explicit modes.
+
+### Canonical option mode
+
+Use canonical option types when the package already provides the loader:
+
+```yaml
+options:
+    - option_name: "A_10"
+        option_type: "block"
+        option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
+        config_params_override:
+            antibiotic: "A"
+            duration: 10
+
+    - option_name: "ALT_AB"
+        option_type: "alternation"
+        option_subconfig_file: "../option_types/alternation/alternation_option_default_config.yaml"
+        config_params_override:
+            sequence:
+                - "A"
+                - "B"
+```
+
+Canonical option types are exactly:
+- `block`
+- `alternation`
+- `heuristic`
+
+Do not add `plugin`, `loader_module`, or `loader_function` to canonical option specs.
+
+### Custom option mode
+
+Use the plugin seam when the option loader is project-specific:
+
+```yaml
+options:
+    - option_name: "CUSTOM_WEIGHTED_HEURISTIC"
+        option_type: "custom"
+        option_subconfig_file: "../option_types/heuristic/my_custom_option_config.yaml"
+        plugin:
+            loader_module: "../option_types/heuristic/my_custom_option.py"
+            loader_function: load_my_custom_option
+        config_params_override:
+            duration: 10
+            risk_weight: 0.75
+```
+
+Custom option loader shape:
+
+```python
+from typing import Any, Dict
+
+from abx_amr_simulator.options.base_option import OptionBase
+
+
+def load_my_custom_option(config: Dict[str, Any]) -> OptionBase:
+    return MyCustomOption(
+        name=config["option_name"],
+        duration=config["duration"],
+    )
+```
+
+The loader receives the merged option config and must return an `OptionBase` instance.
+
+Relative option plugin paths are resolved relative to the option library YAML file, not the umbrella config directory.
+
+---
+
+## 4) Subclassing Guide — `PatientGenerator`
 
 ### Base class import
 
@@ -141,7 +238,7 @@ See `tests/integration/fixtures/custom_patient_generator_plugin.py`.
 
 ---
 
-## 4) Subclassing Guide — `RewardCalculator`
+## 5) Subclassing Guide — `RewardCalculator`
 
 ### Base class import
 
@@ -215,7 +312,7 @@ See `tests/integration/fixtures/custom_reward_calculator_plugin.py`.
 
 ---
 
-## 5) Subclassing Guide — AMR Dynamics
+## 6) Subclassing Guide — AMR Dynamics
 
 ### Base class import
 
@@ -294,7 +391,7 @@ See `tests/integration/fixtures/custom_amr_dynamics_plugin.py`.
 
 ---
 
-## 6) Filesystem vs Importable Module Paths
+## 7) Filesystem vs Importable Module Paths
 
 Use filesystem paths when your plugin module lives next to your experiment/config files and is not installed as a package.
 
@@ -302,9 +399,11 @@ Use importable module paths when your plugin code is in an installed Python pack
 
 If you provide a relative filesystem path, it is resolved against `_umbrella_config_dir`.
 
+For custom HRL options, relative filesystem paths are resolved against the option library YAML file.
+
 ---
 
-## 7) Troubleshooting
+## 8) Troubleshooting
 
 Common failures and fixes:
 - **`missing required key 'plugin.loader_module'`**: add `plugin.loader_module` under the correct component section.
@@ -312,9 +411,12 @@ Common failures and fixes:
 - **Loader function not found/non-callable**: confirm the function name and ensure it is defined as a Python function.
 - **Invalid return type**: make sure your loader returns the expected base type (`PatientGeneratorBase`, `RewardCalculatorBase`, or `Dict[str, AMRDynamicsBase]`).
 - **AMR dynamics dict value type errors**: ensure every dict value is an `AMRDynamicsBase` instance.
+- **Canonical option with `plugin` fields**: remove the plugin block and keep only the canonical option keys.
+- **`custom` option missing `plugin.loader_function`**: add both required plugin fields under the nested `plugin:` block.
+- **Legacy flat option `loader_module` key**: migrate the option to `option_type: custom` with nested `plugin.loader_module` and `plugin.loader_function`.
 
 Quick diagnostic checklist:
-1. Confirm plugin keys are nested under the right component (`patient_generator`, `reward_calculator`, or `amr_dynamics`).
+1. Confirm plugin keys are nested under the right component or, for options, under the right option spec.
 2. Confirm loader signature is `loader(config: Dict[str, Any]) -> expected_type`.
 3. Confirm returned object(s) subclass the expected base class.
 4. For AMR dynamics plugins, confirm dict keys match antibiotic names from `environment.antibiotics_AMR_dict`.
