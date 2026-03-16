@@ -387,6 +387,26 @@ def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculat
     
     amr_dynamics = create_amr_dynamics(config=config)
 
+    reward_antibiotic_order = list(reward_calculator.antibiotic_names)
+    environment_antibiotics_config = env_kwargs.get('antibiotics_AMR_dict')
+    if not isinstance(environment_antibiotics_config, dict):
+        raise ValueError(
+            "Environment config must define 'antibiotics_AMR_dict' as a dictionary."
+        )
+
+    environment_antibiotic_order = list(environment_antibiotics_config.keys())
+    if reward_antibiotic_order != environment_antibiotic_order:
+        raise ValueError(
+            "RewardCalculator antibiotic order must match environment antibiotics_AMR_dict order exactly. "
+            f"reward_calculator.antibiotic_names={reward_antibiotic_order}, "
+            f"environment.antibiotics_AMR_dict.keys()={environment_antibiotic_order}"
+        )
+
+    if hasattr(patient_generator, 'bind_antibiotic_order'):
+        patient_generator.bind_antibiotic_order(
+            antibiotic_names=reward_antibiotic_order,
+        )
+
     # Add the pre-created reward_calculator and patient_generator to env_kwargs
     env_kwargs['reward_calculator'] = reward_calculator
     env_kwargs['patient_generator'] = patient_generator
