@@ -66,3 +66,16 @@ class PatientGeneratorBase(ABC):
             Integer dimension equal to num_patients * num_visible_attributes
         """
         pass
+
+    def bind_antibiotic_order(self, *, antibiotic_names: List[str]) -> None:
+        """Optionally bind antibiotic ordering from orchestration.
+
+        Default behavior is a no-op so existing patient generators do not need
+        to implement this hook. Subclasses that need canonical antibiotic order
+        (e.g., to build antibiotic-indexed observation features) should override
+        this method and validate/apply the provided order.
+
+        Args:
+            antibiotic_names: Ordered list of antibiotic names from orchestration.
+        """
+        return None

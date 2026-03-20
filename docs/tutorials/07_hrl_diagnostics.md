@@ -1,8 +1,8 @@
-# Tutorial 8: HRL Diagnostics
+# Tutorial 7: HRL Diagnostics
 
 **Goal**: Learn to analyze HRL training runs and interpret diagnostic plots that reveal option selection patterns, effectiveness, and strategy evolution.
 
-**Prerequisites**: Completed Tutorial 6 (HRL Quick Start) and Tutorial 7 (Options Library Setup)
+**Prerequisites**: Completed Tutorial 5 (HRL Quick Start) and Tutorial 9 (Options Library Setup)
 
 **What are HRL diagnostics?** Specialized analysis plots that reveal how the manager policy uses options, which options are most effective, and whether the agent develops coherent temporal strategies.
 
@@ -313,7 +313,7 @@ Top trigram: A_10 → B_15 → A_10 (count=18) → Explicit cycling strategy
      duration: 15  # Increase from 10
    ```
 
-3. Use HRL_RPPO (LSTM manager for better temporal reasoning—see Tutorial 09)
+3. Use HRL_RPPO (LSTM manager for better temporal reasoning—see Tutorial 8)
 
 ---
 
@@ -376,8 +376,8 @@ rm -f ._*
 ✅ You've learned to analyze HRL training with diagnostic plots!
 
 **Next tutorials**:
-- **Tutorial 09**: [HRL RPPO Manager](09_hrl_rppo_manager.md) — Use recurrent manager for temporal reasoning and partial observability
-- **Tutorial 11**: [Advanced Heuristic Worker Subclassing](11_advanced_heuristic_worker_subclassing.md) — Implement sophisticated heuristic options with attribute estimation
+- **Tutorial 8**: [HRL RPPO Manager](08_hrl_rppo_manager.md) — Use recurrent manager for temporal reasoning and partial observability
+- **Tutorial 10**: [Advanced Heuristic Worker Subclassing](10_advanced_heuristic_worker_subclassing.md) — Implement sophisticated heuristic options with attribute estimation
 
 ---
 

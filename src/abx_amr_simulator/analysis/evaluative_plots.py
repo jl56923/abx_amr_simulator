@@ -536,6 +536,219 @@ def run_hrl_diagnostics(
 
 # ==================== Recurrent LSTM Probe Diagnostics ====================
 
+LSTM_PROBE_R2_MIN_TARGET_VARIANCE = 1e-8
+
+
+def _assert_lstm_probe_summary_contract(summary: Dict[str, Any]) -> None:
+    required_keys = {
+        "num_seeds",
+        "mean_test_r2",
+        "std_test_r2",
+        "mean_test_mae",
+        "std_test_mae",
+        "per_antibiotic",
+    }
+    missing_keys = sorted(required_keys.difference(summary.keys()))
+    if missing_keys:
+        raise ValueError(
+            "LSTM probe summary is missing required keys: "
+            f"{missing_keys}."
+        )
+
+    per_antibiotic = summary.get("per_antibiotic")
+    if not isinstance(per_antibiotic, dict):
+        raise ValueError(
+            "LSTM probe summary key 'per_antibiotic' must be a dictionary."
+        )
+
+    for antibiotic_key, antibiotic_stats in per_antibiotic.items():
+        if not isinstance(antibiotic_stats, dict):
+            raise ValueError(
+                "Each per-antibiotic summary entry must be a dictionary. "
+                f"Got type={type(antibiotic_stats).__name__} for antibiotic '{antibiotic_key}'."
+            )
+        for required_stat in ("mean_test_r2", "std_test_r2", "mean_test_mae", "std_test_mae"):
+            if required_stat not in antibiotic_stats:
+                raise ValueError(
+                    "Per-antibiotic summary entry is missing required key "
+                    f"'{required_stat}' for antibiotic '{antibiotic_key}'."
+                )
+
+
+def _to_plot_value(value: Any) -> float:
+    if isinstance(value, (int, float, np.floating)) and np.isfinite(float(value)):
+        return float(value)
+    return float("nan")
+
+
+def _to_error_value(value: Any) -> float:
+    if isinstance(value, (int, float, np.floating)) and np.isfinite(float(value)):
+        numeric_value = float(value)
+        if numeric_value >= 0.0:
+            return numeric_value
+    return 0.0
+
+
+def plot_lstm_probe_summary(
+    summary_json_path: Path,
+    output_dir: Path,
+    title_prefix: Optional[str] = None,
+    style: str = "paper",
+) -> Optional[Path]:
+    """Render a compact 4-panel PNG summary for LSTM probe diagnostics.
+
+    The figure includes:
+    - overall R² (mean±std with optional median/IQR overlay),
+    - overall MAE (mean±std),
+    - per-antibiotic R² (mean±std),
+    - per-antibiotic MAE (mean±std).
+    """
+    if plt is None:
+        print("      [WARN] Matplotlib unavailable; skipping LSTM summary visualization")
+        return None
+
+    summary_json_path = Path(summary_json_path)
+    output_dir = Path(output_dir)
+    if not summary_json_path.exists():
+        raise FileNotFoundError(f"LSTM probe summary JSON not found: {summary_json_path}")
+
+    with open(summary_json_path, "r") as handle:
+        summary = json.load(handle)
+
+    _assert_lstm_probe_summary_contract(summary=summary)
+
+    per_antibiotic = summary.get("per_antibiotic", {})
+    ordered_abx_keys = sorted(per_antibiotic.keys(), key=lambda key: int(key))
+
+    overall_mean_r2 = _to_plot_value(summary.get("mean_test_r2"))
+    overall_std_r2 = _to_error_value(summary.get("std_test_r2"))
+    overall_median_r2 = _to_plot_value(summary.get("mean_test_r2_median"))
+    overall_iqr_r2 = _to_error_value(summary.get("iqr_test_r2"))
+
+    overall_mean_mae = _to_plot_value(summary.get("mean_test_mae"))
+    overall_std_mae = _to_error_value(summary.get("std_test_mae"))
+
+    per_abx_mean_r2 = [_to_plot_value(per_antibiotic[key].get("mean_test_r2")) for key in ordered_abx_keys]
+    per_abx_std_r2 = [_to_error_value(per_antibiotic[key].get("std_test_r2")) for key in ordered_abx_keys]
+    per_abx_mean_mae = [_to_plot_value(per_antibiotic[key].get("mean_test_mae")) for key in ordered_abx_keys]
+    per_abx_std_mae = [_to_error_value(per_antibiotic[key].get("std_test_mae")) for key in ordered_abx_keys]
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if style == "paper":
+        figure_size = (12, 8)
+    else:
+        figure_size = (12, 8)
+
+    fig, axes = plt.subplots(2, 2, figsize=figure_size)
+    ax_overall_r2 = axes[0, 0]
+    ax_overall_mae = axes[0, 1]
+    ax_per_abx_r2 = axes[1, 0]
+    ax_per_abx_mae = axes[1, 1]
+
+    ax_overall_r2.errorbar(
+        x=[0],
+        y=[overall_mean_r2],
+        yerr=[overall_std_r2],
+        fmt="o",
+        capsize=4,
+        color="tab:blue",
+        label="mean ± std",
+    )
+    if np.isfinite(overall_median_r2):
+        ax_overall_r2.scatter([0], [overall_median_r2], color="tab:orange", marker="D", label="median")
+        if overall_iqr_r2 > 0.0:
+            ax_overall_r2.errorbar(
+                x=[0],
+                y=[overall_median_r2],
+                yerr=[overall_iqr_r2 / 2.0],
+                fmt="none",
+                capsize=4,
+                color="tab:orange",
+                label="IQR/2",
+            )
+    ax_overall_r2.set_xticks([0])
+    ax_overall_r2.set_xticklabels(["overall"])
+    ax_overall_r2.set_ylabel("R²")
+    ax_overall_r2.set_title("Overall LSTM Probe R²")
+    ax_overall_r2.grid(axis="y", alpha=0.3)
+    if len(ax_overall_r2.get_legend_handles_labels()[0]) > 0:
+        ax_overall_r2.legend(loc="best")
+
+    ax_overall_mae.errorbar(
+        x=[0],
+        y=[overall_mean_mae],
+        yerr=[overall_std_mae],
+        fmt="o",
+        capsize=4,
+        color="tab:green",
+    )
+    ax_overall_mae.set_xticks([0])
+    ax_overall_mae.set_xticklabels(["overall"])
+    ax_overall_mae.set_ylabel("MAE")
+    ax_overall_mae.set_title("Overall LSTM Probe MAE")
+    ax_overall_mae.grid(axis="y", alpha=0.3)
+
+    x_positions = np.arange(len(ordered_abx_keys), dtype=float)
+    ax_per_abx_r2.bar(
+        x_positions,
+        per_abx_mean_r2,
+        yerr=per_abx_std_r2,
+        capsize=4,
+        color="tab:blue",
+        alpha=0.8,
+    )
+    ax_per_abx_r2.set_xticks(x_positions)
+    ax_per_abx_r2.set_xticklabels(ordered_abx_keys)
+    ax_per_abx_r2.set_xlabel("Antibiotic index")
+    ax_per_abx_r2.set_ylabel("R²")
+    ax_per_abx_r2.set_title("Per-antibiotic R²")
+    ax_per_abx_r2.grid(axis="y", alpha=0.3)
+
+    ax_per_abx_mae.bar(
+        x_positions,
+        per_abx_mean_mae,
+        yerr=per_abx_std_mae,
+        capsize=4,
+        color="tab:green",
+        alpha=0.8,
+    )
+    ax_per_abx_mae.set_xticks(x_positions)
+    ax_per_abx_mae.set_xticklabels(ordered_abx_keys)
+    ax_per_abx_mae.set_xlabel("Antibiotic index")
+    ax_per_abx_mae.set_ylabel("MAE")
+    ax_per_abx_mae.set_title("Per-antibiotic MAE")
+    ax_per_abx_mae.grid(axis="y", alpha=0.3)
+
+    summary_lines = [
+        f"num_seeds={summary.get('num_seeds')}",
+        f"num_seeds_succeeded={summary.get('num_seeds_succeeded', 'n/a')}",
+        f"num_r2_values_used={summary.get('num_r2_values_used', 'n/a')}",
+        f"num_r2_values_dropped_low_variance={summary.get('num_r2_values_dropped_low_variance', 'n/a')}",
+        f"num_mae_values_used={summary.get('num_mae_values_used', 'n/a')}",
+    ]
+    fig.text(
+        0.01,
+        0.01,
+        " | ".join(summary_lines),
+        ha="left",
+        va="bottom",
+        fontsize=9,
+    )
+
+    title_base = "LSTM Probe Summary"
+    if title_prefix:
+        title_base = f"{title_prefix} — {title_base}"
+    fig.suptitle(title_base)
+
+    plt.tight_layout(rect=[0, 0.04, 1, 0.95])
+
+    output_path = output_dir / "lstm_probe_summary_overview.png"
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return output_path
+
 def _safe_metric_mean(values: List[Any]) -> Optional[float]:
     numeric_values = [float(v) for v in values if isinstance(v, (int, float, np.floating)) and np.isfinite(v)]
     if not numeric_values:
@@ -550,10 +763,26 @@ def _safe_metric_std(values: List[Any]) -> Optional[float]:
     return float(np.std(np.array(numeric_values, dtype=float)))
 
 
+def _safe_metric_median(values: List[Any]) -> Optional[float]:
+    numeric_values = [float(v) for v in values if isinstance(v, (int, float, np.floating)) and np.isfinite(v)]
+    if not numeric_values:
+        return None
+    return float(np.median(np.array(numeric_values, dtype=float)))
+
+
+def _safe_metric_iqr(values: List[Any]) -> Optional[float]:
+    numeric_values = [float(v) for v in values if isinstance(v, (int, float, np.floating)) and np.isfinite(v)]
+    if not numeric_values:
+        return None
+    arr = np.array(numeric_values, dtype=float)
+    return float(np.percentile(arr, 75) - np.percentile(arr, 25))
+
+
 def compute_lstm_probe_stats(
     log_dir: Path,
     test_size: float = 0.2,
     random_state: int = 42,
+    min_target_variance_for_r2: float = LSTM_PROBE_R2_MIN_TARGET_VARIANCE,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Compute per-seed LSTM probe statistics from one run's ``lstm_logs`` directory."""
     from abx_amr_simulator.analysis.probe_hidden_belief import fit_probe, load_episodes
@@ -581,20 +810,52 @@ def compute_lstm_probe_stats(
         random_state=random_state,
     )
 
+    y_test = probe_results.get("y_test")
+    if y_test is None:
+        raise ValueError("LSTM probe failed: probe results missing y_test array")
+    y_test_array = np.array(y_test, dtype=float)
+    if y_test_array.ndim != 2:
+        raise ValueError("LSTM probe failed: expected y_test shape (N, num_antibiotics)")
+
     per_antibiotic: List[Dict[str, Any]] = []
     for result in probe_results.get("results", []):
+        antibiotic_idx = int(result.get("antibiotic_idx", -1))
+        if antibiotic_idx < 0:
+            raise ValueError("LSTM probe failed: invalid antibiotic_idx in probe results")
+        if antibiotic_idx >= y_test_array.shape[1]:
+            raise ValueError(
+                f"LSTM probe failed: antibiotic_idx {antibiotic_idx} out of bounds for y_test shape {y_test_array.shape}"
+            )
+
+        test_target_variance = float(np.var(y_test_array[:, antibiotic_idx]))
+        r2_valid = bool(test_target_variance >= float(min_target_variance_for_r2))
+        if not r2_valid:
+            print(
+                f"      [WARN] LSTM probe: low-variance target for antibiotic {antibiotic_idx} "
+                f"(variance={test_target_variance:.3e} < threshold={min_target_variance_for_r2:.3e}); "
+                "excluding test_r2 from aggregate"
+            )
+
         per_antibiotic.append(
             {
-                "antibiotic_idx": int(result.get("antibiotic_idx", -1)),
+                "antibiotic_idx": antibiotic_idx,
                 "train_r2": float(result.get("train_r2", 0.0)),
-                "test_r2": float(result.get("test_r2", 0.0)),
+                "test_r2": float(result.get("test_r2", 0.0)) if r2_valid else None,
                 "train_mae": float(result.get("train_mae", 0.0)),
                 "test_mae": float(result.get("test_mae", 0.0)),
+                "test_target_variance": test_target_variance,
+                "r2_valid_for_aggregate": r2_valid,
+                "r2_drop_reason": None if r2_valid else "low_target_variance",
             }
         )
 
     mean_test_r2 = _safe_metric_mean(values=[item.get("test_r2") for item in per_antibiotic])
     mean_test_mae = _safe_metric_mean(values=[item.get("test_mae") for item in per_antibiotic])
+
+    num_r2_values_used = int(sum(1 for item in per_antibiotic if item.get("r2_valid_for_aggregate", False)))
+    num_r2_values_dropped_low_variance = int(
+        sum(1 for item in per_antibiotic if item.get("r2_drop_reason") == "low_target_variance")
+    )
 
     seed_stats: Dict[str, Any] = {
         "log_dir": str(log_dir),
@@ -607,6 +868,18 @@ def compute_lstm_probe_stats(
         "metrics": {
             "mean_test_r2": mean_test_r2,
             "mean_test_mae": mean_test_mae,
+            "mean_test_r2_median": _safe_metric_median(values=[item.get("test_r2") for item in per_antibiotic]),
+            "iqr_test_r2": _safe_metric_iqr(values=[item.get("test_r2") for item in per_antibiotic]),
+            "num_r2_values_used": num_r2_values_used,
+            "num_r2_values_dropped_low_variance": num_r2_values_dropped_low_variance,
+            "num_mae_values_used": int(
+                sum(
+                    1
+                    for item in per_antibiotic
+                    if isinstance(item.get("test_mae"), (int, float, np.floating))
+                    and np.isfinite(float(item.get("test_mae")))
+                )
+            ),
         },
     }
 
@@ -620,13 +893,39 @@ def aggregate_lstm_probe_stats(per_seed_stats: List[Dict[str, Any]]) -> Dict[str
             "num_seeds": 0,
             "mean_test_r2": None,
             "std_test_r2": None,
+            "mean_test_r2_median": None,
+            "iqr_test_r2": None,
             "mean_test_mae": None,
             "std_test_mae": None,
+            "num_r2_values_used": 0,
+            "num_r2_values_dropped_low_variance": 0,
+            "num_mae_values_used": 0,
             "per_antibiotic": {},
         }
 
     mean_test_r2_vals = [seed_stat.get("metrics", {}).get("mean_test_r2") for seed_stat in per_seed_stats]
     mean_test_mae_vals = [seed_stat.get("metrics", {}).get("mean_test_mae") for seed_stat in per_seed_stats]
+    mean_test_r2_median_vals = [seed_stat.get("metrics", {}).get("mean_test_r2_median") for seed_stat in per_seed_stats]
+    iqr_test_r2_vals = [seed_stat.get("metrics", {}).get("iqr_test_r2") for seed_stat in per_seed_stats]
+
+    total_num_r2_values_used = int(
+        sum(
+            int(seed_stat.get("metrics", {}).get("num_r2_values_used", 0))
+            for seed_stat in per_seed_stats
+        )
+    )
+    total_num_r2_values_dropped_low_variance = int(
+        sum(
+            int(seed_stat.get("metrics", {}).get("num_r2_values_dropped_low_variance", 0))
+            for seed_stat in per_seed_stats
+        )
+    )
+    total_num_mae_values_used = int(
+        sum(
+            int(seed_stat.get("metrics", {}).get("num_mae_values_used", 0))
+            for seed_stat in per_seed_stats
+        )
+    )
 
     per_antibiotic_metrics: Dict[str, Dict[str, Any]] = {}
     antibiotic_ids = sorted(
@@ -654,16 +953,52 @@ def aggregate_lstm_probe_stats(per_seed_stats: List[Dict[str, Any]]) -> Dict[str
         per_antibiotic_metrics[str(abx_idx)] = {
             "mean_test_r2": _safe_metric_mean(values=test_r2_vals),
             "std_test_r2": _safe_metric_std(values=test_r2_vals),
+            "mean_test_r2_median": _safe_metric_median(values=test_r2_vals),
+            "iqr_test_r2": _safe_metric_iqr(values=test_r2_vals),
             "mean_test_mae": _safe_metric_mean(values=test_mae_vals),
             "std_test_mae": _safe_metric_std(values=test_mae_vals),
+            "num_r2_values_used": int(
+                sum(
+                    1
+                    for seed_stat in per_seed_stats
+                    for abx_stat in seed_stat.get("per_antibiotic", [])
+                    if int(abx_stat.get("antibiotic_idx", -1)) == abx_idx
+                    and bool(abx_stat.get("r2_valid_for_aggregate", False))
+                )
+            ),
+            "num_r2_values_dropped_low_variance": int(
+                sum(
+                    1
+                    for seed_stat in per_seed_stats
+                    for abx_stat in seed_stat.get("per_antibiotic", [])
+                    if int(abx_stat.get("antibiotic_idx", -1)) == abx_idx
+                    and abx_stat.get("r2_drop_reason") == "low_target_variance"
+                )
+            ),
+            "num_mae_values_used": int(
+                sum(
+                    1
+                    for seed_stat in per_seed_stats
+                    for abx_stat in seed_stat.get("per_antibiotic", [])
+                    if int(abx_stat.get("antibiotic_idx", -1)) == abx_idx
+                    and isinstance(abx_stat.get("test_mae"), (int, float, np.floating))
+                    and np.isfinite(float(abx_stat.get("test_mae")))
+                )
+            ),
         }
 
     return {
         "num_seeds": len(per_seed_stats),
         "mean_test_r2": _safe_metric_mean(values=mean_test_r2_vals),
         "std_test_r2": _safe_metric_std(values=mean_test_r2_vals),
+        "mean_test_r2_median": _safe_metric_median(values=mean_test_r2_median_vals),
+        "iqr_test_r2": _safe_metric_mean(values=iqr_test_r2_vals),
         "mean_test_mae": _safe_metric_mean(values=mean_test_mae_vals),
         "std_test_mae": _safe_metric_std(values=mean_test_mae_vals),
+        "num_r2_values_used": total_num_r2_values_used,
+        "num_r2_values_dropped_low_variance": total_num_r2_values_dropped_low_variance,
+        "num_mae_values_used": total_num_mae_values_used,
+        "r2_min_target_variance_threshold": float(LSTM_PROBE_R2_MIN_TARGET_VARIANCE),
         "per_antibiotic": per_antibiotic_metrics,
     }
 
@@ -755,6 +1090,18 @@ def run_lstm_probe_diagnostics(
     summary_path = lstm_probe_dir / "lstm_probe_summary.json"
     with open(summary_path, "w") as fh:
         json.dump(aggregated, fp=fh, indent=2)
+
+    try:
+        summary_plot_path = plot_lstm_probe_summary(
+            summary_json_path=summary_path,
+            output_dir=lstm_probe_dir,
+            title_prefix=None,
+            style="paper",
+        )
+        if summary_plot_path is not None:
+            print(f"    Saved LSTM probe summary plot to {summary_plot_path}")
+    except Exception as exc:
+        print(f"    [WARN] Could not generate LSTM probe summary plot: {exc}")
 
     print(
         f"    Saved LSTM probe diagnostics for {len(per_seed_stats)} seed(s) to {lstm_probe_dir}"

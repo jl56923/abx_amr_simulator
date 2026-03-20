@@ -9,6 +9,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Dict, Any
@@ -21,10 +22,12 @@ from abx_amr_simulator.analysis.evaluative_plots import (
     detect_analysis_branches,
     is_hrl_run,
     is_recurrent_run,
+    plot_lstm_probe_summary,
     wrap_environment_for_hrl,
     run_evaluation_episodes,
     compute_hrl_option_stats,
     aggregate_hrl_option_stats,
+    aggregate_lstm_probe_stats,
     run_hrl_diagnostics,
     run_lstm_probe_diagnostics,
 )
@@ -851,6 +854,7 @@ class TestRunLstmProbeDiagnostics:
         assert (lstm_probe_dir / "lstm_probe_summary.json").exists()
         assert (lstm_probe_dir / "lstm_probe_raw_vals.json").exists()
         assert (lstm_probe_dir / "lstm_probe_seed_1.json").exists()
+        assert (lstm_probe_dir / "lstm_probe_summary_overview.png").exists()
 
     def test_partial_seed_failure_continues_and_returns_true(self, tmp_path: Path, capsys):
         """One failed seed emits warning while successful seed still yields aggregate output."""
@@ -893,3 +897,212 @@ class TestRunLstmProbeDiagnostics:
 
         assert result is False
         assert not (output_dir / "lstm_probe" / "lstm_probe_summary.json").exists()
+
+
+class TestLstmProbeAggregateStats:
+    """Regression tests for robust LSTM probe summary aggregation."""
+
+    def test_excludes_low_variance_r2_and_keeps_mae(self):
+        per_seed_stats = [
+            {
+                "metrics": {
+                    "mean_test_r2": 0.95,
+                    "mean_test_r2_median": 0.95,
+                    "iqr_test_r2": 0.0,
+                    "mean_test_mae": 0.02,
+                    "num_r2_values_used": 1,
+                    "num_r2_values_dropped_low_variance": 0,
+                    "num_mae_values_used": 1,
+                },
+                "per_antibiotic": [
+                    {
+                        "antibiotic_idx": 0,
+                        "test_r2": 0.95,
+                        "test_mae": 0.02,
+                        "r2_valid_for_aggregate": True,
+                        "r2_drop_reason": None,
+                    }
+                ],
+            },
+            {
+                "metrics": {
+                    "mean_test_r2": None,
+                    "mean_test_r2_median": None,
+                    "iqr_test_r2": None,
+                    "mean_test_mae": 0.03,
+                    "num_r2_values_used": 0,
+                    "num_r2_values_dropped_low_variance": 1,
+                    "num_mae_values_used": 1,
+                },
+                "per_antibiotic": [
+                    {
+                        "antibiotic_idx": 0,
+                        "test_r2": None,
+                        "test_mae": 0.03,
+                        "r2_valid_for_aggregate": False,
+                        "r2_drop_reason": "low_target_variance",
+                    }
+                ],
+            },
+        ]
+
+        aggregated = aggregate_lstm_probe_stats(per_seed_stats=per_seed_stats)
+
+        assert aggregated["num_seeds"] == 2
+        assert pytest.approx(aggregated["mean_test_r2"], rel=1e-9) == 0.95
+        assert pytest.approx(aggregated["mean_test_mae"], rel=1e-9) == 0.025
+        assert aggregated["num_r2_values_used"] == 1
+        assert aggregated["num_r2_values_dropped_low_variance"] == 1
+        assert aggregated["num_mae_values_used"] == 2
+
+        abx0 = aggregated["per_antibiotic"]["0"]
+        assert pytest.approx(abx0["mean_test_r2"], rel=1e-9) == 0.95
+        assert pytest.approx(abx0["mean_test_mae"], rel=1e-9) == 0.025
+        assert abx0["num_r2_values_used"] == 1
+        assert abx0["num_r2_values_dropped_low_variance"] == 1
+        assert abx0["num_mae_values_used"] == 2
+
+    def test_includes_robust_summary_fields(self):
+        per_seed_stats = [
+            {
+                "metrics": {
+                    "mean_test_r2": 0.8,
+                    "mean_test_r2_median": 0.8,
+                    "iqr_test_r2": 0.0,
+                    "mean_test_mae": 0.1,
+                    "num_r2_values_used": 1,
+                    "num_r2_values_dropped_low_variance": 0,
+                    "num_mae_values_used": 1,
+                },
+                "per_antibiotic": [
+                    {
+                        "antibiotic_idx": 0,
+                        "test_r2": 0.8,
+                        "test_mae": 0.1,
+                        "r2_valid_for_aggregate": True,
+                        "r2_drop_reason": None,
+                    }
+                ],
+            },
+            {
+                "metrics": {
+                    "mean_test_r2": 0.6,
+                    "mean_test_r2_median": 0.6,
+                    "iqr_test_r2": 0.0,
+                    "mean_test_mae": 0.2,
+                    "num_r2_values_used": 1,
+                    "num_r2_values_dropped_low_variance": 0,
+                    "num_mae_values_used": 1,
+                },
+                "per_antibiotic": [
+                    {
+                        "antibiotic_idx": 0,
+                        "test_r2": 0.6,
+                        "test_mae": 0.2,
+                        "r2_valid_for_aggregate": True,
+                        "r2_drop_reason": None,
+                    }
+                ],
+            },
+        ]
+
+        aggregated = aggregate_lstm_probe_stats(per_seed_stats=per_seed_stats)
+
+        assert "mean_test_r2_median" in aggregated
+        assert "iqr_test_r2" in aggregated
+        assert aggregated["mean_test_r2_median"] is not None
+        assert aggregated["iqr_test_r2"] is not None
+
+
+class TestPlotLstmProbeSummary:
+    """Tests for standalone LSTM probe summary visualization."""
+
+    def test_generates_png_with_robust_fields(self, tmp_path: Path):
+        summary = {
+            "num_seeds": 3,
+            "mean_test_r2": 0.75,
+            "std_test_r2": 0.05,
+            "mean_test_r2_median": 0.76,
+            "iqr_test_r2": 0.03,
+            "mean_test_mae": 0.12,
+            "std_test_mae": 0.02,
+            "num_r2_values_used": 6,
+            "num_r2_values_dropped_low_variance": 1,
+            "num_mae_values_used": 7,
+            "per_antibiotic": {
+                "0": {
+                    "mean_test_r2": 0.7,
+                    "std_test_r2": 0.1,
+                    "mean_test_mae": 0.1,
+                    "std_test_mae": 0.02,
+                },
+                "1": {
+                    "mean_test_r2": 0.8,
+                    "std_test_r2": 0.08,
+                    "mean_test_mae": 0.14,
+                    "std_test_mae": 0.03,
+                },
+            },
+        }
+
+        summary_path = tmp_path / "lstm_probe_summary.json"
+        with open(summary_path, "w") as handle:
+            json.dump(summary, handle)
+
+        plot_path = plot_lstm_probe_summary(
+            summary_json_path=summary_path,
+            output_dir=tmp_path,
+        )
+
+        assert plot_path is not None
+        assert plot_path.exists()
+        assert plot_path.name == "lstm_probe_summary_overview.png"
+
+    def test_generates_png_with_legacy_fields_only(self, tmp_path: Path):
+        summary = {
+            "num_seeds": 2,
+            "mean_test_r2": 0.6,
+            "std_test_r2": 0.2,
+            "mean_test_mae": 0.2,
+            "std_test_mae": 0.1,
+            "per_antibiotic": {
+                "0": {
+                    "mean_test_r2": 0.55,
+                    "std_test_r2": 0.15,
+                    "mean_test_mae": 0.22,
+                    "std_test_mae": 0.08,
+                }
+            },
+        }
+
+        summary_path = tmp_path / "lstm_probe_summary.json"
+        with open(summary_path, "w") as handle:
+            json.dump(summary, handle)
+
+        plot_path = plot_lstm_probe_summary(
+            summary_json_path=summary_path,
+            output_dir=tmp_path,
+        )
+
+        assert plot_path is not None
+        assert plot_path.exists()
+
+    def test_raises_on_missing_required_summary_key(self, tmp_path: Path):
+        summary = {
+            "num_seeds": 2,
+            "mean_test_r2": 0.6,
+            "std_test_r2": 0.2,
+            # missing mean_test_mae
+            "std_test_mae": 0.1,
+            "per_antibiotic": {},
+        }
+
+        summary_path = tmp_path / "lstm_probe_summary.json"
+        with open(summary_path, "w") as handle:
+            json.dump(summary, handle)
+
+        with pytest.raises(ValueError, match="missing required keys"):
+            plot_lstm_probe_summary(
+                summary_json_path=summary_path,
+                output_dir=tmp_path,
+            )

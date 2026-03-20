@@ -45,7 +45,7 @@ class ABXAMREnv(gym.Env):
     """
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, reward_calculator, patient_generator, antibiotics_AMR_dict: dict = None, crossresistance_matrix: dict = None,num_patients_per_time_step: int = 10, update_visible_AMR_levels_every_n_timesteps: int = 1, add_noise_to_visible_AMR_levels: float = 0.0, add_bias_to_visible_AMR_levels: float = 0.0, max_time_steps: int = 1000, include_steps_since_amr_update_in_obs: bool = False, enable_temporal_features: bool = False, temporal_windows: List[int] = None):
+    def __init__(self, reward_calculator, patient_generator, antibiotics_AMR_dict: dict = None, crossresistance_matrix: dict = None,num_patients_per_time_step: int = 10, update_visible_AMR_levels_every_n_timesteps: int = 1, add_noise_to_visible_AMR_levels: float = 0.0, add_bias_to_visible_AMR_levels: float = 0.0, max_time_steps: int = 1000, include_steps_since_amr_update_in_obs: bool = False, enable_temporal_features: bool = False, temporal_windows: List[int] = None, amr_dynamics_instances: Optional[Dict[str, AMRDynamicsBase]] = None):
         """
         Initializes the environment with antibiotic specifications and heterogeneous patient population.
         
@@ -72,6 +72,10 @@ class ABXAMREnv(gym.Env):
             include_steps_since_amr_update_in_obs: If True, includes the number of steps since the last AMR update as an additional observation feature.
             enable_temporal_features: If True, append prescription counts and AMR deltas to observations.
             temporal_windows: List of window sizes for prescription counting (e.g., [10, 50]). Only used if enable_temporal_features=True.
+            amr_dynamics_instances: Optional prebuilt AMR dynamics models keyed by antibiotic name.
+                When provided, these models are used directly after validation. When None,
+                the environment constructs default AMR_LeakyBalloon models from
+                antibiotics_AMR_dict (backward-compatible fallback).
         """
         
         super().__init__()
@@ -271,22 +275,48 @@ class ABXAMREnv(gym.Env):
             'initial_amr_level': 0.0
         }
         
-        # Initialize leaky balloon models for each antibiotic using provided parameters with fallback defaults
-        self.amr_balloon_models: Dict[str, AMRDynamicsBase] = {}
-        for abx_name in self.antibiotic_names:
-            abx_params = antibiotics_AMR_dict[abx_name]
-            # Extract parameters with defaults
-            leak = abx_params.get('leak', default_params['leak'])
-            flatness_parameter = abx_params.get('flatness_parameter', default_params['flatness_parameter'])
-            permanent_residual_volume = abx_params.get('permanent_residual_volume', default_params['permanent_residual_volume'])
-            initial_amr_level = abx_params.get('initial_amr_level', default_params['initial_amr_level'])
-            
-            self.amr_balloon_models[abx_name] = AMR_LeakyBalloon(
-                leak=leak,
-                flatness_parameter=flatness_parameter,
-                permanent_residual_volume=permanent_residual_volume,
-                initial_amr_level=initial_amr_level
-            )
+        # Initialize AMR dynamics models.
+        # If caller injects prebuilt instances, use them directly after fail-loud validation.
+        if amr_dynamics_instances is not None:
+            if not isinstance(amr_dynamics_instances, dict):
+                raise TypeError(
+                    "amr_dynamics_instances must be a dict[str, AMRDynamicsBase] when provided. "
+                    f"Got type '{type(amr_dynamics_instances).__name__}'."
+                )
+
+            expected_keys = set(self.antibiotic_names)
+            provided_keys = set(amr_dynamics_instances.keys())
+            if provided_keys != expected_keys:
+                raise TypeError(
+                    "amr_dynamics_instances keys must match antibiotics_AMR_dict keys exactly. "
+                    f"Expected {sorted(expected_keys)}, got {sorted(provided_keys)}."
+                )
+
+            for abx_name, dynamics_instance in amr_dynamics_instances.items():
+                if not isinstance(dynamics_instance, AMRDynamicsBase):
+                    raise TypeError(
+                        "Each value in amr_dynamics_instances must be an instance of AMRDynamicsBase. "
+                        f"Key '{abx_name}' has type '{type(dynamics_instance).__name__}'."
+                    )
+
+            self.amr_balloon_models = amr_dynamics_instances
+        else:
+            # Backward-compatible fallback: build default AMR_LeakyBalloon models from config.
+            self.amr_balloon_models: Dict[str, AMRDynamicsBase] = {}
+            for abx_name in self.antibiotic_names:
+                abx_params = antibiotics_AMR_dict[abx_name]
+                # Extract parameters with defaults
+                leak = abx_params.get('leak', default_params['leak'])
+                flatness_parameter = abx_params.get('flatness_parameter', default_params['flatness_parameter'])
+                permanent_residual_volume = abx_params.get('permanent_residual_volume', default_params['permanent_residual_volume'])
+                initial_amr_level = abx_params.get('initial_amr_level', default_params['initial_amr_level'])
+
+                self.amr_balloon_models[abx_name] = AMR_LeakyBalloon(
+                    leak=leak,
+                    flatness_parameter=flatness_parameter,
+                    permanent_residual_volume=permanent_residual_volume,
+                    initial_amr_level=initial_amr_level
+                )
 
         # At the end of the initializer, reset the environment to set initial state
         self.reset(seed=self._initial_seed)

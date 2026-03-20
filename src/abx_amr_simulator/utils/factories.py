@@ -31,7 +31,12 @@ from abx_amr_simulator.core import (
     PatientGenerator,
     PatientGeneratorMixer,
 )
+from abx_amr_simulator.core.base_patient_generator import PatientGeneratorBase
+from abx_amr_simulator.core.base_reward_calculator import RewardCalculatorBase
+from abx_amr_simulator.core.base_amr_dynamics import AMRDynamicsBase
+from abx_amr_simulator.core.leaky_balloon import AMR_LeakyBalloon
 from abx_amr_simulator.core.reward_calculator import BalancedReward
+from abx_amr_simulator.utils.plugin_loader import load_plugin_component
 
 # Import for type hints only (avoid circular imports at runtime)
 if TYPE_CHECKING:
@@ -40,6 +45,11 @@ if TYPE_CHECKING:
 
 def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
     """Instantiate RewardCalculator from experiment configuration.
+
+    If `reward_calculator.plugin.loader_module` is configured, this factory calls
+    `load_reward_calculator_component(config: Dict[str, Any]) -> RewardCalculatorBase`
+    through the shared plugin loader utility and returns the plugin-provided
+    instance directly.
     
     Extracts 'reward_calculator' section from config, injects seed from 'training.seed',
     and passes config dict directly to RewardCalculator constructor. This factory ensures
@@ -59,6 +69,16 @@ def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
         >>> rc = create_reward_calculator(config)
         >>> # rc.seed now matches config['training']['seed']
     """
+    reward_config_for_plugin = config.get('reward_calculator', {})
+    plugin_result = load_plugin_component(
+        component_config=reward_config_for_plugin,
+        expected_base_class=RewardCalculatorBase,
+        default_loader_fn_name='load_reward_calculator_component',
+        config_dir_hint=config.get('_umbrella_config_dir'),
+    )
+    if plugin_result is not None:
+        return plugin_result
+
     reward_config = config.get('reward_calculator', {}).copy()
     # Get seed from training config if available
     training_config = config.get('training', {})
@@ -70,6 +90,11 @@ def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
 def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
     """
     Instantiate PatientGenerator or PatientGeneratorMixer from config.
+
+    If `patient_generator.plugin.loader_module` is configured, this factory calls
+    `load_patient_generator_component(config: Dict[str, Any]) -> PatientGeneratorBase`
+    through the shared plugin loader utility and returns the plugin-provided
+    instance directly.
     
     Supports two configuration styles:
     1. Regular PatientGenerator (default):
@@ -102,6 +127,15 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
             "Missing 'patient_generator' config section. "
             "PatientGenerator must be configured with required parameters including 'visible_patient_attributes'."
         )
+
+    plugin_result = load_plugin_component(
+        component_config=patient_gen_config,
+        expected_base_class=PatientGeneratorBase,
+        default_loader_fn_name='load_patient_generator_component',
+        config_dir_hint=config.get('_umbrella_config_dir'),
+    )
+    if plugin_result is not None:
+        return plugin_result
     
     # Get seed from training config if available
     training_config = config.get('training', {})
@@ -221,6 +255,85 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
         return PatientGenerator(config=patient_gen_config)
 
 
+def create_amr_dynamics(config: Dict[str, Any]) -> Dict[str, AMRDynamicsBase]:
+    """Instantiate AMR dynamics mapping from experiment configuration.
+
+    If `amr_dynamics.plugin.loader_module` is configured, this factory calls
+    `load_amr_dynamics_component(config: Dict[str, Any]) -> Dict[str, AMRDynamicsBase]`
+    through the shared plugin loader utility and validates that all returned
+    values are `AMRDynamicsBase` instances.
+
+    Without plugin config, this factory constructs canonical `AMR_LeakyBalloon`
+    instances from `environment.antibiotics_AMR_dict` using the same defaults as
+    the historical internal `ABXAMREnv` fallback construction path.
+
+    Args:
+        config (Dict[str, Any]): Full merged experiment config.
+
+    Returns:
+        Dict[str, AMRDynamicsBase]: Mapping of antibiotic name to AMR dynamics instance.
+
+    Raises:
+        ValueError: If required config sections are missing.
+        TypeError: If plugin return payload has invalid type/contents.
+    """
+    amr_dynamics_config = config.get('amr_dynamics', {})
+    plugin_result = load_plugin_component(
+        component_config=amr_dynamics_config,
+        expected_base_class=dict,
+        default_loader_fn_name='load_amr_dynamics_component',
+        config_dir_hint=config.get('_umbrella_config_dir'),
+    )
+    if plugin_result is not None:
+        for abx_name, dynamics_instance in plugin_result.items():
+            if not isinstance(abx_name, str):
+                raise TypeError(
+                    "AMR dynamics plugin returned invalid dict key type. "
+                    f"Expected str, got '{type(abx_name).__name__}'."
+                )
+            if not isinstance(dynamics_instance, AMRDynamicsBase):
+                raise TypeError(
+                    "AMR dynamics plugin returned invalid dict value type. "
+                    f"Expected AMRDynamicsBase for key '{abx_name}', got '{type(dynamics_instance).__name__}'."
+                )
+        return plugin_result
+
+    environment_config = config.get('environment', {})
+    antibiotics_amr_dict = environment_config.get('antibiotics_AMR_dict')
+    if not isinstance(antibiotics_amr_dict, dict) or not antibiotics_amr_dict:
+        raise ValueError(
+            "Missing or invalid 'environment.antibiotics_AMR_dict'. "
+            "Expected non-empty dictionary of AMR dynamics parameters."
+        )
+
+    default_params = {
+        'leak': 0.05,
+        'flatness_parameter': 1.0,
+        'permanent_residual_volume': 0.0,
+        'initial_amr_level': 0.0,
+    }
+    amr_dynamics_instances: Dict[str, AMRDynamicsBase] = {}
+    for abx_name, abx_params in antibiotics_amr_dict.items():
+        if not isinstance(abx_params, dict):
+            raise TypeError(
+                "Each entry in environment.antibiotics_AMR_dict must be a dict of parameters. "
+                f"Key '{abx_name}' has type '{type(abx_params).__name__}'."
+            )
+        leak = abx_params.get('leak', default_params['leak'])
+        flatness_parameter = abx_params.get('flatness_parameter', default_params['flatness_parameter'])
+        permanent_residual_volume = abx_params.get('permanent_residual_volume', default_params['permanent_residual_volume'])
+        initial_amr_level = abx_params.get('initial_amr_level', default_params['initial_amr_level'])
+
+        amr_dynamics_instances[abx_name] = AMR_LeakyBalloon(
+            leak=leak,
+            flatness_parameter=flatness_parameter,
+            permanent_residual_volume=permanent_residual_volume,
+            initial_amr_level=initial_amr_level,
+        )
+
+    return amr_dynamics_instances
+
+
 def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculator, patient_generator: PatientGenerator, wrap_monitor: bool = False, monitor_dir: Optional[str] = None) -> gym.Env:
     """Create ABXAMREnv from pre-instantiated RewardCalculator and PatientGenerator.
     
@@ -272,9 +385,32 @@ def create_environment(config: Dict[str, Any], reward_calculator: RewardCalculat
             "This parameter belongs in patient_generator config. PatientGenerator owns visibility."
         )
     
+    amr_dynamics = create_amr_dynamics(config=config)
+
+    reward_antibiotic_order = list(reward_calculator.antibiotic_names)
+    environment_antibiotics_config = env_kwargs.get('antibiotics_AMR_dict')
+    if not isinstance(environment_antibiotics_config, dict):
+        raise ValueError(
+            "Environment config must define 'antibiotics_AMR_dict' as a dictionary."
+        )
+
+    environment_antibiotic_order = list(environment_antibiotics_config.keys())
+    if reward_antibiotic_order != environment_antibiotic_order:
+        raise ValueError(
+            "RewardCalculator antibiotic order must match environment antibiotics_AMR_dict order exactly. "
+            f"reward_calculator.antibiotic_names={reward_antibiotic_order}, "
+            f"environment.antibiotics_AMR_dict.keys()={environment_antibiotic_order}"
+        )
+
+    if hasattr(patient_generator, 'bind_antibiotic_order'):
+        patient_generator.bind_antibiotic_order(
+            antibiotic_names=reward_antibiotic_order,
+        )
+
     # Add the pre-created reward_calculator and patient_generator to env_kwargs
     env_kwargs['reward_calculator'] = reward_calculator
     env_kwargs['patient_generator'] = patient_generator
+    env_kwargs['amr_dynamics_instances'] = amr_dynamics
     
     # Create the environment
     env = ABXAMREnv(**env_kwargs)

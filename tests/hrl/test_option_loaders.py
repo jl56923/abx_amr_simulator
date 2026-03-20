@@ -1,82 +1,19 @@
 """Unit tests for OptionLibraryLoader class."""
 
 import pytest
-import tempfile
 import yaml
 from pathlib import Path
 
-from abx_amr_simulator.hrl import OptionBase, OptionLibrary, OptionLibraryLoader
+from abx_amr_simulator.hrl import OptionLibraryLoader
 # Import test helpers (sys.path configured in tests/conftest.py)
 from test_reference_helpers import create_mock_environment  # type: ignore[import-not-found]
-import numpy as np
+
+def _write_yaml(path: Path, data: dict) -> None:
+    path.write_text(yaml.safe_dump(data), encoding='utf-8')
 
 
-class SimpleBlockOption(OptionBase):
-    """Simple option for testing."""
-    REQUIRES_OBSERVATION_ATTRIBUTES = []
-    REQUIRES_AMR_LEVELS = False
-
-    def __init__(self, name: str, antibiotic: str, duration: int):
-        super().__init__(name=name, k=duration)
-        self.antibiotic = antibiotic
-
-    def decide(self, env_state):
-        num_patients = env_state['num_patients']
-        option_library = env_state.get('option_library')
-        if option_library is None:
-            raise ValueError("option_library not found in env_state")
-        abx_name_to_index = option_library.abx_name_to_index
-        
-        # Validate antibiotic exists
-        if self.antibiotic not in abx_name_to_index:
-            raise ValueError(f"Antibiotic '{self.antibiotic}' not found in environment")
-        
-        return np.full(shape=num_patients, fill_value=self.antibiotic, dtype=object)
-
-    def get_referenced_antibiotics(self):
-        return [self.antibiotic]
-
-
-def create_loader_module(tmpdir, option_type='block'):
-    """Helper to create a loader module file."""
-    from abx_amr_simulator.hrl import OptionBase
-    import numpy as np
-    
-    loader_code = f"""
-import numpy as np
-from abx_amr_simulator.hrl import OptionBase
-
-class BlockOption(OptionBase):
-    REQUIRES_OBSERVATION_ATTRIBUTES = []
-    REQUIRES_AMR_LEVELS = False
-    
-    def __init__(self, name, antibiotic, duration):
-        super().__init__(name=name, k=duration)
-        self.antibiotic = antibiotic
-    
-    def decide(self, env_state):
-        num_patients = env_state['num_patients']
-        option_library = env_state.get('option_library')
-        if option_library is None:
-            raise ValueError("option_library not found in env_state")
-        
-        # Validate antibiotic exists and return its name string
-        if self.antibiotic not in option_library.abx_name_to_index:
-            raise ValueError(f\"Antibiotic '{{self.antibiotic}}' not found\")
-        return np.full(shape=num_patients, fill_value=self.antibiotic, dtype=object)
-
-    def get_referenced_antibiotics(self):
-        return [self.antibiotic]
-
-def load_{option_type}_option(name, config):
-    antibiotic = config.get('antibiotic', 'A')
-    duration = config.get('duration', 5)
-    return BlockOption(name=name, antibiotic=antibiotic, duration=duration)
-"""
-    
-    module_path = tmpdir / f'{option_type}_option_loader.py'
-    module_path.write_text(loader_code, encoding='utf-8')
-    return module_path
+def _write_text(path: Path, content: str) -> None:
+    path.write_text(data=content, encoding='utf-8')
 
 
 class TestOptionLibraryLoaderBasic:
@@ -84,22 +21,13 @@ class TestOptionLibraryLoaderBasic:
 
     def test_load_library_from_yaml(self, tmp_path):
         """Test loading library from YAML config."""
-        # Create directory structure
         lib_dir = tmp_path / 'option_libraries'
         lib_dir.mkdir()
-        
-        option_types_dir = tmp_path / 'option_types' / 'block'
-        option_types_dir.mkdir(parents=True)
-        
-        # Create loader module
-        create_loader_module(option_types_dir, 'block')
-        
-        # Create default config for block option
+
         default_config = {'antibiotic': 'A', 'duration': 5}
-        default_config_path = option_types_dir / 'block_option_default_config.yaml'
-        default_config_path.write_text(yaml.dump(default_config), encoding='utf-8')
-        
-        # Create library meta-config with ABSOLUTE paths (not relative)
+        default_config_path = tmp_path / 'block_option_default_config.yaml'
+        _write_yaml(path=default_config_path, data=default_config)
+
         lib_config = {
             'library_name': 'test_lib',
             'description': 'Test library',
@@ -108,24 +36,100 @@ class TestOptionLibraryLoaderBasic:
                     'option_name': 'A_5',
                     'option_type': 'block',
                     'option_subconfig_file': str(default_config_path),
-                    'loader_module': str(option_types_dir / 'block_option_loader.py'),
                     'config_params_override': {'antibiotic': 'A', 'duration': 5},
                 }
             ]
         }
         lib_config_path = lib_dir / 'test_lib.yaml'
-        lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
-        
-        # Load library
+        _write_yaml(path=lib_config_path, data=lib_config)
+
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib, resolved = OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
-        
-        # Verify
+        lib, resolved = OptionLibraryLoader.load_library(
+            library_config_path=str(lib_config_path),
+            env=env,
+        )
+
         assert lib.name == 'test_lib'
         assert len(lib) == 1
         assert 'A_5' in lib.options
         assert resolved['library_name'] == 'test_lib'
         assert len(resolved['options']) == 1
+
+    def test_load_library_from_yaml_canonical_alternation(self, tmp_path):
+        """Test canonical alternation option loads via built-in loader mapping."""
+        lib_dir = tmp_path / 'option_libraries'
+        lib_dir.mkdir()
+
+        default_config = {'sequence': ['A', 'B', 'A']}
+        default_config_path = tmp_path / 'alternation_option_default_config.yaml'
+        _write_yaml(path=default_config_path, data=default_config)
+
+        lib_config = {
+            'library_name': 'test_alternation_lib',
+            'options': [
+                {
+                    'option_name': 'ALT_A_B',
+                    'option_type': 'alternation',
+                    'option_subconfig_file': str(default_config_path),
+                }
+            ]
+        }
+        lib_config_path = lib_dir / 'test_alternation_lib.yaml'
+        _write_yaml(path=lib_config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib, resolved = OptionLibraryLoader.load_library(
+            library_config_path=str(lib_config_path),
+            env=env,
+        )
+
+        assert len(lib) == 1
+        assert 'ALT_A_B' in lib.options
+        assert lib['ALT_A_B'].k == 3
+        assert resolved['options'][0]['option_type'] == 'alternation'
+        assert resolved['options'][0]['merged_config']['sequence'] == ['A', 'B', 'A']
+
+    def test_load_library_from_yaml_canonical_heuristic(self, tmp_path):
+        """Test canonical heuristic option loads via built-in loader mapping."""
+        lib_dir = tmp_path / 'option_libraries'
+        lib_dir.mkdir()
+
+        default_config = {
+            'duration': 7,
+            'action_thresholds': {
+                'prescribe_A': 0.5,
+                'prescribe_B': 0.5,
+                'no_treatment': 0.0,
+            },
+            'uncertainty_threshold': 2.0,
+        }
+        default_config_path = tmp_path / 'heuristic_option_default_config.yaml'
+        _write_yaml(path=default_config_path, data=default_config)
+
+        lib_config = {
+            'library_name': 'test_heuristic_lib',
+            'options': [
+                {
+                    'option_name': 'HEURISTIC_BASE',
+                    'option_type': 'heuristic',
+                    'option_subconfig_file': str(default_config_path),
+                }
+            ]
+        }
+        lib_config_path = lib_dir / 'test_heuristic_lib.yaml'
+        _write_yaml(path=lib_config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib, resolved = OptionLibraryLoader.load_library(
+            library_config_path=str(lib_config_path),
+            env=env,
+        )
+
+        assert len(lib) == 1
+        assert 'HEURISTIC_BASE' in lib.options
+        assert lib['HEURISTIC_BASE'].k == 7
+        assert resolved['options'][0]['option_type'] == 'heuristic'
+        assert resolved['options'][0]['merged_config']['duration'] == 7
 
     def test_load_library_missing_file(self):
         """Test loading from nonexistent file."""
@@ -161,24 +165,13 @@ class TestOptionLibraryLoaderMultipleOptions:
 
     def test_load_multiple_options(self, tmp_path):
         """Test loading library with multiple options."""
-        # Setup directories
         lib_dir = tmp_path / 'option_libraries'
         lib_dir.mkdir()
-        
-        option_types_dir = tmp_path / 'option_types' / 'block'
-        option_types_dir.mkdir(parents=True)
-        
-        # Create loader module
-        create_loader_module(option_types_dir, 'block')
-        
-        # Create default config
+
         default_config = {'antibiotic': 'A', 'duration': 5}
-        default_config_path = option_types_dir / 'block_option_default_config.yaml'
-        default_config_path.write_text(yaml.dump(default_config), encoding='utf-8')
-        
-        loader_path = option_types_dir / 'block_option_loader.py'
-        
-        # Create library meta-config with 3 options using ABSOLUTE paths
+        default_config_path = tmp_path / 'block_option_default_config.yaml'
+        _write_yaml(path=default_config_path, data=default_config)
+
         lib_config = {
             'library_name': 'test_lib',
             'options': [
@@ -186,24 +179,89 @@ class TestOptionLibraryLoaderMultipleOptions:
                     'option_name': f'OPT_{i}',
                     'option_type': 'block',
                     'option_subconfig_file': str(default_config_path),
-                    'loader_module': str(loader_path),
                     'config_params_override': {'antibiotic': 'A', 'duration': i*5},
                 }
                 for i in range(1, 4)
             ]
         }
         lib_config_path = lib_dir / 'test_lib.yaml'
-        lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
-        
-        # Load library
+        _write_yaml(path=lib_config_path, data=lib_config)
+
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib, resolved = OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
-        
-        # Verify
+        lib, _ = OptionLibraryLoader.load_library(
+            library_config_path=str(lib_config_path),
+            env=env,
+        )
+
         assert len(lib) == 3
         assert lib['OPT_1'].k == 5
         assert lib['OPT_2'].k == 10
         assert lib['OPT_3'].k == 15
+
+    def test_load_custom_option_via_plugin_framework_relative_module_path(self, tmp_path):
+        """Test custom option routing through plugin loader with relative module path."""
+        lib_dir = tmp_path / 'option_libraries'
+        plugin_dir = tmp_path / 'plugins'
+        lib_dir.mkdir()
+        plugin_dir.mkdir()
+
+        subconfig_path = tmp_path / 'custom_option_default.yaml'
+        _write_yaml(path=subconfig_path, data={'duration': 4, 'constant_action': 'A'})
+
+        plugin_module_path = plugin_dir / 'custom_option_loader.py'
+        _write_text(
+            path=plugin_module_path,
+            content=(
+                "import numpy as np\n"
+                "from abx_amr_simulator.hrl.base_option import OptionBase\n\n"
+                "class TestCustomOption(OptionBase):\n"
+                "    REQUIRES_OBSERVATION_ATTRIBUTES = []\n"
+                "    REQUIRES_AMR_LEVELS = False\n"
+                "    PROVIDES_TERMINATION_CONDITION = False\n\n"
+                "    def __init__(self, name, duration, constant_action):\n"
+                "        super().__init__(name=name, k=duration)\n"
+                "        self.constant_action = constant_action\n\n"
+                "    def decide(self, env_state):\n"
+                "        return np.full(shape=env_state['num_patients'], fill_value=self.constant_action, dtype=object)\n\n"
+                "    def get_referenced_antibiotics(self):\n"
+                "        return [self.constant_action]\n\n"
+                "def load_custom_option(config):\n"
+                "    return TestCustomOption(\n"
+                "        name=config['option_name'],\n"
+                "        duration=config['duration'],\n"
+                "        constant_action=config['constant_action'],\n"
+                "    )\n"
+            ),
+        )
+
+        lib_config = {
+            'library_name': 'custom_lib',
+            'options': [
+                {
+                    'option_name': 'CUSTOM_A_4',
+                    'option_type': 'custom',
+                    'option_subconfig_file': '../custom_option_default.yaml',
+                    'plugin': {
+                        'loader_module': '../plugins/custom_option_loader.py',
+                        'loader_function': 'load_custom_option',
+                    },
+                }
+            ],
+        }
+        lib_config_path = lib_dir / 'custom_lib.yaml'
+        _write_yaml(path=lib_config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
+        lib, resolved = OptionLibraryLoader.load_library(
+            library_config_path=str(lib_config_path),
+            env=env,
+        )
+
+        assert len(lib) == 1
+        assert 'CUSTOM_A_4' in lib.options
+        assert lib['CUSTOM_A_4'].k == 4
+        assert resolved['options'][0]['option_type'] == 'custom'
+        assert resolved['options'][0]['merged_config']['duration'] == 4
 
 
 class TestOptionLibraryLoaderErrors:
@@ -224,7 +282,7 @@ class TestOptionLibraryLoaderErrors:
             ]
         }
         lib_config_path = lib_dir / 'test_lib.yaml'
-        lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
+        _write_yaml(path=lib_config_path, data=lib_config)
         
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(RuntimeError) as exc_info:
@@ -244,54 +302,168 @@ class TestOptionLibraryLoaderErrors:
                     'option_name': 'OPT_1',
                     'option_type': 'block',
                     'option_subconfig_file': 'nonexistent/config.yaml',
-                    'loader_module': 'nonexistent/loader.py',
                 }
             ]
         }
         lib_config_path = lib_dir / 'test_lib.yaml'
-        lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
+        _write_yaml(path=lib_config_path, data=lib_config)
         
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(RuntimeError):
             OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
 
-    def test_loader_missing_function(self, tmp_path):
-        """Test error when loader module missing function."""
-        lib_dir = tmp_path / 'option_libraries'
-        lib_dir.mkdir()
-        
-        option_types_dir = tmp_path / 'option_types' / 'block'
-        option_types_dir.mkdir(parents=True)
-        
-        # Create loader module without the required function
-        loader_code = "def other_function(): pass"
-        loader_path = option_types_dir / 'block_option_loader.py'
-        loader_path.write_text(loader_code, encoding='utf-8')
-        
-        # Create default config
-        default_config_path = option_types_dir / 'block_option_default_config.yaml'
-        default_config_path.write_text(yaml.dump({}), encoding='utf-8')
-        
-        # Create library config using ABSOLUTE paths
+    def test_unsupported_option_type_fails_loudly(self, tmp_path):
+        subconfig_path = tmp_path / 'x.yaml'
+        _write_yaml(path=subconfig_path, data={'antibiotic': 'A', 'duration': 5})
+
         lib_config = {
             'library_name': 'test_lib',
             'options': [
                 {
-                    'option_name': 'OPT_1',
-                    'option_type': 'block',
-                    'option_subconfig_file': str(default_config_path),
-                    'loader_module': str(loader_path),
+                    'option_name': 'BAD',
+                    'option_type': 'Block',
+                    'option_subconfig_file': str(subconfig_path),
                 }
             ]
         }
-        lib_config_path = lib_dir / 'test_lib.yaml'
-        lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
-        
-        env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        with pytest.raises(RuntimeError) as exc_info:
-            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
-        
-        assert 'load_block_option' in str(exc_info.value)
+        config_path = tmp_path / 'lib.yaml'
+        _write_yaml(path=config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A'])
+        with pytest.raises(RuntimeError, match="unsupported option_type 'Block'.*Allowed values are"):
+            OptionLibraryLoader.load_library(
+                library_config_path=str(config_path),
+                env=env,
+            )
+
+    def test_canonical_with_plugin_fields_fails_loudly(self, tmp_path):
+        subconfig_path = tmp_path / 'x.yaml'
+        _write_yaml(path=subconfig_path, data={'antibiotic': 'A', 'duration': 5})
+
+        lib_config = {
+            'library_name': 'test_lib',
+            'options': [
+                {
+                    'option_name': 'BAD',
+                    'option_type': 'block',
+                    'option_subconfig_file': str(subconfig_path),
+                    'plugin': {
+                        'loader_module': 'x.py',
+                        'loader_function': 'load_custom_option',
+                    },
+                }
+            ]
+        }
+        config_path = tmp_path / 'lib.yaml'
+        _write_yaml(path=config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A'])
+        with pytest.raises(RuntimeError, match="canonical option_type 'block'.*must not include plugin"):
+            OptionLibraryLoader.load_library(
+                library_config_path=str(config_path),
+                env=env,
+            )
+
+    @pytest.mark.parametrize('missing_key', ['loader_module', 'loader_function'])
+    def test_custom_missing_plugin_fields_fail_loudly(self, tmp_path, missing_key):
+        subconfig_path = tmp_path / 'x.yaml'
+        _write_yaml(path=subconfig_path, data={'duration': 5})
+
+        plugin_config = {
+            'loader_module': 'x.py',
+            'loader_function': 'load_custom_option',
+        }
+        plugin_config.pop(missing_key)
+
+        lib_config = {
+            'library_name': 'test_lib',
+            'options': [
+                {
+                    'option_name': 'BAD_CUSTOM',
+                    'option_type': 'custom',
+                    'option_subconfig_file': str(subconfig_path),
+                    'plugin': plugin_config,
+                }
+            ]
+        }
+        config_path = tmp_path / 'lib.yaml'
+        _write_yaml(path=config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A'])
+        with pytest.raises(RuntimeError, match='missing required plugin fields'):
+            OptionLibraryLoader.load_library(
+                library_config_path=str(config_path),
+                env=env,
+            )
+
+    @pytest.mark.parametrize('legacy_key', ['loader_module', 'loader_function'])
+    def test_legacy_top_level_loader_keys_rejected(self, tmp_path, legacy_key):
+        subconfig_path = tmp_path / 'x.yaml'
+        _write_yaml(path=subconfig_path, data={'antibiotic': 'A', 'duration': 5})
+
+        option_spec = {
+            'option_name': 'BAD',
+            'option_type': 'block',
+            'option_subconfig_file': str(subconfig_path),
+            legacy_key: 'legacy_value',
+        }
+        lib_config = {'library_name': 'test_lib', 'options': [option_spec]}
+        config_path = tmp_path / 'lib.yaml'
+        _write_yaml(path=config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A'])
+        with pytest.raises(RuntimeError, match='legacy top-level loader keys') as exc_info:
+            OptionLibraryLoader.load_library(
+                library_config_path=str(config_path),
+                env=env,
+            )
+
+        error_message = str(exc_info.value)
+        assert "Migration required" in error_message
+        assert "option_type='custom'" in error_message
+        assert 'plugin.loader_module + plugin.loader_function' in error_message
+
+    def test_custom_plugin_loader_wrong_return_type_fails_loudly(self, tmp_path):
+        lib_dir = tmp_path / 'option_libraries'
+        plugin_dir = tmp_path / 'plugins'
+        lib_dir.mkdir()
+        plugin_dir.mkdir()
+
+        subconfig_path = tmp_path / 'custom_option_default.yaml'
+        _write_yaml(path=subconfig_path, data={'duration': 3})
+
+        plugin_module_path = plugin_dir / 'bad_custom_option_loader.py'
+        _write_text(
+            path=plugin_module_path,
+            content=(
+                "def load_custom_option(config):\n"
+                "    return {'not': 'an option'}\n"
+            ),
+        )
+
+        lib_config = {
+            'library_name': 'bad_custom_lib',
+            'options': [
+                {
+                    'option_name': 'BAD_CUSTOM',
+                    'option_type': 'custom',
+                    'option_subconfig_file': '../custom_option_default.yaml',
+                    'plugin': {
+                        'loader_module': '../plugins/bad_custom_option_loader.py',
+                        'loader_function': 'load_custom_option',
+                    },
+                }
+            ],
+        }
+        config_path = lib_dir / 'bad_custom_lib.yaml'
+        _write_yaml(path=config_path, data=lib_config)
+
+        env = create_mock_environment(antibiotic_names=['A'])
+        with pytest.raises(RuntimeError, match='Plugin loader returned invalid type'):
+            OptionLibraryLoader.load_library(
+                library_config_path=str(config_path),
+                env=env,
+            )
 
 
 class TestOptionLibraryLoaderConfigMerge:
@@ -301,22 +473,15 @@ class TestOptionLibraryLoaderConfigMerge:
         """Test that overrides merge with defaults."""
         lib_dir = tmp_path / 'option_libraries'
         lib_dir.mkdir()
-        
-        option_types_dir = tmp_path / 'option_types' / 'block'
-        option_types_dir.mkdir(parents=True)
-        
-        create_loader_module(option_types_dir, 'block')
-        
-        # Create default config with multiple keys
+
         default_config = {
             'antibiotic': 'A',
             'duration': 5,
             'extra_param': 'default_value'
         }
-        default_config_path = option_types_dir / 'block_option_default_config.yaml'
-        default_config_path.write_text(yaml.dump(default_config), encoding='utf-8')
-        
-        # Create library config with partial override using ABSOLUTE paths
+        default_config_path = tmp_path / 'block_option_default_config.yaml'
+        _write_yaml(path=default_config_path, data=default_config)
+
         lib_config = {
             'library_name': 'test_lib',
             'options': [
@@ -324,19 +489,19 @@ class TestOptionLibraryLoaderConfigMerge:
                     'option_name': 'OPT_1',
                     'option_type': 'block',
                     'option_subconfig_file': str(default_config_path),
-                    'loader_module': str(option_types_dir / 'block_option_loader.py'),
                     'config_params_override': {'duration': 10},  # Only override duration
                 }
             ]
         }
         lib_config_path = lib_dir / 'test_lib.yaml'
-        lib_config_path.write_text(yaml.dump(lib_config), encoding='utf-8')
-        
-        # Load and verify
+        _write_yaml(path=lib_config_path, data=lib_config)
+
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib, resolved = OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
-        
-        # Check resolved config shows the merge
+        _, resolved = OptionLibraryLoader.load_library(
+            library_config_path=str(lib_config_path),
+            env=env,
+        )
+
         opt_resolved = resolved['options'][0]
         assert opt_resolved['merged_config']['antibiotic'] == 'A'  # From default
         assert opt_resolved['merged_config']['duration'] == 10  # From override

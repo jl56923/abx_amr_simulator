@@ -223,7 +223,7 @@ python -m abx_amr_simulator.analysis.evaluative_plots \
 
 Results with aggregation by seed are saved to `analysis_output/lambda_sweep_individual_clinical_only/evaluation/ensemble/` with ensemble statistics across seeds. (Note that the timestamp is excluded; this differs from what happens if you run abx_amr_simulator.analysis.evaluative_plots on a single experiment run, where the output will be saved in `analysis_output/lambda_sweep_individual_clinical_only_<TIMESTAMP>/evaluation/plots/`)
 
-**Want more detailed Python analysis?** For most users, the CLI analysis tools provide everything needed to understand the lambda trade-off. For advanced programmatic analysis, see Tutorial 12 (Component Subclassing).
+**Want more detailed Python analysis?** For most users, the CLI analysis tools provide everything needed to understand the lambda trade-off. For advanced programmatic analysis, see Tutorial 11 (Component Subclassing).
 
 ---
 
@@ -295,6 +295,20 @@ python -m abx_amr_simulator.training.train \
 
 **What changed**: The resistance increases much more quickly in response to prescriptions. The agent will see resistance building and may adjust its strategy accordingly.
 
+### Crossresistance Worked Examples (Canonical Format)
+
+Before the multi-antibiotic examples below, keep these rules in mind for `crossresistance_matrix`:
+
+- Specify only **off-diagonal** entries (A -> B, B -> A, etc.)
+- Do **not** specify self-entries like `A -> A` or `B -> B` (these are auto-set to `1.0`)
+- All values must be in `[0.0, 1.0]`
+- Missing off-diagonal entries default to `0.0`
+
+Interpretation tip:
+
+- `A -> B: 0.3` means each prescription of A contributes `0.3` effective dose to B's AMR dynamics.
+- This coupling is directional. `A -> B` and `B -> A` can differ.
+
 ### Example 2: Two Antibiotics Without Crossresistance
 
 Create `configs/environment/two_abx_no_crossresistance.yaml`:
@@ -321,11 +335,9 @@ antibiotics_AMR_dict:
 
 crossresistance_matrix:                # No crossresistance: each antibiotic independent
   Antibiotic_A:
-    Antibiotic_A: 1.0
     Antibiotic_B: 0.0            # Prescribing A doesn't affect B resistance
   Antibiotic_B:
     Antibiotic_A: 0.0
-    Antibiotic_B: 1.0
 
 action_mode: multidiscrete
 include_steps_since_amr_update_in_obs: false
@@ -368,11 +380,9 @@ antibiotics_AMR_dict:
 
 crossresistance_matrix:                # Moderate crossresistance between antibiotics
   Antibiotic_A:
-    Antibiotic_A: 1.0
     Antibiotic_B: 0.3            # Prescribing A increases B resistance by 30%
   Antibiotic_B:
-    Antibiotic_A: 0.2            # Asymmetric: B → A crossresistance is weaker
-    Antibiotic_B: 1.0
+    Antibiotic_A: 0.2            # Asymmetric: B -> A crossresistance is weaker
 
 action_mode: multidiscrete
 observation_mode: partial
@@ -389,6 +399,22 @@ python -m abx_amr_simulator.training.train \
 ```
 
 **What changed**: Prescribing Antibiotic A now has side effects—it increases resistance to Antibiotic B. The agent must learn that conservative use of A might preserve B for later. This creates an interesting strategic trade-off.
+
+### Crossresistance Validation Checklist
+
+Use this checklist before launching long runs:
+
+1. Antibiotic names in `crossresistance_matrix` exactly match names in `antibiotics_AMR_dict`.
+2. No diagonal entries are present (`A -> A`, `B -> B`, etc.).
+3. Every ratio is numeric and between `0.0` and `1.0`.
+4. Directionality reflects your hypothesis (for example asymmetric `A -> B != B -> A`).
+5. Baseline comparison includes at least one `no_crossresistance` run.
+
+Quick sanity interpretation after training:
+
+1. If coupling is strong, overuse of one antibiotic should increase AMR pressure in the paired antibiotic.
+2. As coupling increases, policies should shift toward more conservative switching or balancing behavior.
+3. If behavior is unchanged between coupled and uncoupled setups, inspect reward weighting and observation settings.
 
 ---
 
@@ -755,9 +781,10 @@ python -m abx_amr_simulator.training.train \
 
 **Next steps**:
 - **Tutorial 4**: Optimize hyperparameters with Optuna
+- **Tutorial 6**: Optimize hyperparameters with Optuna
 - Compare different configurations and identify optimal settings
 - Run larger parameter sweeps to find Pareto frontiers (clinical benefit vs. AMR)
-- **Tutorial 5**: Use the Streamlit GUI for interactive experiment management
+- **Tutorial 4**: Use the Streamlit GUI for interactive experiment management
 
 ---
 

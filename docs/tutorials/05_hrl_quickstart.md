@@ -1,4 +1,4 @@
-# Tutorial 6: HRL Quick Start
+# Tutorial 5: HRL Quick Start
 
 **Goal**: Learn to train hierarchical reinforcement learning (HRL) agents using deterministic option libraries.
 
@@ -81,9 +81,10 @@ cat options/option_libraries/default_deterministic.yaml
 **Key fields in each option:**
 - `option_name`: Unique identifier (e.g., `A_10`)
 - `option_type`: Type of option (e.g., `block`, `alternation`, `heuristic`)
-- `loader_module`: Path to Python module that implements the option
 - `option_subconfig_file`: Path to config file with option parameters
 - `config_params_override`: Custom parameters for this option instance
+
+For canonical built-in options (`block`, `alternation`, `heuristic`), no loader keys are needed. Custom options use `option_type: custom` plus a nested `plugin:` block.
 
 ---
 
@@ -221,7 +222,7 @@ Option selection counts: {0: 45, 3: 32, 7: 18, ...}  ← Which options were used
 
 ## Step 8: Customize Your Option Library
 
-To create custom options, see [Tutorial 07: Options Library Setup](07_options_library_setup.md).
+To create custom options, see [Tutorial 9: Options Library Setup](09_options_library_setup.md).
 
 **Quick customization examples:**
 
@@ -236,7 +237,6 @@ options:
   - option_name: "A_20"  # New longer duration
     option_type: "block"
     option_subconfig_file: "../option_types/block/block_option_default_config.yaml"
-    loader_module: "../option_types/block/block_option_loader.py"
     config_params_override:
       antibiotic: "A"
       duration: 20
@@ -248,7 +248,6 @@ options:
   - option_name: "ALT_ABAB"  # New alternation pattern
     option_type: "alternation"
     option_subconfig_file: "../option_types/alternation/alternation_option_default_config.yaml"
-    loader_module: "../option_types/alternation/alternation_option_loader.py"
     config_params_override:
       sequence:
         - "A"
@@ -283,7 +282,7 @@ python -m abx_amr_simulator.training.train \
 - Better for partially observable environments (e.g., noisy AMR observations)
 - Longer training time due to recurrent network overhead
 
-See [Tutorial 09: HRL RPPO Manager](09_hrl_rppo_manager.md) for RPPO-specific configuration and troubleshooting.
+See [Tutorial 8: HRL RPPO Manager](08_hrl_rppo_manager.md) for RPPO-specific configuration and troubleshooting.
 
 ---
 
@@ -295,15 +294,14 @@ See [Tutorial 09: HRL RPPO Manager](09_hrl_rppo_manager.md) for RPPO-specific co
 
 **Solution**: Verify `options_folder_location` in umbrella config and check that `options/option_libraries/default_deterministic.yaml` exists.
 
-### "Option loader module not found"
+### "Option schema error" or "legacy loader keys are not supported"
 
-**Cause**: `loader_module` path in option library is incorrect.
+**Cause**: The option library still uses the old flat loader-key schema, or a `custom` option has an invalid nested `plugin:` block.
 
-**Solution**: Verify paths in option library YAML are relative to the library file itself. Example:
-```yaml
-loader_module: "../option_types/block/block_option_loader.py"  # Correct
-loader_module: "option_types/block/block_option_loader.py"     # Incorrect (missing ../)
-```
+**Solution**:
+- Canonical options (`block`, `alternation`, `heuristic`) should not include loader keys.
+- Custom options must use `option_type: custom` plus nested `plugin.loader_module` and `plugin.loader_function`.
+- Relative custom plugin paths are resolved from the option library YAML file.
 
 ### Manager selects same option repeatedly
 
@@ -329,9 +327,9 @@ loader_module: "option_types/block/block_option_loader.py"     # Incorrect (miss
 ✅ You've trained your first HRL agent!
 
 **Next tutorials**:
-- **Tutorial 07**: [Options Library Setup](07_options_library_setup.md) — Create custom option libraries with heuristic options
-- **Tutorial 08**: [HRL Diagnostics](08_hrl_diagnostics.md) — Analyze option selection patterns and visualize manager behavior
-- **Tutorial 09**: [HRL RPPO Manager](09_hrl_rppo_manager.md) — Configure recurrent manager policies for partial observability
+- **Tutorial 9**: [Options Library Setup](09_options_library_setup.md) — Create custom option libraries with canonical and custom options
+- **Tutorial 7**: [HRL Diagnostics](07_hrl_diagnostics.md) — Analyze option selection patterns and visualize manager behavior
+- **Tutorial 8**: [HRL RPPO Manager](08_hrl_rppo_manager.md) — Configure recurrent manager policies for partial observability
 
 ---
 

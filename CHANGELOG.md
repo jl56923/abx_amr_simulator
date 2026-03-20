@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Standardized plugin seam for core simulator subcomponents using config-driven loader modules:
+  - New `utils/plugin_loader.py` with shared `load_plugin_component()` utility for module resolution (import path or filesystem path), loader function lookup, invocation, and fail-loud type validation.
+  - Plugin branches added to `create_patient_generator()` and `create_reward_calculator()`.
+  - New `create_amr_dynamics()` factory with plugin support and canonical AMR dynamics construction from merged config.
+  - `ABXAMREnv` now supports optional `amr_dynamics_instances` injection for prebuilt AMR dynamics models.
+  - `PatientGeneratorBase`, `RewardCalculatorBase`, and `AMRDynamicsBase` publicly exported from `abx_amr_simulator.core` for subclass/plugin authoring.
+  - New tutorial `docs/tutorials/plugin_seam_guide.md` and integration fixtures/tests covering custom patient generator, reward calculator, and AMR dynamics plugin families.
 - AMR dynamics abstraction: `AMRDynamicsBase` abstract base class enabling custom resistance models
   - `AMRDynamicsBase` ABC with `step()` and `reset()` abstract methods for extensibility
   - `AMR_LeakyBalloon` now inherits from `AMRDynamicsBase` with enhanced `reset()` input validation
@@ -21,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Unit tests covering DynamicsModel, TrajectoryReplayEnv, and MBPOAgent core behaviors
 
 ### Changed
+- **BREAKING**: HRL options now use the standardized canonical/custom loading contract from JIRA-7
+  - Valid `option_type` values are now exactly `block`, `alternation`, `heuristic`, and `custom`.
+  - Canonical options (`block`, `alternation`, `heuristic`) now use package-owned loading only and must not include plugin loader fields.
+  - Custom options must now use `option_type: custom` plus nested `plugin.loader_module` and `plugin.loader_function` fields.
+  - All option families still load merged config from `option_subconfig_file` plus optional `config_params_override`.
+  - Legacy flat top-level option `loader_module` / `loader_function` keys are no longer supported and now fail loudly with migration guidance.
+- AMR dynamics canonical construction is now centralized in `create_amr_dynamics()` (factory layer), with `ABXAMREnv` retaining backward-compatible fallback behavior when injected instances are not provided.
+- Recurrent LSTM probe summary aggregation now guards against low-variance target artifacts:
+  - Per-antibiotic probe payloads now include `test_target_variance`, `r2_valid_for_aggregate`, and `r2_drop_reason`.
+  - Extremely low-variance target slices are excluded from R² aggregation (MAE remains included), preventing pathological negative R² outliers from dominating `lstm_probe_summary.json`.
+  - `lstm_probe_summary.json` now includes explicit count metadata (`num_r2_values_used`, `num_r2_values_dropped_low_variance`, `num_mae_values_used`) and robust R² fields (`mean_test_r2_median`, `iqr_test_r2`).
 - **BREAKING**: HRL options refactored to use string-based antibiotic protocol
   - `OptionBase.decide()` now returns `np.ndarray` with dtype=object containing antibiotic name strings (e.g., 'A', 'B', 'no_treatment') instead of integer action indices
   - `OptionsWrapper` now handles conversion from antibiotic name strings to environment action indices

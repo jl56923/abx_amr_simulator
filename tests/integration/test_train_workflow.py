@@ -208,4 +208,16 @@ def test_hrl_training_saves_option_library_config(
 
     results_dir = tmp_path / "results"
     run_dir = _find_run_dir(results_dir=results_dir, run_name=run_name)
-    assert (run_dir / "full_options_library.yaml").exists()
+    full_options_library_path = run_dir / "full_options_library.yaml"
+    assert full_options_library_path.exists()
+
+    full_options_library = yaml.safe_load(full_options_library_path.read_text(encoding="utf-8"))
+    assert isinstance(full_options_library, dict)
+    options = full_options_library.get("options")
+    assert isinstance(options, list)
+    assert len(options) > 0
+
+    for option_config in options:
+        assert option_config.get("option_type") in {"block", "alternation", "heuristic", "custom"}
+        assert "loader_module" not in option_config
+        assert "loader_function" not in option_config
