@@ -1,4 +1,4 @@
-# Tutorial 4: Optimization With Optuna
+# Tutorial 6: Optimization With Optuna
 
 **Goal**: Master hyperparameter tuning with Optuna, including study management, storage backends, parallel optimization, and troubleshooting common issues.
 

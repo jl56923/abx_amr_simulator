@@ -33,7 +33,7 @@ The `abx_amr_simulator` package is built in Python, but the primary way you'll i
 
 This design prioritizes **reproducibility and modularity**: swap out components (environment, reward function, patient population) by pointing to different config files, without touching code.
 
-*When do I write Python code?* See Tutorial 4.
+*When do I write Python code?* See Tutorial 11.
 
 ### Setup and Training
 

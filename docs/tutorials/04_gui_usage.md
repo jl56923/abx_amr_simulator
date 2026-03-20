@@ -1,4 +1,4 @@
-# Tutorial 5: GUI Experiment Runner and Viewer
+# Tutorial 4: GUI Experiment Runner and Viewer
 
 **Goal**: Learn to use the Streamlit GUI applications for lightweight experiment configuration, launching training runs, and browsing results.
 
@@ -114,8 +114,8 @@ Click **"Start Training Run"** to:
 **Continue Training**: Check the sidebar option to resume from a prior experiment (adds more episodes to an existing run).
 
 ### What the GUI Does NOT Support
-- **HRL workflows**: Use [Tutorial 06](06_hrl_quickstart.md) for option-based training
-- **Optuna optimization**: Use [Tutorial 04](04_optimization.md) for hyperparameter tuning
+- **HRL workflows**: Use [Tutorial 5](05_hrl_quickstart.md) for option-based training
+- **Optuna optimization**: Use [Tutorial 6](06_optimization.md) for hyperparameter tuning
 - **Advanced parameter overrides**: Use CLI with `-p` flags for complex customization
 - **Batch sweeps**: Use CLI workflows for scripted parameter sweeps
 
@@ -240,8 +240,8 @@ This starts both apps and opens them in separate browser tabs (runner on port 85
 ✅ You've learned to use the GUI for lightweight workflows!
 
 **Next tutorials**:
-- **Tutorial 06**: [HRL Quick Start](06_hrl_quickstart.md) — Train hierarchical RL agents with option libraries (CLI-only)
-- **Tutorial 04**: [Optimization](04_optimization.md) — Hyperparameter tuning with Optuna (CLI-only)
+- **Tutorial 5**: [HRL Quick Start](05_hrl_quickstart.md) — Train hierarchical RL agents with option libraries (CLI-only)
+- **Tutorial 6**: [Optimization](06_optimization.md) — Hyperparameter tuning with Optuna (CLI-only)
 - **Tutorial 10**: [Advanced Heuristic Worker Subclassing](10_advanced_heuristic_worker_subclassing.md) — Extend heuristic options (CLI-only)
 
 ---

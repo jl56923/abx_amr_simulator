@@ -1,4 +1,4 @@
-# Advanced Heuristic Worker Subclassing
+# Tutorial 10: Advanced Heuristic Worker Subclassing
 
 ## Overview
 

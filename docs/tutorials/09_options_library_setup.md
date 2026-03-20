@@ -1,4 +1,4 @@
-# Tutorial 09: Options Library Setup
+# Tutorial 9: Options Library Setup
 
 **Goal**: Create HRL option libraries using the current canonical/custom option contract.
 
