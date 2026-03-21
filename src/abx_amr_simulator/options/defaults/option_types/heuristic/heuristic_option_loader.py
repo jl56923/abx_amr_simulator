@@ -153,7 +153,7 @@ class HeuristicWorker(OptionBase):
             - AE = normalized_adverse_effect_penalty
             - r = recovery_without_treatment_prob (observed)
         
-        NOTE: Does NOT include epsilon penalty to avoid leaking counterfactual AMR dynamics.
+        NOTE: Does NOT include a marginal-AMR shaping penalty to avoid leaking counterfactual AMR dynamics.
         
         Args:
             patient: Dict with observed patient attributes

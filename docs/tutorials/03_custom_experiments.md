@@ -130,7 +130,6 @@ abx_clinical_reward_penalties_info_dict:
       adverse_effect_penalty: -2.0
       adverse_effect_probability: 0.1
 
-epsilon: 0.05  # Shaping parameter for delta AMR info
 seed: 42
 EOF
 
@@ -147,7 +146,6 @@ abx_clinical_reward_penalties_info_dict:
       adverse_effect_penalty: -2.0
       adverse_effect_probability: 0.1
 
-epsilon: 0.05  # Shaping parameter for delta AMR info
 seed: 42
 EOF
 
@@ -164,7 +162,6 @@ abx_clinical_reward_penalties_info_dict:
       adverse_effect_penalty: -2.0
       adverse_effect_probability: 0.1
 
-epsilon: 0.05  # Shaping parameter for delta AMR info
 seed: 42
 EOF
 ```

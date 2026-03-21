@@ -13,7 +13,6 @@ from abx_amr_simulator.core import ABXAMREnv, PatientGenerator, RewardCalculator
 def _create_reward_calculator(
     antibiotic_names: List[str],
     lambda_weight: float = 0.0,
-    epsilon: float = 0.0,
 ) -> RewardCalculator:
     config = {
         "abx_clinical_reward_penalties_info_dict": {
@@ -30,7 +29,6 @@ def _create_reward_calculator(
             },
         },
         "lambda_weight": lambda_weight,
-        "epsilon": epsilon,
         "seed": 123,
     }
     return RewardCalculator(config=config)
@@ -104,7 +102,6 @@ def test_reward_pipeline_matches_expected_deterministic() -> None:
     reward_calculator = _create_reward_calculator(
         antibiotic_names=antibiotic_names,
         lambda_weight=0.0,
-        epsilon=0.0,
     )
     patient_generator = _create_constant_patient_generator(
         visible_patient_attributes=["prob_infected"],

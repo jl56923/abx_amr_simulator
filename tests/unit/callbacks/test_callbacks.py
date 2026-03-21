@@ -83,7 +83,6 @@ def simple_env_config():
         },
         'reward_calculator_config': {
             'lambda_weight': 0.5,
-            'epsilon': 0.05,
             'abx_clinical_reward_penalties_info_dict': {
                 'clinical_benefit_reward': 10.0,
                 'clinical_benefit_probability': 0.9,

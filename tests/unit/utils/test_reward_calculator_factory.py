@@ -37,7 +37,6 @@ class TestRewardCalculatorFactory:
                     }
                 },
                 'lambda_weight': 0.5,
-                'epsilon': 0.05,
             }
             rc_config_path = tmpdir_path / "reward_calc.yaml"
             with open(rc_config_path, 'w') as f:
@@ -81,7 +80,6 @@ class TestRewardCalculatorFactory:
                     }
                 },
                 'lambda_weight': 0.1,  # Clinical-focused
-                'epsilon': 0.05,
             }
             rc_config_low_path = tmpdir_path / "rc_low.yaml"
             with open(rc_config_low_path, 'w') as f:
@@ -143,7 +141,6 @@ class TestRewardCalculatorFactory:
                     }
                 },
                 'lambda_weight': 0.5,
-                'epsilon': 0.05,
             }
             rc_config_path = tmpdir_path / "reward_calc.yaml"
             with open(rc_config_path, 'w') as f:
@@ -165,3 +162,4 @@ class TestRewardCalculatorFactory:
             
             # With seed from training config, should be injected
             assert rc.seed == 12345
+

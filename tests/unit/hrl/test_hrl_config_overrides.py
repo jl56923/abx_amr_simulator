@@ -218,7 +218,6 @@ class TestHRLConfigParameterOverrides:
             },
             "reward_calculator": {
                 "lambda_weight": 0.5,
-                "epsilon": 0.0,
             },
             "patient_generator": {
                 "prob_infected": 0.5,

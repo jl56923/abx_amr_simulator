@@ -167,31 +167,6 @@ def test_flatness_parameter_affects_sigmoid_slope():
     assert delta_v_steep > delta_v_flat
 
 
-def test_delta_volume_counterfactual():
-    # This test verifies that the get_delta_volume_for_counterfactual_num_doses_vs_one_less()
-    # method correctly computes the marginal volume change when increasing doses by one.
-    # It checks that the delta is a valid float and non-negative.
-    """Test delta volume computation for counterfactual doses."""
-    balloon = AMR_LeakyBalloon(
-        leak=0.1,
-        flatness_parameter=1.0,
-        permanent_residual_volume=0.0,
-        initial_amr_level=0.0
-    )
-    
-    delta = balloon.get_delta_volume_for_counterfactual_num_doses_vs_one_less(num_counterfactual_doses=5)
-    assert isinstance(delta, float)
-    assert delta >= 0.0  # Delta should be non-negative
-
-
-def test_delta_volume_zero_doses():
-    # This test is an edge case check: when the counterfactual doses is 0, the delta
-    # between 0 doses and -1 doses should be 0 (since -1 would be invalid/clamped).
-    """Test that delta volume is 0 when counterfactual doses is 0."""
-    balloon = AMR_LeakyBalloon()
-    delta = balloon.get_delta_volume_for_counterfactual_num_doses_vs_one_less(0)
-    assert delta == 0.0
-
 def test_copy_creates_independent_instance():
     """Test that copy() creates an independent copy with same state but separate dynamics.
     
@@ -243,42 +218,6 @@ def test_copy_creates_independent_instance():
     
     # Copy should have higher volume (added doses)
     assert copy_volume_after_step1 > original_initial_volume
-
-
-def test_copy_with_reset_counterfactual():
-    """Test the counterfactual usage pattern: copy, reset, then compute delta.
-    
-    This mimics the environment usage where we:
-    1. Copy the balloon model
-    2. Reset it to visible AMR level
-    3. Compute delta for a hypothetical number of doses
-    4. Do NOT modify the original
-    """
-    # Create original balloon with some pressure
-    original = AMR_LeakyBalloon(
-        leak=0.2,
-        flatness_parameter=1.0,
-        permanent_residual_volume=0.0,
-        initial_amr_level=0.5
-    )
-    original_initial_volume = original.get_volume()
-    
-    # Simulate usage pattern: copy, reset, compute delta
-    balloon_copy = original.copy()
-    balloon_copy.reset(initial_amr_level=0.3)  # Reset to visible level
-    
-    # Compute counterfactual delta (how much volume would change with 3 doses vs 2)
-    delta_for_3_vs_2_doses = balloon_copy.get_delta_volume_for_counterfactual_num_doses_vs_one_less(3)
-    
-    # Verify delta is positive (more doses = more volume)
-    assert delta_for_3_vs_2_doses > 0.0
-    
-    # Verify original is completely unaffected
-    assert original.get_volume() == original_initial_volume
-    assert original.pressure > 0.0  # Original still has original pressure
-    
-    # Verify copy's pressure is different from original (it was reset)
-    assert balloon_copy.pressure != original.pressure
 
 
 # ============================================================================

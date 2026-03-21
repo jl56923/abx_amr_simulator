@@ -76,7 +76,6 @@ class RewardCalculator(RewardCalculatorBase):
                 },
             },
             'lambda_weight': 0.5,
-            'epsilon': 0.05,
             'seed': None,
         }
 
@@ -86,8 +85,7 @@ class RewardCalculator(RewardCalculatorBase):
         Configures the composite reward function:
             reward = lambda * community_amr_penalty + (1-lambda) * sum(individual_patient_rewards)
         
-        where individual rewards include clinical benefit, clinical failure, adverse effects,
-        and marginal AMR contribution (weighted by epsilon).
+        where individual rewards include clinical benefit, clinical failure, and adverse effects.
         
         Args:
             config (Dict): Configuration dictionary with required keys:
@@ -108,10 +106,6 @@ class RewardCalculator(RewardCalculatorBase):
                 - 'lambda_weight' (float, default 0.5): Trade-off between community visible AMR
                     burden and individual outcomes. Must be in [0, 1].
                     lambda=0 → pure individual; lambda=1 → pure community.
-                - 'epsilon' (float, default 0.05): Relative weight for marginal visible AMR contribution,
-                    interpreted as percentage of max reward/penalty magnitude. For example,
-                    epsilon=0.05 means a 5% mini-penalty relative to the clinical reward scale.
-                    Must be in (0, 0.1].
                 - 'seed' (int, optional): Random seed for reproducibility.
         
         Raises:
@@ -129,15 +123,11 @@ class RewardCalculator(RewardCalculatorBase):
         
         abx_clinical_reward_penalties_info_dict = config['abx_clinical_reward_penalties_info_dict']
         lambda_weight = config.get('lambda_weight', 0.5)
-        epsilon = config.get('epsilon', 0.05)
         seed = config.get('seed', None)
         
-        # Do value checks for: lambda_weight, epsilon
+        # Do value checks for: lambda_weight
         if not (0.0 <= lambda_weight <= 1.0):
             raise ValueError(f"lambda_weight must be in [0, 1], got {lambda_weight}")
-        # epsilon has to be positive and small:
-        if not (0.0 <= epsilon <= 0.1):
-            raise ValueError(f"epsilon must be in [0, 0.1], got {epsilon}")
         
         # Now, iterate through the abx_clinical_reward_penalties_info_dict to extract and validate the clinical benefit reward, clinical benefit probability, adverse effect penalty, and adverse effect probability for each antibiotic. Do validation checks for all four values.
         
@@ -200,7 +190,6 @@ class RewardCalculator(RewardCalculatorBase):
             
         self.abx_clinical_reward_penalties_info_dict = abx_clinical_reward_penalties_info_dict
         self.lambda_weight = lambda_weight
-        self.epsilon = epsilon
         
         # Store normalization factor (used to precompute normalized clinical rewards)
         self.max_abs_value_of_any_reward_or_penalty = max_abs_value_of_any_reward_or_penalty
@@ -241,7 +230,6 @@ class RewardCalculator(RewardCalculatorBase):
         patient_infected: bool,
         antibiotic_name: str,
         infection_sensitive_to_prescribed_abx: bool = None,
-        delta_visible_amr: float = None,
         return_clinical_benefit_adverse_event_occurrence: bool = False,
         benefit_value_multiplier: float = 1.0,
         failure_value_multiplier: float = 1.0,
@@ -262,7 +250,6 @@ class RewardCalculator(RewardCalculatorBase):
             patient_infected (bool): TRUE infection status (ground truth, not observed value)
             antibiotic_name (str): Name of the antibiotic prescribed (or 'no_treatment' for no treatment)
             infection_sensitive_to_prescribed_abx (bool): TRUE sensitivity status (ground truth, not observed)
-            delta_visible_amr (float): Marginal visible AMR contribution from this prescription
             return_clinical_benefit_adverse_event_occurrence (bool): If True, return (reward, benefit, failure, adverse)
             benefit_value_multiplier (float): TRUE value - scales clinical benefit reward value (default 1.0)
             failure_value_multiplier (float): TRUE value - scales clinical failure penalty value (default 1.0)
@@ -290,12 +277,10 @@ class RewardCalculator(RewardCalculatorBase):
         
         antibiotic_is_prescribed = antibiotic_name != 'no_treatment'
         
-        # Do a validation check that if antibiotic is prescribed, infection_sensitivity and delta_amr are provided:
+        # Do a validation check that if antibiotic is prescribed, infection_sensitivity is provided:
         if antibiotic_is_prescribed:
             if infection_sensitive_to_prescribed_abx is None:
                 raise ValueError("infection_sensitive_to_prescribed_abx must be provided if an antibiotic is prescribed")
-            if delta_visible_amr is None:
-                raise ValueError("delta_visible_amr must be provided if an antibiotic is prescribed")
         
         # Scale probabilities by patient-specific multipliers (clamped to [0, 1])
         base_benefit_prob = self.abx_clinical_reward_penalties_info_dict['clinical_benefit_probability']
@@ -363,10 +348,6 @@ class RewardCalculator(RewardCalculatorBase):
                     if clinical_failure_occurred:
                         reward += self.abx_clinical_reward_penalties_info_dict['normalized_clinical_failure_penalty'] * failure_value_multiplier
         
-        # Marginal AMR contribution (small penalty for prescribing)
-        if antibiotic_is_prescribed:
-            reward -= self.epsilon * delta_visible_amr
-        
         if return_clinical_benefit_adverse_event_occurrence:
             return reward, clinical_benefit_occurred, clinical_failure_occurred, adverse_effects_occurred
         return reward
@@ -375,8 +356,7 @@ class RewardCalculator(RewardCalculatorBase):
         self,
         patient: Patient,
         antibiotic_name: str,
-        visible_amr_level: float,
-        delta_visible_amr: float
+        visible_amr_level: float
     ) -> float:
         """
         Calculate expected (deterministic) reward for a single patient-action pair.
@@ -407,8 +387,6 @@ class RewardCalculator(RewardCalculatorBase):
             visible_amr_level (float): Current AMR level for this antibiotic ∈ [0,1].
                 Used to compute sensitivity probability pS = 1 - visible_amr_level.
                 Ignored if antibiotic_name == 'no_treatment'.
-            delta_visible_amr (float): Marginal AMR contribution (dose) if prescribing.
-                Used in epsilon penalty term. Ignored if antibiotic_name == 'no_treatment'.
         
         Returns:
             float: Expected reward value. No randomness involved.
@@ -419,7 +397,7 @@ class RewardCalculator(RewardCalculatorBase):
         Expected Reward Formulas:
         
         **Prescribe antibiotic (antibiotic_name != 'no_treatment'):**
-            E[reward] = pI×pS×pB×RB×vB + pI×(1−pS)×pF×RF×vF + pAE×AE − ε×δ
+            E[reward] = pI×pS×pB×RB×vB + pI×(1−pS)×pF×RF×vF + pAE×AE
             
             Where:
             - pI = patient.prob_infected
@@ -432,8 +410,6 @@ class RewardCalculator(RewardCalculatorBase):
             - vF = patient.failure_value_multiplier
             - pAE = adverse_effect_probability[antibiotic_name]
             - AE = normalized adverse_effect_penalty[antibiotic_name]
-            - ε = epsilon (AMR penalty weight)
-            - δ = delta_amr (marginal AMR contribution)
         
         **No treatment (antibiotic_name == 'no_treatment'):**
             E[reward] = pI×r×RB×vB + pI×(1−r)×pF×RF×vF
@@ -441,7 +417,6 @@ class RewardCalculator(RewardCalculatorBase):
             Where:
             - r = patient.recovery_without_treatment_prob
             - No adverse effects term (no prescription)
-            - No epsilon penalty (no AMR contribution)
         
         Example:
             >>> # Homogeneous patient population for value iteration
@@ -457,8 +432,7 @@ class RewardCalculator(RewardCalculatorBase):
             >>> expected_r = rc.calculate_expected_individual_reward(
             ...     patient=patient,
             ...     antibiotic_name='A',
-            ...     amr_level=0.3,  # 30% resistance
-            ...     delta_amr=0.02,  # Dose contribution
+            ...     visible_amr_level=0.3,  # 30% resistance
             ... )
             >>> # For validation: MC mean should match expected with large samples
             >>> mc_samples = [rc.calculate_individual_reward(...) for _ in range(50000)]
@@ -505,8 +479,6 @@ class RewardCalculator(RewardCalculatorBase):
             
             expected_reward += float(pAE) * float(ae_penalty)
 
-            # Marginal AMR penalty expectation (deterministic given delta)
-            expected_reward -= self.epsilon * float(delta_visible_amr)
         else:
             # No treatment branch: spontaneous recovery benefit and potential failure penalty
             r_spont = float(patient.recovery_without_treatment_prob)
@@ -534,7 +506,7 @@ class RewardCalculator(RewardCalculatorBase):
     
     # I actually don't need a 'calculate_expected_community_reward' method, because the community reward is deterministic given the visible_amr_levels.
     
-    def calculate_reward(self, patients: List[Patient], actions: np.ndarray, antibiotic_names: List[str], visible_amr_levels: Dict[str, float], delta_visible_amr_per_antibiotic: Dict[str, float], rng: Optional[np.random.Generator] = None) -> tuple[float, Dict]:
+    def calculate_reward(self, patients: List[Patient], actions: np.ndarray, antibiotic_names: List[str], visible_amr_levels: Dict[str, float], rng: Optional[np.random.Generator] = None) -> tuple[float, Dict]:
         """Calculate total composite reward for a timestep with multiple patients.
         
         Computes lambda-weighted combination of individual patient rewards (clinical
@@ -551,7 +523,7 @@ class RewardCalculator(RewardCalculatorBase):
             total_reward = (1-λ) × sum(individual_rewards) + λ × community_reward
         
         Where:
-            individual_reward = clinical_benefit - adverse_effect + ε × marginal_amr
+            individual_reward = clinical_benefit - adverse_effect
             community_reward = -sum(visible AMR levels across all antibiotics)
         
         Args:
@@ -564,8 +536,6 @@ class RewardCalculator(RewardCalculatorBase):
             visible_amr_levels (Dict[str, float]): Current visible AMR levels per antibiotic, ∈ [0,1].
                 These are the observed/potentially-delayed resistance estimates. Used for:
                 1. Computing community reward penalty (based on visible burden, not ground truth)
-            delta_visible_amr_per_antibiotic (Dict[str, float]): Marginal AMR contribution
-                (dose) per antibiotic for this step. Used in epsilon penalty term.
         
         Returns:
             tuple[float, Dict]: (total_reward, info_dict) where:
@@ -578,7 +548,7 @@ class RewardCalculator(RewardCalculatorBase):
         Example:
             >>> rc = RewardCalculator(config)
             >>> reward, info = rc.calculate_reward(patients, actions, antibiotic_names,
-            ...                                      visible_amr_levels, delta_visible_amr_per_antibiotic)
+            ...                                      visible_amr_levels)
             >>> print(f"Total: {reward:.2f}, Individual: {info['individual_reward']:.2f}")
         """
         # RNG resolution: enforce explicit RNG when environment-owned
@@ -648,7 +618,6 @@ class RewardCalculator(RewardCalculatorBase):
                 patient_infected=patients_actually_infected[i],
                 antibiotic_name=antibiotic_actions_str[i],
                 infection_sensitive_to_prescribed_abx=infection_sensitive_to_prescribed_abx,
-                delta_visible_amr=delta_visible_amr_per_antibiotic[antibiotic_actions_str[i]] if antibiotic_actions_str[i] != 'no_treatment' else None,
                 return_clinical_benefit_adverse_event_occurrence=True,
                 benefit_value_multiplier=float(benefit_value_multipliers[i]),
                 failure_value_multiplier=float(failure_value_multipliers[i]),
@@ -695,8 +664,7 @@ class RewardCalculator(RewardCalculatorBase):
         patients: List[Patient],
         actions: np.ndarray,
         antibiotic_names: List[str],
-        visible_amr_levels: Dict[str, float],
-        delta_visible_amr_per_antibiotic: Dict[str, float]
+        visible_amr_levels: Dict[str, float]
     ) -> float:
         """
         Calculate expected (deterministic) composite reward for multiple patients.
@@ -732,8 +700,6 @@ class RewardCalculator(RewardCalculatorBase):
                 Used for:
                 1. Computing sensitivity probabilities (pS = 1 - visible_amr_level)
                 2. Computing community reward component (based on visible burden)
-            delta_visible_amr_per_antibiotic (Dict[str, float]): Marginal AMR contributions
-                (dose) per antibiotic for this step. Used in epsilon penalty term.
         
         Returns:
             float: Expected composite reward (deterministic, no randomness).
@@ -747,7 +713,6 @@ class RewardCalculator(RewardCalculatorBase):
             ...     actions=actions,
             ...     antibiotic_names=['A', 'B'],
             ...     visible_amr_levels={'A': 0.3, 'B': 0.4},
-            ...     delta_visible_amr_per_antibiotic={'A': 0.02, 'B': 0.03},
             ... )
             >>> # For validation: MC mean should match expected with large samples
             >>> mc_rewards = []
@@ -783,16 +748,13 @@ class RewardCalculator(RewardCalculatorBase):
             abx_name = antibiotic_actions_str[i]
             if abx_name == 'no_treatment':
                 amr_level = 0.0  # ignored in no-treatment branch
-                delta = 0.0
             else:
                 amr_level = float(visible_amr_levels[abx_name])
-                delta = float(delta_visible_amr_per_antibiotic[abx_name])
                 
             r = self.calculate_expected_individual_reward(
                 patient=patient,
                 antibiotic_name=abx_name,
                 visible_amr_level=amr_level,
-                delta_visible_amr=delta,
             )
             individual_expected_rewards.append(r)
 
@@ -886,7 +848,6 @@ class RewardCalculator(RewardCalculatorBase):
         """Collect configuration dict for cloning/conversion helpers (new API)."""
         config = {
             'abx_clinical_reward_penalties_info_dict': self.abx_clinical_reward_penalties_info_dict,
-            'epsilon': self.epsilon,
             'seed': getattr(self, 'seed', None),
         }
         if include_lambda:

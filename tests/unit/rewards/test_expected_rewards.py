@@ -23,7 +23,6 @@ def build_rc(
     adverse_effect_penalty: float = -1.5,
     adverse_effect_probability: float = 0.3,
     lambda_weight: float = 0.0,
-    epsilon: float = 0.05,
 ) -> RewardCalculator:
     abx_info = {
         'clinical_benefit_reward': clinical_benefit_reward,
@@ -41,7 +40,6 @@ def build_rc(
     config = {
         'abx_clinical_reward_penalties_info_dict': abx_info,
         'lambda_weight': lambda_weight,
-        'epsilon': epsilon,
         'seed': 123,
     }
     return RewardCalculator(config=config)
@@ -132,7 +130,6 @@ def test_expected_vs_mc_prescribe_single_patient():
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=amr_levels,
-        delta_visible_amr_per_antibiotic=delta,
     )
 
     # Monte Carlo average of sampled reward
@@ -152,7 +149,6 @@ def test_expected_vs_mc_prescribe_single_patient():
             actions=actions,
             antibiotic_names=antibiotic_names,
             visible_amr_levels=amr_levels,
-            delta_visible_amr_per_antibiotic=delta,
         )
         totals.append(total)
     mc_mean = float(np.mean(totals))
@@ -189,7 +185,6 @@ def test_expected_vs_mc_no_treatment_single_patient():
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=amr_levels,
-        delta_visible_amr_per_antibiotic=delta,
     )
 
     T = 50000
@@ -207,7 +202,6 @@ def test_expected_vs_mc_no_treatment_single_patient():
             actions=actions,
             antibiotic_names=antibiotic_names,
             visible_amr_levels=amr_levels,
-            delta_visible_amr_per_antibiotic=delta,
         )
         totals.append(total)
     mc_mean = float(np.mean(totals))
@@ -240,7 +234,6 @@ def test_expected_batch_matches_sum_of_individuals():
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=amr_levels,
-        delta_visible_amr_per_antibiotic=delta,
     )
 
     # Independent Monte Carlo to verify aggregate expectation
@@ -261,7 +254,6 @@ def test_expected_batch_matches_sum_of_individuals():
             actions=actions,
             antibiotic_names=antibiotic_names,
             visible_amr_levels=amr_levels,
-            delta_visible_amr_per_antibiotic=delta,
         )
         totals.append(total)
     mc_mean = float(np.mean(totals))

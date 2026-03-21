@@ -27,7 +27,6 @@ def create_test_reward_calculator(antibiotic_names=None):
     config = {
         'abx_clinical_reward_penalties_info_dict': abx_clinical_reward_penalties_info_dict,
         'lambda_weight': 0.5,
-        'epsilon': 0.05,
     }
     return RewardCalculator(config=config)
 

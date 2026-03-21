@@ -250,19 +250,6 @@ class AMR_LeakyBalloon(AMRDynamicsBase):
         # (both computed from same visible volume via inverse sigmoid)
         return new_balloon
         
-    def get_delta_volume_for_counterfactual_num_doses_vs_one_less(self, num_counterfactual_doses):
-        """
-        Computes the change in volume if the number of doses were
-        increased by one compared to a given number.
-        
-        :param num_counterfactual_doses: Base number of doses
-        :return: Delta volume (float)
-        """
-        vol_with_doses = self._step_no_internal_state_change(num_counterfactual_doses)
-        vol_with_one_less = self._step_no_internal_state_change(num_counterfactual_doses - 1)
-        
-        return vol_with_doses - vol_with_one_less
-    
     def print_volume_response(self, dose_sequence):
         """Print the leaky balloon response to a given dose sequence."""
         

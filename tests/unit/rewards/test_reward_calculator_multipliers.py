@@ -18,8 +18,7 @@ def create_test_reward_calculator(
     clinical_failure_probability=1.0,
     adverse_effect_penalty=-2.0,
     adverse_effect_probability=1.0,
-    lambda_weight=0.5,
-    epsilon=0.01,  # Small but valid (must be > 0)
+    lambda_weight=0.5,  # Small but valid (must be > 0)
     seed=0,
 ):
     """Helper to create a RewardCalculator with simple test parameters."""
@@ -45,7 +44,6 @@ def create_test_reward_calculator(
     config = {
         'abx_clinical_reward_penalties_info_dict': abx_clinical_reward_penalties_info_dict,
         'lambda_weight': lambda_weight,
-        'epsilon': epsilon,
         'seed': seed,
     }
     return RewardCalculator(config=config)
@@ -61,7 +59,6 @@ class TestBenefitMultipliers:
             clinical_benefit_reward=10.0,
             clinical_benefit_probability=1.0,  # Guaranteed benefit
             adverse_effect_probability=0.0,
-            epsilon=0.01,  # Small epsilon
         )
         model.rng = np.random.default_rng(seed=42)
         
@@ -71,7 +68,6 @@ class TestBenefitMultipliers:
             patient_infected=True,
             antibiotic_name="A",
             infection_sensitive_to_prescribed_abx=True,
-            delta_visible_amr=0.0,  # No AMR change means no AMR penalty
             benefit_value_multiplier=1.0,
         )
         assert reward_default == 1.0
@@ -81,7 +77,6 @@ class TestBenefitMultipliers:
             patient_infected=True,
             antibiotic_name="A",
             infection_sensitive_to_prescribed_abx=True,
-            delta_visible_amr=0.0,
             benefit_value_multiplier=2.0,
         )
         assert reward_doubled == 2.0
@@ -91,7 +86,6 @@ class TestBenefitMultipliers:
             patient_infected=True,
             antibiotic_name="A",
             infection_sensitive_to_prescribed_abx=True,
-            delta_visible_amr=0.0,
             benefit_value_multiplier=0.5,
         )
         assert reward_halved == 0.5
@@ -116,7 +110,6 @@ class TestBenefitMultipliers:
                 patient_infected=True,
                 antibiotic_name="A",
                 infection_sensitive_to_prescribed_abx=True,
-                delta_visible_amr=0.0,
                 benefit_probability_multiplier=1.0,
                 return_clinical_benefit_adverse_event_occurrence=True,
             )
@@ -134,7 +127,6 @@ class TestBenefitMultipliers:
                 patient_infected=True,
                 antibiotic_name="A",
                 infection_sensitive_to_prescribed_abx=True,
-                delta_visible_amr=0.0,
                 benefit_probability_multiplier=2.0,
                 return_clinical_benefit_adverse_event_occurrence=True,
             )
@@ -152,7 +144,6 @@ class TestBenefitMultipliers:
                 patient_infected=True,
                 antibiotic_name="A",
                 infection_sensitive_to_prescribed_abx=True,
-                delta_visible_amr=0.0,
                 benefit_probability_multiplier=0.5,
                 return_clinical_benefit_adverse_event_occurrence=True,
             )
@@ -182,7 +173,6 @@ class TestFailureMultipliers:
             patient_infected=True,
             antibiotic_name="A",
             infection_sensitive_to_prescribed_abx=False,  # Resistant -> failure
-            delta_visible_amr=0.0,
             failure_value_multiplier=1.0,
         )
         assert reward_default == -1.0
@@ -192,7 +182,6 @@ class TestFailureMultipliers:
             patient_infected=True,
             antibiotic_name="A",
             infection_sensitive_to_prescribed_abx=False,
-            delta_visible_amr=0.0,
             failure_value_multiplier=2.0,
         )
         assert reward_doubled == -2.0
@@ -202,7 +191,6 @@ class TestFailureMultipliers:
             patient_infected=True,
             antibiotic_name="A",
             infection_sensitive_to_prescribed_abx=False,
-            delta_visible_amr=0.0,
             failure_value_multiplier=0.5,
         )
         assert reward_halved == -0.5
@@ -226,7 +214,6 @@ class TestFailureMultipliers:
                 patient_infected=True,
                 antibiotic_name="A",
                 infection_sensitive_to_prescribed_abx=False,  # Resistant -> check failure
-                delta_visible_amr=0.0,
                 failure_probability_multiplier=1.0,
                 return_clinical_benefit_adverse_event_occurrence=True,
             )
@@ -244,7 +231,6 @@ class TestFailureMultipliers:
                 patient_infected=True,
                 antibiotic_name="A",
                 infection_sensitive_to_prescribed_abx=False,
-                delta_visible_amr=0.0,
                 failure_probability_multiplier=0.5,
                 return_clinical_benefit_adverse_event_occurrence=True,
             )
@@ -393,7 +379,6 @@ class TestMultiplierCombinations:
             patient_infected=True,
             antibiotic_name="A",
             infection_sensitive_to_prescribed_abx=True,
-            delta_visible_amr=0.0,
             benefit_value_multiplier=2.0,
             benefit_probability_multiplier=2.0,
         )
@@ -415,7 +400,6 @@ class TestMultiplierCombinations:
             patient_infected=True,
             antibiotic_name="A",
             infection_sensitive_to_prescribed_abx=False,
-            delta_visible_amr=0.0,
             failure_value_multiplier=2.0,
             failure_probability_multiplier=2.0,
         )
@@ -441,7 +425,6 @@ class TestMultiplierCombinations:
                 patient_infected=True,
                 antibiotic_name="A",
                 infection_sensitive_to_prescribed_abx=True,
-                delta_visible_amr=0.0,
                 benefit_value_multiplier=1.2,
                 benefit_probability_multiplier=1.1,
                 failure_value_multiplier=0.5,
@@ -457,7 +440,6 @@ class TestMultiplierCombinations:
                 patient_infected=True,
                 antibiotic_name="A",
                 infection_sensitive_to_prescribed_abx=True,
-                delta_visible_amr=0.0,
                 benefit_value_multiplier=0.8,
                 benefit_probability_multiplier=0.9,
                 failure_value_multiplier=1.5,
@@ -490,7 +472,6 @@ class TestProbabilityClamping:
                 patient_infected=True,
                 antibiotic_name="A",
                 infection_sensitive_to_prescribed_abx=True,
-                delta_visible_amr=0.0,
                 benefit_probability_multiplier=10.0,
                 return_clinical_benefit_adverse_event_occurrence=True,
             )
@@ -517,7 +498,6 @@ class TestProbabilityClamping:
                 patient_infected=True,
                 antibiotic_name="A",
                 infection_sensitive_to_prescribed_abx=False,
-                delta_visible_amr=0.0,
                 failure_probability_multiplier=0.01,
                 return_clinical_benefit_adverse_event_occurrence=True,
             )

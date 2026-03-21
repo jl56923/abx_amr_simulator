@@ -811,7 +811,7 @@ class ABXAMREnv(gym.Env):
                 - reward (float): Composite reward for this step
                 - terminated (bool): True if episode naturally ended (always False here)
                 - truncated (bool): True if max_time_steps reached
-                - info (dict): Contains keys:\n                    'prescriptions_per_abx', 'effective_doses', 'crossresistance_applied',\n                    'actual_amr_levels', 'visible_amr_levels', 'delta_amr_per_antibiotic',\n                    'patient_stats', 'patient_outcomes', 'pts_w_clinical_benefits',\n                    'pts_w_clinical_failures', 'pts_w_adverse_events', 'total_reward',\n                    'individual_reward', 'community_reward', 'mean_individual_reward'
+                - info (dict): Contains keys:\n                    'prescriptions_per_abx', 'effective_doses', 'crossresistance_applied',\n                    'actual_amr_levels', 'visible_amr_levels',\n                    'patient_stats', 'patient_outcomes', 'pts_w_clinical_benefits',\n                    'pts_w_clinical_failures', 'pts_w_adverse_events', 'total_reward',\n                    'individual_reward', 'community_reward', 'mean_individual_reward'
         
         Example:
             >>> obs, reward, terminated, truncated, info = env.step(action)
@@ -872,19 +872,6 @@ class ABXAMREnv(gym.Env):
                 for deque_window in self.prescription_history[abx_name]:
                     deque_window.append(prescribed_this_step)
         
-        # Pre-compute marginal AMR contribution per antibiotic using effective doses
-        delta_visible_amr_per_antibiotic = {}
-        for abx_name in self.antibiotic_names:
-            model = self.amr_balloon_models[abx_name]
-            
-            # Have to make a copy of the model state, then set the volume to the current visible AMR level, then compute delta volume for counterfactual doses
-            model_copy = model.copy()
-            model_copy.reset(initial_amr_level=self.visible_amr_levels[abx_name])
-            
-            # Compute volume with actual number of doses, then with one less dose.
-            delta_visible_amr = model_copy.get_delta_volume_for_counterfactual_num_doses_vs_one_less(effective_doses[abx_name])
-            delta_visible_amr_per_antibiotic[abx_name] = delta_visible_amr
-        
         # Increment time step
         self.current_time_step += 1
         
@@ -911,7 +898,6 @@ class ABXAMREnv(gym.Env):
             actions=multi_action,
             antibiotic_names=self.antibiotic_names,
             visible_amr_levels=self.visible_amr_levels,
-            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
             rng=self.np_random,
         )
         
@@ -934,7 +920,6 @@ class ABXAMREnv(gym.Env):
             'actual_amr_levels': {abx_name: self.amr_balloon_models[abx_name].get_volume() for abx_name in self.antibiotic_names},
             'visible_amr_levels': self.visible_amr_levels.copy(),
             'prescriptions_per_abx': antibiotic_prescription_counts,
-            'delta_visible_amr_per_antibiotic': delta_visible_amr_per_antibiotic,
             'effective_doses': effective_doses,
             'crossresistance_applied': crossresistance_applied,
             'patient_stats': patient_stats,

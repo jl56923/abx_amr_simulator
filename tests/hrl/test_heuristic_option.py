@@ -30,7 +30,6 @@ def _create_reward_calculator_for_expected_reward_tests() -> RewardCalculator:
             },
         },
         'lambda_weight': 0.0,
-        'epsilon': 0.05,
         'seed': 123,
     }
     return RewardCalculator(config=config)
@@ -281,7 +280,6 @@ class TestActionSelection:
         rc_config = {
             'abx_clinical_reward_penalties_info_dict': abx_info,
             'lambda_weight': 0.0,
-            'epsilon': 0.05,
             'seed': 123,
         }
         reward_calculator = RewardCalculator(config=rc_config)

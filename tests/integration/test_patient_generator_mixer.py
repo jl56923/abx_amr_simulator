@@ -1124,7 +1124,6 @@ class TestPatientGeneratorMixerHeterogeneousVisibility:
                     },
                 },
                 'lambda_weight': 0.5,
-                'epsilon': 0.05,
                 'seed': 42,
             }
         )
