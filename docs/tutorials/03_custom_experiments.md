@@ -28,7 +28,6 @@ my_first_project/
            ├── a2c.yaml                      # A2C
            ├── hrl_ppo.yaml                  # Hierarchical RL with PPO
            ├── hrl_rppo.yaml                 # Hierarchical RL with Recurrent PPO
-           ├── mbpo.yaml                     # Model-Based PPO
            └── recurrent_ppo.yaml            # Recurrent PPO
 ├── results/          # Created automatically during training
 └── optimization/     # Created automatically during tuning

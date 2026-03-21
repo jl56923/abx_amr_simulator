@@ -30,8 +30,6 @@ ABXAMREnv(
       add_bias_to_visible_AMR_levels: float = 0.0,
       max_time_steps: int = 1000,
       include_steps_since_amr_update_in_obs: bool = False,
-      enable_temporal_features: bool = False,
-      temporal_windows: list[int] | None = None,
       amr_dynamics_instances: dict[str, AMRDynamicsBase] | None = None,
 )
 ```
@@ -57,8 +55,6 @@ ABXAMREnv(
 - `add_noise_to_visible_AMR_levels`: Gaussian noise SD applied to visible AMR.
 - `add_bias_to_visible_AMR_levels`: constant additive AMR observation bias (clipped to `[0, 1]`).
 - `include_steps_since_amr_update_in_obs`: appends a scalar counter feature.
-- `enable_temporal_features`: appends temporal prescription and AMR-delta features.
-- `temporal_windows`: window sizes used when temporal features are enabled.
 - `amr_dynamics_instances`: inject custom AMR dynamics objects; bypasses fallback leaky-balloon creation.
 
 ## Validation and Fail-Loud Behavior
@@ -114,16 +110,12 @@ Base observation layout:
 
 Optional appendices:
 3. `steps_since_amr_update` scalar if `include_steps_since_amr_update_in_obs=True`
-4. Temporal features if `enable_temporal_features=True`
-    - normalized prescription counts for each `(antibiotic, window)`
-    - visible AMR deltas per antibiotic
 
 Dimension formula:
 
 ```text
 obs_dim = patient_generator.obs_dim(num_patients_per_time_step) + num_abx
 obs_dim += 1                                    # optional steps-since-update
-obs_dim += num_abx * len(temporal_windows) + num_abx  # optional temporal features
 ```
 
 ## Episode and Step Semantics
