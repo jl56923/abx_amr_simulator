@@ -137,7 +137,7 @@ experiments/
 - **option_libraries/** — YAML files defining collections of options (the "library" the manager chooses from)
 - **option_types/** — Default configs and loaders for each option type (block, alternation, heuristic)
 
-You'll learn how to customize option libraries in Tutorial 7. **NOTE** provide link to Tutorial 7, and also the title of it.
+You'll learn how to customize option libraries in [Tutorial 9: Options Library Setup](09_options_library_setup.md).
 
 ---
 
@@ -164,7 +164,7 @@ experiments/
 - **ppo_tuning_default.yaml** — Optuna search space for PPO hyperparameters
 - **hrl_ppo_tuning_default.yaml** — Optuna search space for HRL-PPO hyperparameters
 
-You'll learn how to use these in Tutorial 4 (Optimization). **NOTE** provide link to Tutorial 4, and also the title of it.
+You'll learn how to use these in [Tutorial 6: Optimization With Optuna](06_optimization.md).
 
 ---
 
@@ -250,8 +250,8 @@ python -c "from abx_amr_simulator.utils import setup_config_folders_with_default
 
 **Next tutorials**:
 - **Tutorial 3**: Customize your experiments (modify configs, tune reward lambda, run parameter sweeps)
-- **Tutorial 4**: Optimize hyperparameters with Optuna
-- **Tutorial 6**: Train hierarchical RL agents with option libraries
+- **Tutorial 6**: Optimize hyperparameters with Optuna
+- **Tutorial 5**: Train hierarchical RL agents with option libraries
 
 ---
 

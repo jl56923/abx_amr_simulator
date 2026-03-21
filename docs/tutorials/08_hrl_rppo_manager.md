@@ -1,8 +1,8 @@
-# Tutorial 9: HRL RPPO Manager
+# Tutorial 8: HRL RPPO Manager
 
 **Goal**: Learn when and how to use recurrent manager policies (HRL_RPPO) for improved temporal reasoning and partial observability handling.
 
-**Prerequisites**: Completed Tutorial 6 (HRL Quick Start) and optionally Tutorial 8 (HRL Diagnostics)
+**Prerequisites**: Completed Tutorial 5 (HRL Quick Start) and optionally Tutorial 7 (HRL Diagnostics)
 
 **What is HRL_RPPO?** Manager policy that uses **LSTM (recurrent neural network)** instead of feedforward network. The LSTM maintains hidden state across option selections, enabling better temporal reasoning and handling of partially observable environments.
 

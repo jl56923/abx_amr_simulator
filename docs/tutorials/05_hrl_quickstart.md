@@ -1,4 +1,4 @@
-# Tutorial 6: HRL Quick Start
+# Tutorial 5: HRL Quick Start
 
 **Goal**: Learn to train hierarchical reinforcement learning (HRL) agents using deterministic option libraries.
 
@@ -222,7 +222,7 @@ Option selection counts: {0: 45, 3: 32, 7: 18, ...}  ← Which options were used
 
 ## Step 8: Customize Your Option Library
 
-To create custom options, see [Tutorial 09: Options Library Setup](09_options_library_setup.md).
+To create custom options, see [Tutorial 9: Options Library Setup](09_options_library_setup.md).
 
 **Quick customization examples:**
 
@@ -282,7 +282,7 @@ python -m abx_amr_simulator.training.train \
 - Better for partially observable environments (e.g., noisy AMR observations)
 - Longer training time due to recurrent network overhead
 
-See [Tutorial 08: HRL RPPO Manager](08_hrl_rppo_manager.md) for RPPO-specific configuration and troubleshooting.
+See [Tutorial 8: HRL RPPO Manager](08_hrl_rppo_manager.md) for RPPO-specific configuration and troubleshooting.
 
 ---
 
@@ -327,9 +327,9 @@ See [Tutorial 08: HRL RPPO Manager](08_hrl_rppo_manager.md) for RPPO-specific co
 ✅ You've trained your first HRL agent!
 
 **Next tutorials**:
-- **Tutorial 09**: [Options Library Setup](09_options_library_setup.md) — Create custom option libraries with canonical and custom options
-- **Tutorial 08**: [HRL Diagnostics](08_hrl_diagnostics.md) — Analyze option selection patterns and visualize manager behavior
-- **Tutorial 08**: [HRL RPPO Manager](08_hrl_rppo_manager.md) — Configure recurrent manager policies for partial observability
+- **Tutorial 9**: [Options Library Setup](09_options_library_setup.md) — Create custom option libraries with canonical and custom options
+- **Tutorial 7**: [HRL Diagnostics](07_hrl_diagnostics.md) — Analyze option selection patterns and visualize manager behavior
+- **Tutorial 8**: [HRL RPPO Manager](08_hrl_rppo_manager.md) — Configure recurrent manager policies for partial observability
 
 ---
 

@@ -1,4 +1,4 @@
-# Tutorial 12: Component Subclassing
+# Tutorial 11: Component Subclassing
 
 **Goal**: Learn how to subclass core components (RewardCalculator, PatientGenerator, Environment) to implement custom behavior beyond what's achievable via configuration alone.
 

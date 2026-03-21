@@ -13,7 +13,7 @@ The `abx_amr_simulator` package is built in Python, but the primary way you'll i
 
 This design prioritizes **reproducibility and modularity**: you can swap out and modify the parameters of different components of your experiment (i.e. changing the environment, reward function, patient population) by pointing to different config files, without touching any of the Python code.
 
-*When do I write Python code?* See Tutorial 12 for advanced component subclassing.
+*When do I write Python code?* See Tutorial 11 for advanced component subclassing.
 
 ---
 
@@ -253,7 +253,7 @@ The `figures_best_agent/` and `figures_final_agent/` folders contain diagnostic 
 
 ### Load and Evaluate Your Trained Agent (Optional, Python API)
 
-If you want to programmatically load and evaluate your trained agent using Python, you can write a script. **Most users won't need this—the CLI analysis tools (Step 7) provide everything you need.** If you're curious about the Python API, see Tutorial 12 for advanced component customization examples.
+If you want to programmatically load and evaluate your trained agent using Python, you can write a script. **Most users won't need this—the CLI analysis tools (Step 7) provide everything you need.** If you're curious about the Python API, see Tutorial 11 for advanced component customization examples.
 
 For now, proceed to Step 7 to use the recommended CLI analysis tools.
 
@@ -359,4 +359,4 @@ environment:
 1. **Configurations are modular**: Environment, rewards, patients, and algorithm settings are separate YAML files
 2. **CLI is the primary interface**: Edit configs, run `python -m abx_amr_simulator.training.train`, analyze with CLI tools
 3. **Reproducibility matters**: Seeds are automatically synchronized across components
-4. **Python API is optional**: ~95% of workflows use CLI; Python code is for advanced customization (see Tutorial 12)
+4. **Python API is optional**: ~95% of workflows use CLI; Python code is for advanced customization (see Tutorial 11)
