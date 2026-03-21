@@ -753,7 +753,13 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
         ...                             stop_after_n_episodes=total_episodes)
         >>> agent.learn(total_timesteps=total_episodes * max_time_steps, callback=callbacks)
     """
-    from abx_amr_simulator.callbacks import PatientStatsLoggingCallback, DetailedEvalCallback, EpisodeCounterCallback
+    from abx_amr_simulator.callbacks import (
+        PatientStatsLoggingCallback,
+        DetailedEvalCallback,
+        EpisodeCounterCallback,
+        EpisodeFrequencyTriggerCallback,
+        EpisodeProgressBarCallback,
+    )
 
     def _resolve_detailed_eval_callback_class() -> type:
         """Resolve optional callback-class override for trajectory evaluation.
@@ -844,7 +850,18 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
     eval_freq = training_config.get('_converted_eval_freq', training_config.get('eval_freq', 5000))
     num_eval_episodes = training_config.get('num_eval_episodes', 10)
     save_freq = training_config.get('_converted_save_freq', training_config.get('save_freq', 10000))
+    eval_freq_episodes = training_config.get('eval_freq_every_n_episodes')
+    save_freq_episodes = training_config.get('save_freq_every_n_episodes')
     log_patient_trajectories = training_config.get('log_patient_trajectories', False)
+    algorithm = config.get('algorithm', 'PPO')
+    show_episode_progress_bar = training_config.get(
+        'show_episode_progress_bar',
+        algorithm in ['HRL_PPO', 'HRL_RPPO'],
+    )
+    use_episode_frequency_scheduler = (
+        algorithm in ['HRL_PPO', 'HRL_RPPO']
+        and (eval_freq_episodes is not None or save_freq_episodes is not None)
+    )
     if training_config.get('log_personalized_patient_attributes', False):
         raise ValueError(
             "training.log_personalized_patient_attributes is no longer supported in canonical "
@@ -865,52 +882,119 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
         verbose=1,
     )
     callbacks.append(episode_counter_callback)
+
+    if show_episode_progress_bar and stop_after_n_episodes is not None:
+        episode_progress_callback = EpisodeProgressBarCallback(
+            total_episodes=stop_after_n_episodes,
+            verbose=0,
+        )
+        callbacks.append(episode_progress_callback)
     
-    # Evaluation callback (only if an eval_env is provided)
-    if eval_env is not None:
-        # Wrap eval_env in DummyVecEnv if needed
-        vec_eval_env = DummyVecEnv([lambda env=eval_env: env])
-        
-        if log_patient_trajectories:
-            detailed_eval_callback_class = _resolve_detailed_eval_callback_class()
-            detailed_eval_callback_kwargs = training_config.get('detailed_eval_callback_kwargs', {})
-            if not isinstance(detailed_eval_callback_kwargs, dict):
-                raise ValueError(
-                    "training.detailed_eval_callback_kwargs must be a dictionary when provided."
+    if use_episode_frequency_scheduler:
+        if eval_freq_episodes is not None and eval_freq_episodes <= 0:
+            raise ValueError(
+                f"training.eval_freq_every_n_episodes must be > 0, got {eval_freq_episodes}"
+            )
+        if save_freq_episodes is not None and save_freq_episodes <= 0:
+            raise ValueError(
+                f"training.save_freq_every_n_episodes must be > 0, got {save_freq_episodes}"
+            )
+
+        eval_callback = None
+        if eval_env is not None and eval_freq_episodes is not None:
+            vec_eval_env = DummyVecEnv([lambda env=eval_env: env])
+
+            if log_patient_trajectories:
+                detailed_eval_callback_class = _resolve_detailed_eval_callback_class()
+                detailed_eval_callback_kwargs = training_config.get('detailed_eval_callback_kwargs', {})
+                if not isinstance(detailed_eval_callback_kwargs, dict):
+                    raise ValueError(
+                        "training.detailed_eval_callback_kwargs must be a dictionary when provided."
+                    )
+                eval_callback = detailed_eval_callback_class(
+                    eval_env=vec_eval_env,
+                    n_eval_episodes=num_eval_episodes,
+                    eval_freq=1,
+                    log_path=run_dir,
+                    best_model_save_path=os.path.join(run_dir, 'checkpoints'),
+                    deterministic=True,
+                    render=False,
+                    **detailed_eval_callback_kwargs,
                 )
-            # Use DetailedEvalCallback when we want full patient trajectories
-            # DetailedEvalCallback will create run_dir/eval_logs/ automatically
-            eval_callback = detailed_eval_callback_class(
-                eval_env=vec_eval_env,
-                n_eval_episodes=num_eval_episodes,
-                eval_freq=eval_freq,
-                log_path=run_dir,
-                best_model_save_path=os.path.join(run_dir, 'checkpoints'),
-                deterministic=True,
-                render=False,
-                **detailed_eval_callback_kwargs,
+            else:
+                eval_callback = EvalCallback(
+                    eval_env=vec_eval_env,
+                    n_eval_episodes=num_eval_episodes,
+                    eval_freq=1,
+                    log_path=os.path.join(run_dir, 'eval_logs'),
+                    best_model_save_path=os.path.join(run_dir, 'checkpoints'),
+                    deterministic=True,
+                    render=False,
+                )
+
+        checkpoint_callback = None
+        if save_freq_episodes is not None:
+            checkpoint_callback = CheckpointCallback(
+                save_freq=1,
+                save_path=os.path.join(run_dir, 'checkpoints'),
+                name_prefix='model',
+                save_replay_buffer=False,
             )
-        else:
-            # Use standard EvalCallback
-            eval_callback = EvalCallback(
-                eval_env=vec_eval_env,
-                n_eval_episodes=num_eval_episodes,
-                eval_freq=eval_freq,
-                log_path=os.path.join(run_dir, 'eval_logs'),
-                best_model_save_path=os.path.join(run_dir, 'checkpoints'),
-                deterministic=True,
-                render=False,
-            )
-        callbacks.append(eval_callback)
-    
-    # Checkpoint callback
-    checkpoint_callback = CheckpointCallback(
-        save_freq=save_freq,
-        save_path=os.path.join(run_dir, 'checkpoints'),
-        name_prefix='model',
-        save_replay_buffer=False,
-    )
-    callbacks.append(checkpoint_callback)
+
+        episode_frequency_callback = EpisodeFrequencyTriggerCallback(
+            eval_callback=eval_callback,
+            checkpoint_callback=checkpoint_callback,
+            eval_freq_episodes=eval_freq_episodes,
+            save_freq_episodes=save_freq_episodes,
+            verbose=1,
+        )
+        callbacks.append(episode_frequency_callback)
+    else:
+        # Evaluation callback (only if an eval_env is provided)
+        if eval_env is not None:
+            # Wrap eval_env in DummyVecEnv if needed
+            vec_eval_env = DummyVecEnv([lambda env=eval_env: env])
+
+            if log_patient_trajectories:
+                detailed_eval_callback_class = _resolve_detailed_eval_callback_class()
+                detailed_eval_callback_kwargs = training_config.get('detailed_eval_callback_kwargs', {})
+                if not isinstance(detailed_eval_callback_kwargs, dict):
+                    raise ValueError(
+                        "training.detailed_eval_callback_kwargs must be a dictionary when provided."
+                    )
+                # Use DetailedEvalCallback when we want full patient trajectories
+                # DetailedEvalCallback will create run_dir/eval_logs/ automatically
+                eval_callback = detailed_eval_callback_class(
+                    eval_env=vec_eval_env,
+                    n_eval_episodes=num_eval_episodes,
+                    eval_freq=eval_freq,
+                    log_path=run_dir,
+                    best_model_save_path=os.path.join(run_dir, 'checkpoints'),
+                    deterministic=True,
+                    render=False,
+                    **detailed_eval_callback_kwargs,
+                )
+            else:
+                # Use standard EvalCallback
+                eval_callback = EvalCallback(
+                    eval_env=vec_eval_env,
+                    n_eval_episodes=num_eval_episodes,
+                    eval_freq=eval_freq,
+                    log_path=os.path.join(run_dir, 'eval_logs'),
+                    best_model_save_path=os.path.join(run_dir, 'checkpoints'),
+                    deterministic=True,
+                    render=False,
+                )
+            callbacks.append(eval_callback)
+
+        # Checkpoint callback
+        checkpoint_callback = CheckpointCallback(
+            save_freq=save_freq,
+            save_path=os.path.join(run_dir, 'checkpoints'),
+            name_prefix='model',
+            save_replay_buffer=False,
+        )
+        callbacks.append(checkpoint_callback)
     
     # Early stopping callback (optional)
     early_stopping_config = training_config.get('early_stopping', {})

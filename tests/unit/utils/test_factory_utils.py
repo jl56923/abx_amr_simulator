@@ -15,6 +15,7 @@ import re
 from datetime import datetime
 import pytest
 import gymnasium as gym
+from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 
 from abx_amr_simulator.utils import (
     create_run_directory,
@@ -22,6 +23,7 @@ from abx_amr_simulator.utils import (
     save_training_summary,
     setup_callbacks,
 )
+from abx_amr_simulator.callbacks import EpisodeFrequencyTriggerCallback, EpisodeProgressBarCallback
 
 
 class TestCreateRunDirectory:
@@ -446,6 +448,103 @@ class TestSetupCallbacksCustomDetailedEvalCallback:
                     run_dir=tmpdir,
                     eval_env=None,
                 )
+
+
+class TestSetupCallbacksHRLEpisodeFrequency:
+    """Tests for HRL episode-based eval/save callback scheduling."""
+
+    def test_hrl_uses_episode_frequency_scheduler(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'algorithm': 'HRL_PPO',
+                'training': {
+                    'log_patient_trajectories': False,
+                    'eval_freq_every_n_episodes': 3,
+                    'save_freq_every_n_episodes': 4,
+                    '_converted_eval_freq': 99999,
+                    '_converted_save_freq': 99999,
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
+            callbacks = setup_callbacks(
+                config=config,
+                run_dir=tmpdir,
+                eval_env=eval_env,
+                stop_after_n_episodes=12,
+            )
+            eval_env.close()
+
+            matched = [cb for cb in callbacks if isinstance(cb, EpisodeFrequencyTriggerCallback)]
+            assert len(matched) == 1
+
+            scheduler = matched[0]
+            assert scheduler.eval_freq_episodes == 3
+            assert scheduler.save_freq_episodes == 4
+            assert isinstance(scheduler.eval_callback, EvalCallback)
+            assert scheduler.eval_callback.eval_freq == 1
+            assert isinstance(scheduler.checkpoint_callback, CheckpointCallback)
+            assert scheduler.checkpoint_callback.save_freq == 1
+
+            episode_progress = [cb for cb in callbacks if isinstance(cb, EpisodeProgressBarCallback)]
+            assert len(episode_progress) == 1
+            assert episode_progress[0].total_episodes == 12
+
+    def test_non_hrl_keeps_timestep_callbacks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'algorithm': 'PPO',
+                'training': {
+                    'log_patient_trajectories': False,
+                    '_converted_eval_freq': 123,
+                    '_converted_save_freq': 456,
+                    'eval_freq_every_n_episodes': 3,
+                    'save_freq_every_n_episodes': 4,
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
+            callbacks = setup_callbacks(
+                config=config,
+                run_dir=tmpdir,
+                eval_env=eval_env,
+                stop_after_n_episodes=12,
+            )
+            eval_env.close()
+
+            scheduler = [cb for cb in callbacks if isinstance(cb, EpisodeFrequencyTriggerCallback)]
+            assert len(scheduler) == 0
+
+            eval_callbacks = [cb for cb in callbacks if isinstance(cb, EvalCallback)]
+            checkpoint_callbacks = [cb for cb in callbacks if isinstance(cb, CheckpointCallback)]
+            assert len(eval_callbacks) == 1
+            assert len(checkpoint_callbacks) == 1
+            assert eval_callbacks[0].eval_freq == 123
+            assert checkpoint_callbacks[0].save_freq == 456
+
+    def test_hrl_can_disable_episode_progress_bar(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'algorithm': 'HRL_PPO',
+                'training': {
+                    'log_patient_trajectories': False,
+                    'show_episode_progress_bar': False,
+                    'eval_freq_every_n_episodes': 3,
+                    'save_freq_every_n_episodes': 4,
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
+            callbacks = setup_callbacks(
+                config=config,
+                run_dir=tmpdir,
+                eval_env=eval_env,
+                stop_after_n_episodes=8,
+            )
+            eval_env.close()
+
+            episode_progress = [cb for cb in callbacks if isinstance(cb, EpisodeProgressBarCallback)]
+            assert len(episode_progress) == 0
 
 
 if __name__ == "__main__":

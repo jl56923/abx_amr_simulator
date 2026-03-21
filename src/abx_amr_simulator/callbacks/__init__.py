@@ -7,7 +7,9 @@ Provides:
 - EarlyStoppingCallback: Stops training when performance metric plateaus
 - LSTMStateLogger: Logs LSTM hidden states for belief probing analysis
 - EpisodeCounterCallback: Counts completed episodes, logs to TensorBoard, and can stop training
-  after a target number of actual episodes (correct under variable-length / boundary-clipped episodes)
+    after a target number of actual episodes (correct under variable-length / boundary-clipped episodes)
+- EpisodeFrequencyTriggerCallback: Triggers eval/checkpoint callbacks based on completed
+    episodes instead of raw SB3 timesteps
 """
 
 import os
@@ -19,7 +21,128 @@ from stable_baselines3.common.vec_env import VecEnv, sync_envs_normalization
 from .early_stopping import EarlyStoppingCallback
 from .lstm_state_logger import LSTMStateLogger
 
-__all__ = ['PatientStatsLoggingCallback', 'DetailedEvalCallback', 'EarlyStoppingCallback', 'LSTMStateLogger', 'EpisodeCounterCallback']
+__all__ = [
+    'PatientStatsLoggingCallback',
+    'DetailedEvalCallback',
+    'EarlyStoppingCallback',
+    'LSTMStateLogger',
+    'EpisodeCounterCallback',
+    'EpisodeFrequencyTriggerCallback',
+    'EpisodeProgressBarCallback',
+]
+
+
+class EpisodeFrequencyTriggerCallback(BaseCallback):
+    """Trigger child callbacks on episode cadence instead of timestep cadence.
+
+    This is used for HRL training where SB3 "timesteps" count manager decisions,
+    not primitive environment steps. In that regime, converting
+    ``*_freq_every_n_episodes`` to timesteps via ``max_time_steps`` can be wildly
+    inaccurate. This callback counts actual completed episodes from ``done`` flags
+    and invokes child eval/checkpoint callbacks exactly at episode boundaries.
+    """
+
+    def __init__(
+        self,
+        eval_callback: Optional[BaseCallback] = None,
+        checkpoint_callback: Optional[BaseCallback] = None,
+        eval_freq_episodes: Optional[int] = None,
+        save_freq_episodes: Optional[int] = None,
+        verbose: int = 0,
+    ):
+        """Initialize episode-cadence trigger callback.
+
+        Args:
+            eval_callback: Callback to run whenever eval episode cadence is reached.
+            checkpoint_callback: Callback to run whenever save episode cadence is reached.
+            eval_freq_episodes: Trigger evaluation every N completed episodes.
+            save_freq_episodes: Trigger checkpoint save every N completed episodes.
+            verbose: Verbosity level.
+        """
+        super().__init__(verbose=verbose)
+
+        if eval_callback is not None and eval_freq_episodes is None:
+            raise ValueError(
+                "eval_freq_episodes is required when eval_callback is provided."
+            )
+        if checkpoint_callback is not None and save_freq_episodes is None:
+            raise ValueError(
+                "save_freq_episodes is required when checkpoint_callback is provided."
+            )
+        if eval_freq_episodes is not None and eval_freq_episodes <= 0:
+            raise ValueError(
+                f"eval_freq_episodes must be a positive integer, got {eval_freq_episodes}"
+            )
+        if save_freq_episodes is not None and save_freq_episodes <= 0:
+            raise ValueError(
+                f"save_freq_episodes must be a positive integer, got {save_freq_episodes}"
+            )
+
+        self.eval_callback = eval_callback
+        self.checkpoint_callback = checkpoint_callback
+        self.eval_freq_episodes = eval_freq_episodes
+        self.save_freq_episodes = save_freq_episodes
+        self.n_episodes: int = 0
+
+    def _on_training_start(self) -> None:
+        """Initialize child callbacks with the same model/training context."""
+        child_callbacks = [
+            cb for cb in (self.eval_callback, self.checkpoint_callback) if cb is not None
+        ]
+
+        for child_callback in child_callbacks:
+            child_callback.parent = self
+            child_callback.init_callback(model=self.model)
+            child_callback.on_training_start(locals_=self.locals, globals_=self.globals)
+
+    def _run_child_callback(self, child_callback: BaseCallback) -> bool:
+        """Run a child callback once with current locals/globals context."""
+        child_callback.update_locals(locals_=self.locals)
+        return child_callback.on_step()
+
+    def _on_step(self) -> bool:
+        """Count completed episodes and trigger child callbacks on cadence."""
+        dones = self.locals.get('dones', self.locals.get('done', []))
+        if isinstance(dones, (bool, np.bool_)):
+            dones = [bool(dones)]
+
+        completed_episodes_this_step = sum(1 for done in dones if done)
+        if completed_episodes_this_step == 0:
+            return True
+
+        continue_training = True
+        for _ in range(completed_episodes_this_step):
+            self.n_episodes += 1
+
+            if (
+                self.eval_callback is not None
+                and self.eval_freq_episodes is not None
+                and self.n_episodes % self.eval_freq_episodes == 0
+            ):
+                continue_training = continue_training and self._run_child_callback(
+                    child_callback=self.eval_callback
+                )
+
+            if (
+                self.checkpoint_callback is not None
+                and self.save_freq_episodes is not None
+                and self.n_episodes % self.save_freq_episodes == 0
+            ):
+                continue_training = continue_training and self._run_child_callback(
+                    child_callback=self.checkpoint_callback
+                )
+
+            if not continue_training:
+                return False
+
+        return True
+
+    def _on_training_end(self) -> None:
+        """Forward training-end lifecycle to child callbacks."""
+        if self.eval_callback is not None:
+            self.eval_callback.on_training_end()
+        if self.checkpoint_callback is not None:
+            self.checkpoint_callback.on_training_end()
 
 
 class PatientStatsLoggingCallback(BaseCallback):
@@ -592,4 +715,62 @@ class EpisodeCounterCallback(BaseCallback):
             return False
 
         return True
+
+
+class EpisodeProgressBarCallback(BaseCallback):
+    """Print a lightweight episode-based progress bar during training.
+
+    This callback is intended for episode-budgeted training where SB3's built-in
+    progress bar (timestep-based) is misleading, such as HRL with variable
+    macro-action durations.
+    """
+
+    def __init__(self, total_episodes: int, verbose: int = 0):
+        """Initialize episode progress bar callback.
+
+        Args:
+            total_episodes: Target number of completed episodes.
+            verbose: Verbosity level.
+        """
+        super().__init__(verbose=verbose)
+        if total_episodes <= 0:
+            raise ValueError(
+                f"total_episodes must be a positive integer, got {total_episodes}"
+            )
+        self.total_episodes = int(total_episodes)
+        self.n_episodes: int = 0
+
+    def _render(self) -> None:
+        """Render progress bar to stdout."""
+        ratio = min(max(self.n_episodes / self.total_episodes, 0.0), 1.0)
+        bar_width = 30
+        filled = int(round(bar_width * ratio))
+        bar = '#' * filled + '-' * (bar_width - filled)
+        pct = int(round(100 * ratio))
+        print(
+            f"\rEpisode progress [{bar}] {self.n_episodes}/{self.total_episodes} ({pct}%)",
+            end='',
+            flush=True,
+        )
+
+    def _on_training_start(self) -> None:
+        """Render initial progress state at training start."""
+        self._render()
+
+    def _on_step(self) -> bool:
+        """Update bar when one or more episodes complete this step."""
+        dones = self.locals.get('dones', self.locals.get('done', []))
+        if isinstance(dones, (bool, np.bool_)):
+            dones = [bool(dones)]
+
+        completed_episodes_this_step = sum(1 for done in dones if done)
+        if completed_episodes_this_step > 0:
+            self.n_episodes += completed_episodes_this_step
+            self._render()
+
+        return True
+
+    def _on_training_end(self) -> None:
+        """Ensure a final newline after progress updates."""
+        print()
 

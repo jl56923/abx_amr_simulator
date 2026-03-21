@@ -280,6 +280,29 @@ def compute_explicit_final_eval_mean_reward(*, agent: Any, eval_env: Any, n_eval
     return float(mean_reward)
 
 
+def resolve_eval_and_episode_callbacks(*, callbacks: list) -> Tuple[Optional[Any], Optional[Any]]:
+    """Resolve eval callback and episode counter callback from callback list.
+
+    Supports both direct callback registration and wrappers that expose
+    ``eval_callback`` (e.g., episode-frequency schedulers for HRL).
+    """
+    eval_callback = None
+    episode_counter_callback = None
+
+    for callback in callbacks:
+        if hasattr(callback, 'best_mean_reward'):
+            eval_callback = callback
+        elif hasattr(callback, 'eval_callback'):
+            nested_eval_callback = getattr(callback, 'eval_callback', None)
+            if nested_eval_callback is not None and hasattr(nested_eval_callback, 'best_mean_reward'):
+                eval_callback = nested_eval_callback
+
+        if hasattr(callback, 'n_episodes'):
+            episode_counter_callback = callback
+
+    return eval_callback, episode_counter_callback
+
+
 def main():
     parser = argparse.ArgumentParser(description='Train RL agent on ABXAMREnv')
     parser.add_argument(
@@ -593,12 +616,20 @@ def main():
         # Continue training
         training_config = config.get('training', {})
         log_interval = training_config.get('log_interval', 1)
+        use_episode_progress_bar = bool(
+            training_config.get(
+                'show_episode_progress_bar',
+                config.get('algorithm', 'PPO') in ['HRL_PPO', 'HRL_RPPO'],
+            )
+            and additional_episodes is not None
+        )
+        sb3_progress_bar = not use_episode_progress_bar
         
         agent.learn(
             total_timesteps=additional_steps,
             log_interval=log_interval,
             callback=callbacks,
-            progress_bar=True,
+            progress_bar=sb3_progress_bar,
             reset_num_timesteps=False,  # Continue from previous timestep count
         )
         
@@ -610,14 +641,9 @@ def main():
         
         # Print evaluation results for Optuna tuning (tune.py parses this output)
         if eval_env is not None and len(callbacks) > 1:
-            # Find EvalCallback in callbacks list
-            eval_callback = None
-            episode_counter_callback = None
-            for cb in callbacks:
-                if hasattr(cb, 'best_mean_reward'):
-                    eval_callback = cb
-                if hasattr(cb, 'n_episodes'):
-                    episode_counter_callback = cb
+            eval_callback, episode_counter_callback = resolve_eval_and_episode_callbacks(
+                callbacks=callbacks
+            )
             
             if eval_callback is not None and hasattr(eval_callback, 'last_mean_reward'):
                 eval_freq_steps = getattr(eval_callback, 'eval_freq', None)
@@ -982,6 +1008,14 @@ def main():
         training_config = config.get('training', {})
         total_timesteps = training_config.get('_converted_total_timesteps', 1000)
         log_interval = training_config.get('log_interval', 1)
+        use_episode_progress_bar = bool(
+            training_config.get(
+                'show_episode_progress_bar',
+                config.get('algorithm', 'PPO') in ['HRL_PPO', 'HRL_RPPO'],
+            )
+            and total_num_training_episodes is not None
+        )
+        sb3_progress_bar = not use_episode_progress_bar
         
         print(f"\nStarting training for {total_timesteps} timesteps...")
         print(f"TensorBoard logs: {os.path.join(run_dir, 'logs')}")
@@ -990,7 +1024,7 @@ def main():
             total_timesteps=total_timesteps,
             log_interval=log_interval,
             callback=callbacks,
-            progress_bar=True,
+            progress_bar=sb3_progress_bar,
         )
         
         # Save final model to checkpoints folder (separate from best_model saved by EvalCallback)
@@ -1003,14 +1037,9 @@ def main():
         
         # Print evaluation results for Optuna tuning (tune.py parses this output)
         if eval_env is not None and len(callbacks) > 1:
-            # Find EvalCallback in callbacks list (should be second callback after PatientStatsLoggingCallback)
-            eval_callback = None
-            episode_counter_callback = None
-            for cb in callbacks:
-                if hasattr(cb, 'best_mean_reward'):
-                    eval_callback = cb
-                if hasattr(cb, 'n_episodes'):
-                    episode_counter_callback = cb
+            eval_callback, episode_counter_callback = resolve_eval_and_episode_callbacks(
+                callbacks=callbacks
+            )
             
             if eval_callback is not None and hasattr(eval_callback, 'last_mean_reward'):
                 eval_freq_steps = getattr(eval_callback, 'eval_freq', None)
