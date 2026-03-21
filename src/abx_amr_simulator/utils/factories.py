@@ -862,6 +862,14 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
         algorithm in ['HRL_PPO', 'HRL_RPPO']
         and (eval_freq_episodes is not None or save_freq_episodes is not None)
     )
+
+    print(
+        "[callbacks] algorithm="
+        f"{algorithm}, use_episode_frequency_scheduler={use_episode_frequency_scheduler}, "
+        f"eval_freq_steps={eval_freq}, save_freq_steps={save_freq}, "
+        f"eval_freq_episodes={eval_freq_episodes}, save_freq_episodes={save_freq_episodes}, "
+        f"stop_after_n_episodes={stop_after_n_episodes}"
+    )
     if training_config.get('log_personalized_patient_attributes', False):
         raise ValueError(
             "training.log_personalized_patient_attributes is no longer supported in canonical "
@@ -949,6 +957,10 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
             verbose=1,
         )
         callbacks.append(episode_frequency_callback)
+        print(
+            "[callbacks] Using episode-frequency scheduler for periodic eval/checkpoint "
+            f"(eval every {eval_freq_episodes} episodes, save every {save_freq_episodes} episodes)."
+        )
     else:
         # Evaluation callback (only if an eval_env is provided)
         if eval_env is not None:
@@ -995,6 +1007,10 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
             save_replay_buffer=False,
         )
         callbacks.append(checkpoint_callback)
+        print(
+            "[callbacks] Using timestep-frequency callbacks "
+            f"(eval every {eval_freq} steps, save every {save_freq} steps)."
+        )
     
     # Early stopping callback (optional)
     early_stopping_config = training_config.get('early_stopping', {})
