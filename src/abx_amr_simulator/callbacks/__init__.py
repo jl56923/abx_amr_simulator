@@ -13,7 +13,7 @@ Provides:
 import os
 import numpy as np
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.vec_env import VecEnv, sync_envs_normalization
 from .early_stopping import EarlyStoppingCallback
@@ -166,8 +166,6 @@ class DetailedEvalCallback(EvalCallback):
         verbose: int = 1,
         warn: bool = True,
         save_patient_trajectories: bool = True,
-        log_personalized_patient_attributes: bool = False,
-        personalized_sentinel_value: Optional[float] = None,
     ):
         """Initialize the DetailedEvalCallback.
         
@@ -190,23 +188,7 @@ class DetailedEvalCallback(EvalCallback):
             warn (bool): If True, warn about evaluation issues. Default: True.
             save_patient_trajectories (bool): If True, save full patient trajectories
                 to .npz files. Default: True.
-            log_personalized_patient_attributes (bool): If True, enriched personalized
-                subgroup logging is enabled. The sentinel value will be written to
-                every .npz artifact so downstream analysis can recover subgroup
-                membership via sentinel inference. Default: False.
-            personalized_sentinel_value (float, optional): The fill value used for
-                patients without a personalized prediction (i.e.
-                ``personalized_missing_prediction_fill_value`` from the patient
-                generator config). Required (must not be None) when
-                ``log_personalized_patient_attributes=True``.
         """
-        if log_personalized_patient_attributes and personalized_sentinel_value is None:
-            raise ValueError(
-                "personalized_sentinel_value must be provided when "
-                "log_personalized_patient_attributes=True. "
-                "Set personalized_missing_prediction_fill_value in the patient generator config."
-            )
-
         super().__init__(
             eval_env=eval_env,
             callback_on_new_best=callback_on_new_best,
@@ -222,8 +204,6 @@ class DetailedEvalCallback(EvalCallback):
         )
         
         self.save_patient_trajectories = save_patient_trajectories
-        self.log_personalized_patient_attributes = log_personalized_patient_attributes
-        self.personalized_sentinel_value = personalized_sentinel_value
         self.eval_count = 0
         
         # Create eval_logs directory if saving trajectories
@@ -409,20 +389,12 @@ class DetailedEvalCallback(EvalCallback):
             for env in self.eval_env.envs:
                 try:
                     env.unwrapped.log_full_patient_attributes = value
-                    if hasattr(env.unwrapped, 'log_personalized_patient_attributes'):
-                        env.unwrapped.log_personalized_patient_attributes = bool(
-                            value and self.log_personalized_patient_attributes
-                        )
                 except AttributeError:
                     pass
         else:
             # Single env or wrapped env
             try:
                 self.eval_env.unwrapped.log_full_patient_attributes = value
-                if hasattr(self.eval_env.unwrapped, 'log_personalized_patient_attributes'):
-                    self.eval_env.unwrapped.log_personalized_patient_attributes = bool(
-                        value and self.log_personalized_patient_attributes
-                    )
             except AttributeError:
                 pass
     
@@ -461,27 +433,10 @@ class DetailedEvalCallback(EvalCallback):
 
         if antibiotic_names:
             save_dict['antibiotic_names'] = np.array(antibiotic_names)
-
-        # When enriched personalized logging is enabled, persist the sentinel value so
-        # downstream analysis scripts can recover subgroup membership via sentinel inference
-        # without hardcoding the fill value.
-        if self.log_personalized_patient_attributes:
-            if self.personalized_sentinel_value is None:
-                raise ValueError(
-                    "log_personalized_patient_attributes is True but personalized_sentinel_value "
-                    "is None — cannot write sentinel metadata to trajectory artifact."
-                )
-            save_dict['personalized_sentinel_value'] = np.float64(self.personalized_sentinel_value)
         
         # Save each episode's data
         for ep_idx, traj in enumerate(trajectories):
             ep_prefix = f'episode_{ep_idx}'
-
-            if self.log_personalized_patient_attributes:
-                self._validate_personalized_logging_contract(
-                    trajectory=traj,
-                    episode_prefix=ep_prefix,
-                )
             
             # Save patient data
             if traj['patient_full_data']:
@@ -541,125 +496,6 @@ class DetailedEvalCallback(EvalCallback):
         
         if self.verbose >= 1:
             print(f"Saved evaluation trajectories to {filename}")
-
-    def _validate_personalized_logging_contract(
-        self,
-        trajectory: Dict[str, Any],
-        episode_prefix: str,
-    ) -> None:
-        patient_full_data = trajectory.get('patient_full_data', [])
-        if not patient_full_data:
-            raise ValueError(
-                f"{episode_prefix}: personalized logging contract requires non-empty patient_full_data"
-            )
-
-        required_step_keys = {
-            'has_personalized_prediction',
-        }
-
-        personalized_observed_prefix = 'personalized_predicted_resistance__'
-        sentinel_value = float(self.personalized_sentinel_value)
-        expected_num_steps = len(patient_full_data)
-
-        infected_rows = trajectory.get('patients_actually_infected', [])
-        if len(infected_rows) != expected_num_steps:
-            raise ValueError(
-                f"{episode_prefix}: expected patients_actually_infected for each step "
-                f"({expected_num_steps}), got {len(infected_rows)}"
-            )
-
-        individual_reward_rows = trajectory.get('individual_rewards', [])
-        if len(individual_reward_rows) != expected_num_steps:
-            raise ValueError(
-                f"{episode_prefix}: expected individual_rewards for each step "
-                f"({expected_num_steps}), got {len(individual_reward_rows)}"
-            )
-
-        for step_index, step_data in enumerate(patient_full_data):
-            if 'true' not in step_data or 'observed' not in step_data:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: patient_full_data must contain 'true' and 'observed'"
-                )
-
-            true_payload = step_data['true']
-            observed_payload = step_data['observed']
-
-            for required_key in required_step_keys:
-                if required_key not in true_payload or required_key not in observed_payload:
-                    raise ValueError(
-                        f"{episode_prefix} step {step_index}: missing required personalized field '{required_key}'"
-                    )
-
-            has_prediction_values = []
-            for patient_index, raw_value in enumerate(observed_payload['has_personalized_prediction']):
-                numeric_value = float(raw_value)
-                if numeric_value not in (0.0, 1.0):
-                    raise ValueError(
-                        f"{episode_prefix} step {step_index}: has_personalized_prediction for patient "
-                        f"{patient_index} must be 0.0 or 1.0, got {numeric_value}"
-                    )
-                has_prediction_values.append(bool(int(numeric_value)))
-
-            personalized_attribute_names = sorted(
-                attribute_name
-                for attribute_name in observed_payload.keys()
-                if attribute_name.startswith(personalized_observed_prefix)
-            )
-            if not personalized_attribute_names:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: no personalized prediction attributes found "
-                    f"(expected keys starting with '{personalized_observed_prefix}')"
-                )
-
-            expected_num_patients = len(has_prediction_values)
-            if expected_num_patients == 0:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: has_personalized_prediction is empty"
-                )
-
-            infected_row = infected_rows[step_index]
-            reward_row = individual_reward_rows[step_index]
-            if infected_row is None or reward_row is None:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: missing reward/outcome payload "
-                    "(patients_actually_infected or individual_rewards)"
-                )
-            if len(infected_row) != expected_num_patients:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: patients_actually_infected length "
-                    f"{len(infected_row)} != expected {expected_num_patients}"
-                )
-            if len(reward_row) != expected_num_patients:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: individual_rewards length "
-                    f"{len(reward_row)} != expected {expected_num_patients}"
-                )
-
-            for attribute_name in personalized_attribute_names:
-                predicted_values = observed_payload[attribute_name]
-                if len(predicted_values) != expected_num_patients:
-                    raise ValueError(
-                        f"{episode_prefix} step {step_index}: field '{attribute_name}' length "
-                        f"{len(predicted_values)} != expected {expected_num_patients}"
-                    )
-
-                for patient_index, predicted_value_raw in enumerate(predicted_values):
-                    predicted_value = float(predicted_value_raw)
-                    has_prediction = has_prediction_values[patient_index]
-
-                    if has_prediction:
-                        if not 0.0 <= predicted_value <= 1.0:
-                            raise ValueError(
-                                f"{episode_prefix} step {step_index}: covered patient {patient_index} "
-                                f"field '{attribute_name}' must be in [0, 1], got {predicted_value}"
-                            )
-                    else:
-                        if predicted_value != sentinel_value:
-                            raise ValueError(
-                                f"{episode_prefix} step {step_index}: uncovered patient {patient_index} "
-                                f"field '{attribute_name}' must equal sentinel "
-                                f"{sentinel_value}, got {predicted_value}"
-                            )
 
 
 class EpisodeCounterCallback(BaseCallback):

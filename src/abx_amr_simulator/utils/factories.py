@@ -8,6 +8,8 @@ from configuration dictionaries.
 import os
 import json
 import copy
+import importlib
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, TYPE_CHECKING
@@ -752,6 +754,88 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
         >>> agent.learn(total_timesteps=total_episodes * max_time_steps, callback=callbacks)
     """
     from abx_amr_simulator.callbacks import PatientStatsLoggingCallback, DetailedEvalCallback, EpisodeCounterCallback
+
+    def _resolve_detailed_eval_callback_class() -> type:
+        """Resolve optional callback-class override for trajectory evaluation.
+
+        Expected training config keys:
+        - training.detailed_eval_callback_module: import path or filesystem path
+        - training.detailed_eval_callback_class: class name in that module
+
+        If unset, returns canonical DetailedEvalCallback.
+        """
+        module_spec = training_config.get('detailed_eval_callback_module', None)
+        class_name = training_config.get('detailed_eval_callback_class', None)
+
+        if module_spec is None and class_name is None:
+            return DetailedEvalCallback
+
+        if not module_spec or not class_name:
+            raise ValueError(
+                "Both training.detailed_eval_callback_module and "
+                "training.detailed_eval_callback_class must be provided when "
+                "overriding the detailed evaluation callback."
+            )
+
+        resolved_module = None
+        import_error: Optional[Exception] = None
+
+        try:
+            resolved_module = importlib.import_module(module_spec)
+        except Exception as exc:
+            import_error = exc
+
+        if resolved_module is None:
+            module_path = Path(module_spec)
+            if not module_path.is_absolute():
+                umbrella_dir = config.get('_umbrella_config_dir')
+                if umbrella_dir is None:
+                    raise ValueError(
+                        "Callback override module path is relative but _umbrella_config_dir "
+                        "is missing from merged config. "
+                        f"module='{module_spec}', original_import_error={import_error}"
+                    )
+                module_path = (Path(umbrella_dir) / module_path).resolve()
+            else:
+                module_path = module_path.resolve()
+
+            if not module_path.exists():
+                raise ValueError(
+                    "Detailed eval callback override module is not importable and filesystem "
+                    f"path does not exist: '{module_spec}' -> '{module_path}'. "
+                    f"Original import error: {import_error}"
+                )
+
+            dynamic_module_name = f"abx_amr_simulator_eval_callback_plugin_{module_path.stem}"
+            module_loader_spec = importlib.util.spec_from_file_location(
+                name=dynamic_module_name,
+                location=str(module_path),
+            )
+            if module_loader_spec is None or module_loader_spec.loader is None:
+                raise ImportError(
+                    f"Failed to create import spec for callback module path '{module_path}'."
+                )
+            resolved_module = importlib.util.module_from_spec(module_loader_spec)
+            module_loader_spec.loader.exec_module(resolved_module)
+
+        if not hasattr(resolved_module, class_name):
+            raise AttributeError(
+                "Detailed eval callback class not found in override module: "
+                f"module='{module_spec}', class='{class_name}'."
+            )
+
+        resolved_class = getattr(resolved_module, class_name)
+        if not isinstance(resolved_class, type):
+            raise TypeError(
+                "Detailed eval callback override must reference a class type, got "
+                f"'{type(resolved_class).__name__}'."
+            )
+        if not issubclass(resolved_class, DetailedEvalCallback):
+            raise TypeError(
+                "Detailed eval callback override class must inherit from DetailedEvalCallback; "
+                f"got '{resolved_class.__name__}'."
+            )
+        return resolved_class
     
     callbacks = []
     
@@ -761,22 +845,11 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
     num_eval_episodes = training_config.get('num_eval_episodes', 10)
     save_freq = training_config.get('_converted_save_freq', training_config.get('save_freq', 10000))
     log_patient_trajectories = training_config.get('log_patient_trajectories', False)
-    log_personalized_patient_attributes = training_config.get('log_personalized_patient_attributes', False)
-
-    # Resolve sentinel value from patient generator config when personalized logging is enabled.
-    # Fail loudly if the toggle is on but the patient generator config does not supply the
-    # sentinel so that misconfigured runs are caught immediately rather than silently producing
-    # artifacts that cannot be used for downstream subgroup analysis.
-    patient_generator_config = config.get('patient_generator', {})
-    personalized_sentinel_value: Optional[float] = patient_generator_config.get(
-        'personalized_missing_prediction_fill_value', None
-    )
-    if log_personalized_patient_attributes and personalized_sentinel_value is None:
+    if training_config.get('log_personalized_patient_attributes', False):
         raise ValueError(
-            "training.log_personalized_patient_attributes is True, but "
-            "patient_generator.personalized_missing_prediction_fill_value is not set. "
-            "Provide this value in the patient generator config so the sentinel can be "
-            "persisted in evaluation trajectory artifacts for downstream subgroup inference."
+            "training.log_personalized_patient_attributes is no longer supported in canonical "
+            "abx_amr_simulator callbacks. Configure a custom detailed eval callback subclass via "
+            "training.detailed_eval_callback_module + training.detailed_eval_callback_class."
         )
     
     # Patient stats logging callback (always active during training)
@@ -799,9 +872,15 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
         vec_eval_env = DummyVecEnv([lambda env=eval_env: env])
         
         if log_patient_trajectories:
+            detailed_eval_callback_class = _resolve_detailed_eval_callback_class()
+            detailed_eval_callback_kwargs = training_config.get('detailed_eval_callback_kwargs', {})
+            if not isinstance(detailed_eval_callback_kwargs, dict):
+                raise ValueError(
+                    "training.detailed_eval_callback_kwargs must be a dictionary when provided."
+                )
             # Use DetailedEvalCallback when we want full patient trajectories
             # DetailedEvalCallback will create run_dir/eval_logs/ automatically
-            eval_callback = DetailedEvalCallback(
+            eval_callback = detailed_eval_callback_class(
                 eval_env=vec_eval_env,
                 n_eval_episodes=num_eval_episodes,
                 eval_freq=eval_freq,
@@ -809,8 +888,7 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
                 best_model_save_path=os.path.join(run_dir, 'checkpoints'),
                 deterministic=True,
                 render=False,
-                log_personalized_patient_attributes=log_personalized_patient_attributes,
-                personalized_sentinel_value=personalized_sentinel_value,
+                **detailed_eval_callback_kwargs,
             )
         else:
             # Use standard EvalCallback

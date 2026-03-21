@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 from datetime import datetime
 import pytest
+import gymnasium as gym
 
 from abx_amr_simulator.utils import (
     create_run_directory,
@@ -319,7 +320,7 @@ class TestSaveTrainingSummary:
             assert loaded_summary["total_episodes"] == 50
 
 class TestSetupCallbacksPersonalizedLogging:
-    """Tests for personalized logging toggle and sentinel metadata validation."""
+    """Tests for personalized callback decoupling in canonical setup_callbacks."""
 
     def test_defaults_toggle_off_when_not_provided(self):
         """Omitted toggle should default to OFF and callback setup should succeed."""
@@ -339,8 +340,8 @@ class TestSetupCallbacksPersonalizedLogging:
             assert isinstance(callbacks, list)
             assert len(callbacks) >= 2
 
-    def test_toggle_on_with_sentinel_accepts_configuration(self):
-        """Toggle ON should be accepted when sentinel is provided in patient generator config."""
+    def test_toggle_on_with_sentinel_fails_loudly(self):
+        """Deprecated canonical personalized toggle should fail loudly even with sentinel config."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
                 'training': {
@@ -352,16 +353,81 @@ class TestSetupCallbacksPersonalizedLogging:
                 },
             }
 
+            with pytest.raises(
+                expected_exception=ValueError,
+                match='no longer supported in canonical abx_amr_simulator callbacks',
+            ):
+                setup_callbacks(
+                    config=config,
+                    run_dir=tmpdir,
+                    eval_env=None,
+                )
+
+
+class TestSetupCallbacksCustomDetailedEvalCallback:
+    """Tests for custom detailed eval callback override selection and kwargs wiring."""
+
+    def test_custom_detailed_eval_callback_override_from_filesystem_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_path = Path(tmpdir) / 'custom_eval_callback.py'
+            plugin_path.write_text(
+                (
+                    "from abx_amr_simulator.callbacks import DetailedEvalCallback\n"
+                    "\n"
+                    "class TestDetailedEvalCallback(DetailedEvalCallback):\n"
+                    "    def __init__(self, *args, custom_note='unset', **kwargs):\n"
+                    "        super().__init__(*args, **kwargs)\n"
+                    "        self.custom_note = custom_note\n"
+                ),
+                encoding='utf-8',
+            )
+
+            config = {
+                'training': {
+                    'log_patient_trajectories': True,
+                    'detailed_eval_callback_module': str(plugin_path),
+                    'detailed_eval_callback_class': 'TestDetailedEvalCallback',
+                    'detailed_eval_callback_kwargs': {
+                        'custom_note': 'from_test',
+                    },
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
             callbacks = setup_callbacks(
                 config=config,
                 run_dir=tmpdir,
-                eval_env=None,
+                eval_env=eval_env,
             )
-            assert isinstance(callbacks, list)
-            assert len(callbacks) >= 2
+            eval_env.close()
+
+            matched = [cb for cb in callbacks if cb.__class__.__name__ == 'TestDetailedEvalCallback']
+            assert len(matched) == 1
+            assert matched[0].custom_note == 'from_test'
+
+    def test_custom_detailed_eval_callback_requires_module_and_class_together(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'training': {
+                    'log_patient_trajectories': True,
+                    'detailed_eval_callback_module': 'some.module.path',
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
+            with pytest.raises(
+                expected_exception=ValueError,
+                match='Both training.detailed_eval_callback_module and training.detailed_eval_callback_class',
+            ):
+                setup_callbacks(
+                    config=config,
+                    run_dir=tmpdir,
+                    eval_env=eval_env,
+                )
+            eval_env.close()
 
     def test_toggle_on_without_sentinel_fails_loudly(self):
-        """Toggle ON without sentinel should raise a clear ValueError."""
+        """Deprecated canonical personalized toggle should fail loudly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
                 'training': {
@@ -373,7 +439,7 @@ class TestSetupCallbacksPersonalizedLogging:
 
             with pytest.raises(
                 expected_exception=ValueError,
-                match='patient_generator.personalized_missing_prediction_fill_value is not set',
+                match='no longer supported in canonical abx_amr_simulator callbacks',
             ):
                 setup_callbacks(
                     config=config,
