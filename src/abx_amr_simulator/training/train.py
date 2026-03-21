@@ -81,6 +81,7 @@ from typing import Dict, Any, Optional, Tuple
 import pdb
 
 from stable_baselines3 import PPO, A2C
+from stable_baselines3.common.evaluation import evaluate_policy
 from sb3_contrib import RecurrentPPO
 
 from abx_amr_simulator.utils import (
@@ -263,6 +264,22 @@ def validate_training_config(config: Dict[str, Any], loaded_best_params_from: Op
         sys.exit(1)
 
 
+def compute_explicit_final_eval_mean_reward(*, agent: Any, eval_env: Any, n_eval_episodes: int) -> float:
+    """Run one explicit final evaluation pass and return mean reward."""
+    mean_reward, _ = evaluate_policy(
+        model=agent,
+        env=eval_env,
+        n_eval_episodes=n_eval_episodes,
+        deterministic=True,
+        render=False,
+        callback=None,
+        reward_threshold=None,
+        return_episode_rewards=False,
+        warn=False,
+    )
+    return float(mean_reward)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Train RL agent on ABXAMREnv')
     parser.add_argument(
@@ -330,6 +347,11 @@ def main():
         '--skip-registry-validation',
         action='store_true',
         help='Skip registry validation (do not check if experiment folders still exist). Useful when moving completed experiments to different storage. Still checks if run completed, just does not validate folder existence.'
+    )
+    parser.add_argument(
+        '--explicit-final-eval',
+        action='store_true',
+        help='Run one explicit evaluation pass at end of training and print "Explicit final mean reward" for downstream parsers (e.g., tuning objective extraction).'
     )
     args = parser.parse_args()
     
@@ -620,7 +642,19 @@ def main():
                             "Likely cause: no evaluation pass was triggered before training stopped "
                             f"(model_num_timesteps={agent.num_timesteps} < eval_freq_steps={eval_freq_steps})."
                         )
+
                 print(f"{'='*70}\n")
+
+            if args.explicit_final_eval:
+                explicit_n_eval_episodes = int(
+                    getattr(eval_callback, 'n_eval_episodes', config.get('training', {}).get('n_eval_episodes', 5))
+                )
+                explicit_final_mean_reward = compute_explicit_final_eval_mean_reward(
+                    agent=agent,
+                    eval_env=eval_env,
+                    n_eval_episodes=explicit_n_eval_episodes,
+                )
+                print(f"Explicit final mean reward: {explicit_final_mean_reward:.4f}")
         
         # Save summary
         save_training_summary(config, run_dir, additional_steps, 0)
@@ -1001,7 +1035,19 @@ def main():
                             "Likely cause: no evaluation pass was triggered before training stopped "
                             f"(model_num_timesteps={agent.num_timesteps} < eval_freq_steps={eval_freq_steps})."
                         )
+
                 print(f"{'='*70}\n")
+
+            if args.explicit_final_eval:
+                explicit_n_eval_episodes = int(
+                    getattr(eval_callback, 'n_eval_episodes', config.get('training', {}).get('n_eval_episodes', 5))
+                )
+                explicit_final_mean_reward = compute_explicit_final_eval_mean_reward(
+                    agent=agent,
+                    eval_env=eval_env,
+                    n_eval_episodes=explicit_n_eval_episodes,
+                )
+                print(f"Explicit final mean reward: {explicit_final_mean_reward:.4f}")
         
         # Save summary
         save_training_summary(config, run_dir, total_timesteps, 0)

@@ -462,14 +462,10 @@ def run_training_trial(
         param_overrides['training.total_num_training_episodes'] = truncated_episodes
         param_overrides['training.run_name'] = f"{trial_run_prefix}_seed{seed}"
         
-        # Ensure at least one evaluation occurs during tuning even when episodes
-        # terminate early (e.g., HRL boundary clipping). The train.py callback
-        # converts eval_freq_every_n_episodes to timesteps using max_time_steps,
-        # so using truncated_episodes here can miss evaluation entirely when
-        # EpisodeCounterCallback stops training before that timestep threshold.
-        # Using 1 guarantees frequent evaluation and avoids non-finite rewards
-        # caused by never-running EvalCallback.
-        param_overrides['training.eval_freq_every_n_episodes'] = 1
+        # Keep periodic callback evaluation sparse for tuning speed.
+        # We rely on train.py --explicit-final-eval for one guaranteed,
+        # parseable terminal metric that drives the Optuna objective.
+        param_overrides['training.eval_freq_every_n_episodes'] = truncated_episodes
         param_overrides['training.save_freq_every_n_episodes'] = 999999  # Save only final model
         param_overrides['training.log_patient_trajectories'] = False  # Disable trajectory logging
         
@@ -477,7 +473,8 @@ def run_training_trial(
         cmd = [
             sys.executable, '-m', 'abx_amr_simulator.training.train',
             '--umbrella-config', umbrella_config_path,
-            '--results-dir', results_dir
+            '--results-dir', results_dir,
+            '--explicit-final-eval',
         ]
         
         # Add subconfig overrides
@@ -602,6 +599,7 @@ def parse_reward_from_output_detailed(output: str) -> Tuple[float, bool, Optiona
     ]
 
     prioritized_patterns = [
+        'explicit final mean reward',
         'final mean reward',
         'mean_reward',
         'mean reward',
