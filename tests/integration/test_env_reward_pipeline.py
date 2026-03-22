@@ -134,7 +134,6 @@ def test_reward_pipeline_matches_expected_deterministic() -> None:
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=info["visible_amr_levels"],
-        delta_visible_amr_per_antibiotic=info["delta_visible_amr_per_antibiotic"],
         rng=rng_copy,
     )
 

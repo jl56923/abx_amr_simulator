@@ -848,6 +848,31 @@ class PatientGeneratorMixer(PatientGenerator):
         # Store mixer-specific attributes
         self.generators: List[PatientGenerator] = generators
         self.proportions: np.ndarray = proportions_array
+
+        # Logging configuration: inherit from children and validate.
+        # If child generators differ, use deterministic union to avoid silent attr loss.
+        child_logging_attrs: List[List[str]] = []
+        for gen in self.generators:
+            if hasattr(gen, 'logging_patient_attributes'):
+                child_logging_attrs.append(list(gen.logging_patient_attributes))
+            elif hasattr(gen, 'visible_patient_attributes'):
+                child_logging_attrs.append(list(gen.visible_patient_attributes))
+            else:
+                child_logging_attrs.append(list(self.DEFAULT_LOGGING_PATIENT_ATTRIBUTES))
+
+        first_logging_attrs = child_logging_attrs[0]
+        logging_attrs_match = all(attrs == first_logging_attrs for attrs in child_logging_attrs)
+        if logging_attrs_match:
+            self.logging_patient_attributes: List[str] = first_logging_attrs
+        else:
+            merged_logging_attrs = set()
+            for attrs in child_logging_attrs:
+                merged_logging_attrs.update(attrs)
+            self.logging_patient_attributes = sorted(merged_logging_attrs)
+
+        self._validate_logging_patient_attributes(
+            logging_patient_attributes=self.logging_patient_attributes,
+        )
         
         # Initialize the RNG for this mixer (not the base class __init__)
         # We don't call super().__init__() because we don't have distribution configs
