@@ -434,7 +434,7 @@ class HeuristicWorker(OptionBase):
         return antibiotics
 
 
-def load_heuristic_option(name: str, config: Dict[str, Any]) -> OptionBase:
+def load_heuristic_option(config: Dict[str, Any]) -> OptionBase:
     """Instantiate a HeuristicWorker from config.
     
     Expected config keys:
@@ -445,8 +445,8 @@ def load_heuristic_option(name: str, config: Dict[str, Any]) -> OptionBase:
         - default_recovery_without_treatment_prob (float): Default spontaneous recovery probability (default 0.1)
     
     Args:
-        name: Unique identifier for this option instance
-        config: Merged configuration dict (default config + overrides)
+        config: Merged configuration dict (default config + overrides). Must include
+            `option_name` from the standardized loader framework.
     
     Returns:
         HeuristicWorker instance implementing OptionBase protocol
@@ -457,6 +457,13 @@ def load_heuristic_option(name: str, config: Dict[str, Any]) -> OptionBase:
     """
     if not isinstance(config, dict):
         raise TypeError(f"HeuristicWorker config must be a dict, got {type(config).__name__}")
+
+    option_name = config.get('option_name')
+    if option_name is None:
+        raise ValueError(
+            "load_heuristic_option requires config['option_name'] from the standardized loader framework"
+        )
+    name = str(option_name)
     
     # Validate required keys
     if 'duration' not in config:

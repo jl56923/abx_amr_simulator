@@ -41,7 +41,7 @@ class BlockOption(OptionBase):
         return [self.antibiotic]
 
 
-def load_block_option(name: str, config: Dict[str, Any]) -> OptionBase:
+def load_block_option(config: Dict[str, Any]) -> OptionBase:
     """Instantiate a BlockOption from config.
 
     Expected config keys:
@@ -51,6 +51,12 @@ def load_block_option(name: str, config: Dict[str, Any]) -> OptionBase:
     """
     if not isinstance(config, dict):
         raise TypeError("config must be a dict")
+
+    option_name = config.get("option_name")
+    if option_name is None:
+        raise ValueError(
+            "load_block_option requires config['option_name'] from the standardized loader framework"
+        )
 
     if "antibiotic" not in config:
         raise ValueError("BlockOption config missing required key 'antibiotic'")
@@ -70,7 +76,7 @@ def load_block_option(name: str, config: Dict[str, Any]) -> OptionBase:
         allowed_antibiotics=config.get("allowed_antibiotics"),
     )
 
-    return BlockOption(name=name, antibiotic=antibiotic, duration=duration)
+    return BlockOption(name=str(option_name), antibiotic=antibiotic, duration=duration)
 
 
 def _validate_allowed_antibiotics(antibiotic: str, allowed_antibiotics: Any) -> None:

@@ -120,13 +120,13 @@ def test_block_loader_validates_required_keys():
     module = _load_module(module_name="block_option_loader", module_path=module_path)
 
     with pytest.raises(ValueError):
-        module.load_block_option(name="bad", config={})
+        module.load_block_option(config={})
 
     with pytest.raises(ValueError):
-        module.load_block_option(name="bad", config={"antibiotic": "A"})
+        module.load_block_option(config={"option_name": "bad", "antibiotic": "A"})
 
     with pytest.raises(ValueError):
-        module.load_block_option(name="bad", config={"duration": 5})
+        module.load_block_option(config={"option_name": "bad", "duration": 5})
 
 
 def test_alternation_option_sequences_actions():
@@ -203,13 +203,13 @@ def test_alternation_loader_validates_sequence():
     module = _load_module(module_name="alternation_option_loader", module_path=module_path)
 
     with pytest.raises(ValueError):
-        module.load_alternation_option(name="bad", config={})
+        module.load_alternation_option(config={})
 
     with pytest.raises(ValueError):
-        module.load_alternation_option(name="bad", config={"sequence": []})
+        module.load_alternation_option(config={"option_name": "bad", "sequence": []})
 
     with pytest.raises(ValueError):
-        module.load_alternation_option(name="bad", config={"sequence": [1, 2]})
+        module.load_alternation_option(config={"option_name": "bad", "sequence": [1, 2]})
 
 
 def test_default_deterministic_library_loads():
