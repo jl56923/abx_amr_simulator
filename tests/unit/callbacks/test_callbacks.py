@@ -283,14 +283,19 @@ class TestDetailedEvalCallback:
             'rewards': [],
             'actual_amr_levels': [],
             'visible_amr_levels': [],
+            'manager_clipped': [],
+            'steps_clipped': [],
+            'manager_transition_trainable': [],
+            'option_id': [],
+            'primitive_actions': [],
         }
-        
+
         for _ in range(3):  # Short episode
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, info = vec_env.step(action)
-            
+
             info = info[0]  # Unwrap from list
-            
+
             if 'patient_full_data' in info:
                 episode_data['patient_full_data'].append(info['patient_full_data'])
                 episode_data['patient_stats'].append(info['patient_stats'])
@@ -298,9 +303,14 @@ class TestDetailedEvalCallback:
                 episode_data['rewards'].append(float(reward))
                 episode_data['actual_amr_levels'].append(info.get('actual_amr_levels', {}))
                 episode_data['visible_amr_levels'].append(info.get('visible_amr_levels', {}))
-            
+                episode_data['manager_clipped'].append(info.get('manager_clipped', False))
+                episode_data['steps_clipped'].append(info.get('steps_clipped', 0))
+                episode_data['manager_transition_trainable'].append(info.get('manager_transition_trainable', True))
+                episode_data['option_id'].append(info.get('option_id', None))
+                episode_data['primitive_actions'].append(info.get('primitive_actions', None))
+
             episode_reward += reward
-            
+
             if done[0]:
                 break
         
@@ -357,13 +367,18 @@ class TestDetailedEvalCallback:
             'rewards': [],
             'actual_amr_levels': [],
             'visible_amr_levels': [],
+            'manager_clipped': [],
+            'steps_clipped': [],
+            'manager_transition_trainable': [],
+            'option_id': [],
+            'primitive_actions': [],
         }
-        
+
         num_steps = 3
         for _ in range(num_steps):
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, info = vec_env.step(action)
-            
+
             info = info[0]
             episode_data['patient_full_data'].append(info['patient_full_data'])
             episode_data['patient_stats'].append(info['patient_stats'])
@@ -371,6 +386,11 @@ class TestDetailedEvalCallback:
             episode_data['rewards'].append(float(reward))
             episode_data['actual_amr_levels'].append(info.get('actual_amr_levels', {}))
             episode_data['visible_amr_levels'].append(info.get('visible_amr_levels', {}))
+            episode_data['manager_clipped'].append(info.get('manager_clipped', False))
+            episode_data['steps_clipped'].append(info.get('steps_clipped', 0))
+            episode_data['manager_transition_trainable'].append(info.get('manager_transition_trainable', True))
+            episode_data['option_id'].append(info.get('option_id', None))
+            episode_data['primitive_actions'].append(info.get('primitive_actions', None))
         
         trajectories.append(episode_data)
         callback._save_trajectories(trajectories, [0.0], [num_steps])
@@ -420,6 +440,158 @@ class TestDetailedEvalCallback:
         # Disable it (simulating end of eval)
         callback._set_eval_env_logging_flag(False)
         assert test_env.log_full_patient_attributes is False
+
+class TestDetailedEvalCallbackHRLLogging:
+    """Tests for Phase B clipping metadata and HRL primitive-action logging."""
+
+    def _make_traj(self, num_steps, option_ids=None, primitive_actions=None):
+        """Build a minimal trajectory dict that _save_trajectories accepts."""
+        return {
+            'patient_full_data': [],   # empty — skip patient array saving branch
+            'patient_stats': [],
+            'actions': list(range(num_steps)),
+            'rewards': [0.0] * num_steps,
+            'patients_actually_infected': None,
+            'individual_rewards': None,
+            'actual_amr_levels': [],
+            'visible_amr_levels': [],
+            'antibiotic_names': [],
+            'manager_clipped': [False] * num_steps,
+            'steps_clipped': [0] * num_steps,
+            'manager_transition_trainable': [True] * num_steps,
+            'option_id': option_ids if option_ids is not None else [None] * num_steps,
+            'primitive_actions': primitive_actions if primitive_actions is not None else [None] * num_steps,
+        }
+
+    def test_clipping_metadata_saved_for_non_hrl(self, test_env, temp_log_dir):
+        """Phase B clipping fields are always written, even for non-HRL runs."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        model = PPO('MlpPolicy', vec_env, verbose=0)
+        callback = DetailedEvalCallback(
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
+        )
+        callback.init_callback(model)
+
+        num_steps = 4
+        traj = self._make_traj(num_steps)
+        callback._save_trajectories([traj], [1.0], [num_steps])
+
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
+
+        assert 'episode_0/manager_clipped' in data
+        assert 'episode_0/steps_clipped' in data
+        assert 'episode_0/manager_transition_trainable' in data
+        assert len(data['episode_0/manager_clipped']) == num_steps
+        assert len(data['episode_0/steps_clipped']) == num_steps
+        assert len(data['episode_0/manager_transition_trainable']) == num_steps
+
+    def test_option_id_saved_when_present(self, test_env, temp_log_dir):
+        """option_id is written to npz when non-None values are present."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        model = PPO('MlpPolicy', vec_env, verbose=0)
+        callback = DetailedEvalCallback(
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
+        )
+        callback.init_callback(model)
+
+        option_ids = [3, 3, 5, 3]
+        traj = self._make_traj(len(option_ids), option_ids=option_ids)
+        callback._save_trajectories([traj], [1.0], [len(option_ids)])
+
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
+
+        assert 'episode_0/option_id' in data
+        np.testing.assert_array_equal(data['episode_0/option_id'], option_ids)
+
+    def test_option_id_omitted_when_all_none(self, test_env, temp_log_dir):
+        """option_id key is absent from npz when all values are None (non-HRL run)."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        model = PPO('MlpPolicy', vec_env, verbose=0)
+        callback = DetailedEvalCallback(
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
+        )
+        callback.init_callback(model)
+
+        traj = self._make_traj(3)  # option_id all None
+        callback._save_trajectories([traj], [0.0], [3])
+
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
+
+        assert 'episode_0/option_id' not in data
+
+    def test_primitive_actions_saved_when_present(self, test_env, temp_log_dir):
+        """primitive_actions (list of lists) is written to npz correctly."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        model = PPO('MlpPolicy', vec_env, verbose=0)
+        callback = DetailedEvalCallback(
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
+        )
+        callback.init_callback(model)
+
+        # Simulate 3 macro-steps with k=2 primitive steps each
+        prim = [[0, 1], [0, 0], [1, 0]]
+        traj = self._make_traj(3, option_ids=[2, 2, 2], primitive_actions=prim)
+        callback._save_trajectories([traj], [1.0], [3])
+
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
+
+        assert 'episode_0/primitive_actions' in data
+        loaded = data['episode_0/primitive_actions']
+        assert len(loaded) == 3
+        assert list(loaded[0]) == [0, 1]
+        assert list(loaded[1]) == [0, 0]
+        assert list(loaded[2]) == [1, 0]
+
+    def test_primitive_actions_omitted_when_all_none(self, test_env, temp_log_dir):
+        """primitive_actions key is absent from npz when all values are None."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        model = PPO('MlpPolicy', vec_env, verbose=0)
+        callback = DetailedEvalCallback(
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
+        )
+        callback.init_callback(model)
+
+        traj = self._make_traj(3)  # primitive_actions all None
+        callback._save_trajectories([traj], [0.0], [3])
+
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
+
+        assert 'episode_0/primitive_actions' not in data
+
+    def test_clipping_values_round_trip(self, test_env, temp_log_dir):
+        """Non-default clipping values are preserved exactly through save/load."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        model = PPO('MlpPolicy', vec_env, verbose=0)
+        callback = DetailedEvalCallback(
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
+        )
+        callback.init_callback(model)
+
+        traj = self._make_traj(4)
+        traj['manager_clipped'] = [False, True, False, True]
+        traj['steps_clipped'] = [0, 3, 0, 7]
+        traj['manager_transition_trainable'] = [True, False, True, False]
+
+        callback._save_trajectories([traj], [2.0], [4])
+
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
+
+        np.testing.assert_array_equal(data['episode_0/manager_clipped'], [False, True, False, True])
+        np.testing.assert_array_equal(data['episode_0/steps_clipped'], [0, 3, 0, 7])
+        np.testing.assert_array_equal(data['episode_0/manager_transition_trainable'], [True, False, True, False])
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

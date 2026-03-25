@@ -410,6 +410,9 @@ class DetailedEvalCallback(EvalCallback):
                 'manager_clipped': [],              # Whether macro-action was clipped at boundary
                 'steps_clipped': [],                # Number of steps clipped
                 'manager_transition_trainable': [],  # Trainability flag for manager training
+                # HRL primitive-level logging
+                'option_id': [],          # Manager's option selection at each macro-step
+                'primitive_actions': [],  # Worker's prescription actions at each primitive step within each macro-step
             }
             
             done = False
@@ -440,6 +443,10 @@ class DetailedEvalCallback(EvalCallback):
                     episode_data['manager_clipped'].append(info.get('manager_clipped', False))
                     episode_data['steps_clipped'].append(info.get('steps_clipped', 0))
                     episode_data['manager_transition_trainable'].append(info.get('manager_transition_trainable', True))
+
+                    # HRL primitive-level logging
+                    episode_data['option_id'].append(info.get('option_id', None))
+                    episode_data['primitive_actions'].append(info.get('primitive_actions', None))
                 
                 episode_reward += reward
                 episode_length += 1
@@ -529,7 +536,39 @@ class DetailedEvalCallback(EvalCallback):
     ):
         """
         Save evaluation trajectories to disk as .npz files.
-        
+
+        Output npz schema
+        -----------------
+        Top-level keys:
+            episode_rewards          : (num_episodes,) total reward per episode
+            episode_lengths          : (num_episodes,) length per episode
+            num_episodes             : scalar
+            timestep                 : scalar – training step at eval time
+            antibiotic_names         : (num_abx,) str array
+
+        Per-episode keys (prefix ``episode_N/``):
+            patient_true             : (steps, patients, attrs) true patient attributes
+            patient_observed         : (steps, patients, attrs) observed patient attributes
+            patient_attrs            : (num_attrs,) attribute name strings
+            actions                  : (steps, ...) manager's option_id at each macro-step
+                                       NOTE: for HRL runs this is the option index, NOT a
+                                       primitive prescription. Use ``primitive_actions`` for
+                                       per-step antibiotic decisions.
+            rewards                  : (steps,) reward at each macro-step
+            patients_actually_infected : (steps, patients) bool
+            individual_rewards       : (steps, patients) per-patient reward
+            actual_amr_levels        : (steps, num_abx) true AMR time series
+            visible_amr_levels       : (steps, num_abx) observable AMR time series
+            manager_clipped          : (steps,) bool – macro-action clipped at episode boundary
+            steps_clipped            : (steps,) int  – number of primitive steps clipped
+            manager_transition_trainable : (steps,) bool – manager transition usable for training
+            option_id                : (steps,) int  – HRL only; manager's selected option index
+                                       (redundant with ``actions`` but explicit)
+            primitive_actions        : (steps,) object array of lists – HRL only;
+                                       each element is a list of length k containing the
+                                       worker's primitive action index at each primitive step
+                                       within that macro-step
+
         Args:
             trajectories: List of episode trajectory dicts
             episode_rewards: List of total rewards per episode
@@ -613,7 +652,21 @@ class DetailedEvalCallback(EvalCallback):
 
                 save_dict[f'{ep_prefix}/actual_amr_levels'] = actual_amr_arr
                 save_dict[f'{ep_prefix}/visible_amr_levels'] = visible_amr_arr
-        
+
+            # Save Phase B clipping metadata
+            save_dict[f'{ep_prefix}/manager_clipped'] = np.array(traj['manager_clipped'])
+            save_dict[f'{ep_prefix}/steps_clipped'] = np.array(traj['steps_clipped'])
+            save_dict[f'{ep_prefix}/manager_transition_trainable'] = np.array(traj['manager_transition_trainable'])
+
+            # Save HRL primitive-level data if present (only populated for HRL runs)
+            option_ids = traj.get('option_id', [])
+            if option_ids and any(v is not None for v in option_ids):
+                save_dict[f'{ep_prefix}/option_id'] = np.array(option_ids)
+
+            primitive_actions = traj.get('primitive_actions', [])
+            if primitive_actions and any(v is not None for v in primitive_actions):
+                save_dict[f'{ep_prefix}/primitive_actions'] = np.array(primitive_actions, dtype=object)
+
         # Save to file
         np.savez_compressed(filename, **save_dict)
         

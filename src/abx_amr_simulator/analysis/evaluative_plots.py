@@ -75,6 +75,8 @@ from abx_amr_simulator.utils import (
     clear_registry,
     plot_metrics_ensemble_agents,
 )
+from abx_amr_simulator.analysis.granular_logging import run_hrl_granular_logging_branch
+
 # ==================== Model Loading ====================
 
 from pathlib import Path
@@ -1478,6 +1480,7 @@ def analyze_experiment(
     analysis_dir: str = "analysis_output",
     num_eval_episodes: int = 10,
     aggregate_by_seed: bool = False,
+    granular_logging: bool = False,
 ) -> Tuple[bool, Optional[Path], Optional[str]]:
     """
     Analyze experiment run(s): load best models and generate evaluation plots.
@@ -1695,6 +1698,17 @@ def analyze_experiment(
             num_eval_episodes_per_seed=num_eval_episodes,
         )
 
+    # ===== Part 3c: HRL granular primitive-step logging =====
+    hrl_granular_ok = False
+    if is_hrl and granular_logging:
+        print(f"  Running HRL granular primitive-step logging...")
+        hrl_granular_ok = run_hrl_granular_logging_branch(
+            models_and_configs=models_and_configs,
+            output_dir=output_dir,
+            num_episodes=num_eval_episodes,
+            wrap_fn=wrap_environment_for_hrl,
+        )
+
     # ===== Part 4: Compute action-attribute associations (skip for HRL) =====
     if is_hrl:
         print(f"  Skipping action-attribute associations for HRL run (actions are option IDs, not antibiotics)")
@@ -1730,6 +1744,7 @@ def analyze_experiment(
         "branch_detection": branch_detection,
         "hrl_diagnostics_ok": hrl_diagnostics_ok,
         "lstm_probe_ok": lstm_probe_ok,
+        "hrl_granular_ok": hrl_granular_ok,
     }
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -1778,7 +1793,13 @@ def main():
         default="analysis_output",
         help="Base path where analysis_output will be created"
     )
-    
+    parser.add_argument(
+        "--granular-logging",
+        action="store_true",
+        default=False,
+        help="Enable per-primitive-step granular logging for HRL runs (off by default; generates granular_logs/ per seed)"
+    )
+
     args = parser.parse_args()
     
     analysis_root = Path(args.analysis_dir)
@@ -1816,6 +1837,7 @@ def main():
             analysis_dir=str(analysis_root),
             num_eval_episodes=args.num_eval_episodes,
             aggregate_by_seed=args.aggregate_by_seed,
+            granular_logging=args.granular_logging,
         )
         
         if success and timestamp:
