@@ -35,14 +35,15 @@ class AMR_LeakyBalloon(AMRDynamicsBase):
         """Initialize the leaky balloon AMR dynamics model.
         
         Creates a soft-bounded AMR accumulator using sigmoid-transformed internal pressure
-        with exponential decay (leak). Ensures AMR levels remain in [permanent_residual_volume, 1.0]
+        with decay (leak). Ensures AMR levels remain in [permanent_residual_volume, 1.0]
         with stable long-term behavior (decays to residual floor without prescribing).
         
         Args:
-            leak (float): Multiplicative decay factor applied per timestep. Must be in (0, 1).
-                Higher values → faster decay (e.g., 0.1 = 10% pressure loss per step).
-                Represents natural resistance loss due to bacterial turnover, selective pressure
-                relaxation, etc. Default: 0.1.
+            leak (float): Fixed pressure reduction applied per timestep. Must be in (0, 1).
+                At each step, `leak` is subtracted from pressure after doses are added, floored
+                at zero. Higher values → faster decay (e.g., 0.1 = 0.1 units of pressure lost
+                per step regardless of current pressure level). Represents natural resistance
+                loss due to bacterial turnover, selective pressure relaxation, etc. Default: 0.1.
             flatness_parameter (float): Controls steepness of sigmoid mapping from pressure to
                 volume. Must be > 0. Smaller values → steeper sigmoid → more abrupt AMR changes.
                 Larger values → flatter sigmoid → gradual AMR accumulation. Default: 1.0.
@@ -149,7 +150,7 @@ class AMR_LeakyBalloon(AMRDynamicsBase):
         
         Applies the core balloon dynamics:
         1. Add `doses` to internal pressure (inflation)
-        2. Apply exponential decay via `leak` multiplier (deflation)
+        2. Subtract fixed `leak` amount from pressure, floored at zero (deflation)
         3. Map updated pressure to visible volume via sigmoid
         
         Args:
