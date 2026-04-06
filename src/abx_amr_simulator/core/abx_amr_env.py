@@ -6,7 +6,6 @@ from gymnasium import spaces
 import numpy as np
 import inspect
 from typing import Optional, Dict, List, Tuple, Any
-from collections import deque
 
 import pdb # for debugging
 
@@ -45,7 +44,7 @@ class ABXAMREnv(gym.Env):
     """
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, reward_calculator, patient_generator, antibiotics_AMR_dict: dict = None, crossresistance_matrix: dict = None,num_patients_per_time_step: int = 10, update_visible_AMR_levels_every_n_timesteps: int = 1, add_noise_to_visible_AMR_levels: float = 0.0, add_bias_to_visible_AMR_levels: float = 0.0, max_time_steps: int = 1000, include_steps_since_amr_update_in_obs: bool = False, enable_temporal_features: bool = False, temporal_windows: List[int] = None, amr_dynamics_instances: Optional[Dict[str, AMRDynamicsBase]] = None):
+    def __init__(self, reward_calculator, patient_generator, antibiotics_AMR_dict: dict = None, crossresistance_matrix: dict = None,num_patients_per_time_step: int = 10, update_visible_AMR_levels_every_n_timesteps: int = 1, add_noise_to_visible_AMR_levels: float = 0.0, add_bias_to_visible_AMR_levels: float = 0.0, max_time_steps: int = 1000, include_steps_since_amr_update_in_obs: bool = False, amr_dynamics_instances: Optional[Dict[str, AMRDynamicsBase]] = None):
         """
         Initializes the environment with antibiotic specifications and heterogeneous patient population.
         
@@ -70,8 +69,6 @@ class ABXAMREnv(gym.Env):
             crossresistance_matrix: Optional dict of dicts defining off-diagonal crossresistance ratios. Only non-self entries.
                 Diagonal auto-set to 1.0. Example: {"A": {"B": 0.5}, "B": {"A": 0.01}}
             include_steps_since_amr_update_in_obs: If True, includes the number of steps since the last AMR update as an additional observation feature.
-            enable_temporal_features: If True, append prescription counts and AMR deltas to observations.
-            temporal_windows: List of window sizes for prescription counting (e.g., [10, 50]). Only used if enable_temporal_features=True.
             amr_dynamics_instances: Optional prebuilt AMR dynamics models keyed by antibiotic name.
                 When provided, these models are used directly after validation. When None,
                 the environment constructs default AMR_LeakyBalloon models from
@@ -82,10 +79,6 @@ class ABXAMREnv(gym.Env):
         
         # Store flag for observation augmentation
         self.include_steps_since_amr_update_in_obs: bool = include_steps_since_amr_update_in_obs
-        
-        # Temporal features config
-        self.enable_temporal_features: bool = enable_temporal_features
-        self.temporal_windows: List[int] = temporal_windows if temporal_windows is not None else [10, 50]
         
         # Do validation checks:
         if not len(antibiotics_AMR_dict) > 0:
@@ -218,32 +211,16 @@ class ABXAMREnv(gym.Env):
         num_actions_per_patient = self.num_abx + 1
         self.action_space = spaces.MultiDiscrete([num_actions_per_patient] * self.num_patients_per_time_step)
         
-        # Initialize temporal feature tracking (will be properly initialized in reset())
-        from collections import deque
-        self.prescription_history: Dict[str, List[deque]] = {}
-        self.previous_visible_amr_levels: Dict[str, float] = {}
-        if self.enable_temporal_features:
-            for abx_name in self.antibiotic_names:
-                # One deque per window size per antibiotic
-                self.prescription_history[abx_name] = [deque(maxlen=w) for w in self.temporal_windows]
-                self.previous_visible_amr_levels[abx_name] = 0.0
-        
         # Observation space consists of:
         # - Patient observed attributes provided by PatientGenerator.observe (num_patients * num_visible_attrs)
         # - Community AMR levels for each antibiotic (num_abx values, each in [0, 1])
-        # - (Optional) Temporal features: prescription counts per window + AMR deltas
-        # Shape: (patient_generator.obs_dim(num_patients) + num_abx + temporal_dim,)
+        # Shape: (patient_generator.obs_dim(num_patients) + num_abx,)
         # Note: Actions are mutually exclusive - agent picks one antibiotic OR no treatment per patient
         obs_dim_patients = int(self.patient_generator.obs_dim(num_patients_per_time_step))
         obs_dim = obs_dim_patients + self.num_abx
         if include_steps_since_amr_update_in_obs:
             # Add an extra dimension for the steps since AMR update (scalar, repeated for each patient)
             obs_dim += 1
-        if self.enable_temporal_features:
-            # Add temporal features: (num_abx * num_windows) prescription counts + (num_abx) AMR deltas
-            num_windows = len(self.temporal_windows)
-            temporal_dim = self.num_abx * num_windows + self.num_abx
-            obs_dim += temporal_dim
         self.observation_space = spaces.Box(
             low=0.0,
             high=1.0,
@@ -436,14 +413,6 @@ class ABXAMREnv(gym.Env):
         # Update visible AMR levels immediately; this will automatically take care of setting the state variable self.visible_amr_levels, and it will also set self.steps_since_amr_update to 0.
         self.update_visible_amr_levels(force_update_for_reset=True)
         
-        # Reset temporal feature tracking
-        if self.enable_temporal_features:
-            from collections import deque
-            for abx_name in self.antibiotic_names:
-                # Clear all deques and reinitialize with zeros
-                self.prescription_history[abx_name] = [deque([0] * w, maxlen=w) for w in self.temporal_windows]
-                self.previous_visible_amr_levels[abx_name] = self.visible_amr_levels[abx_name]
-        
         # Sample initial patient cohort using PatientGenerator
         true_amr_levels = {
             abx_name: self.amr_balloon_models[abx_name].get_volume()
@@ -562,42 +531,10 @@ class ABXAMREnv(gym.Env):
             np.array(amr_features, dtype=np.float32)
         ]
         
-        # Append temporal features if enabled
-        if self.enable_temporal_features:
-            temporal_features = self._get_temporal_features()
-            obs_components.append(temporal_features)
-        
         # Concatenate all observation components
         observation = np.concatenate(obs_components)
         
         return observation
-    
-    def _get_temporal_features(self) -> np.ndarray:
-        """
-        Extract temporal features: prescription counts and AMR deltas.
-        
-        Returns:
-            np.ndarray: Temporal feature vector with shape (num_abx * num_windows + num_abx,)
-                Structure: [prescriptions_A_window1, prescriptions_A_window2, ...,
-                            prescriptions_B_window1, prescriptions_B_window2, ...,
-                            delta_AMR_A, delta_AMR_B, ...]
-                Prescription counts are normalized by window size to be in [0, 1].
-        """
-        features = []
-        
-        # Prescription counts per antibiotic per window (normalized)
-        for abx_name in self.antibiotic_names:
-            for window_idx, window_size in enumerate(self.temporal_windows):
-                count = sum(self.prescription_history[abx_name][window_idx])
-                normalized_count = count / window_size  # Normalize to [0, 1]
-                features.append(normalized_count)
-        
-        # AMR deltas per antibiotic
-        for abx_name in self.antibiotic_names:
-            delta = self.visible_amr_levels[abx_name] - self.previous_visible_amr_levels[abx_name]
-            features.append(delta)
-        
-        return np.array(features, dtype=np.float32)
     
     def _compute_patient_stats(self, patients) -> dict:
         """
@@ -811,7 +748,7 @@ class ABXAMREnv(gym.Env):
                 - reward (float): Composite reward for this step
                 - terminated (bool): True if episode naturally ended (always False here)
                 - truncated (bool): True if max_time_steps reached
-                - info (dict): Contains keys:\n                    'prescriptions_per_abx', 'effective_doses', 'crossresistance_applied',\n                    'actual_amr_levels', 'visible_amr_levels', 'delta_amr_per_antibiotic',\n                    'patient_stats', 'patient_outcomes', 'pts_w_clinical_benefits',\n                    'pts_w_clinical_failures', 'pts_w_adverse_events', 'total_reward',\n                    'individual_reward', 'community_reward', 'mean_individual_reward'
+                - info (dict): Contains keys:\n                    'prescriptions_per_abx', 'effective_doses', 'crossresistance_applied',\n                    'actual_amr_levels', 'visible_amr_levels',\n                    'patient_stats', 'patient_outcomes', 'pts_w_clinical_benefits',\n                    'pts_w_clinical_failures', 'pts_w_adverse_events', 'total_reward',\n                    'individual_reward', 'community_reward', 'mean_individual_reward'
         
         Example:
             >>> obs, reward, terminated, truncated, info = env.step(action)
@@ -856,34 +793,16 @@ class ABXAMREnv(gym.Env):
         for abx_name in self.antibiotic_names:
             self.amr_balloon_models[abx_name].step(effective_doses[abx_name])
         
-        # Store previous visible AMR levels BEFORE updating (for temporal delta calculation)
-        if self.enable_temporal_features:
-            for abx_name in self.antibiotic_names:
-                self.previous_visible_amr_levels[abx_name] = self.visible_amr_levels[abx_name]
-        
+        # Preserve pre-update visible levels to report per-step AMR deltas in info.
+        previous_visible_amr_levels = self.visible_amr_levels.copy()
+
         # Update visible AMR levels; call self.update_visible_amr_levels with 'called_from_step=True' to increment the counter
         self.update_visible_amr_levels(called_from_step=True)
-        
-        # Update temporal feature tracking if enabled (AFTER visible AMR update)
-        if self.enable_temporal_features:
-            # Update prescription history (1 if prescribed this step, 0 otherwise)
-            for abx_name in self.antibiotic_names:
-                prescribed_this_step = 1 if antibiotic_prescription_counts[abx_name] > 0 else 0
-                for deque_window in self.prescription_history[abx_name]:
-                    deque_window.append(prescribed_this_step)
-        
-        # Pre-compute marginal AMR contribution per antibiotic using effective doses
-        delta_visible_amr_per_antibiotic = {}
-        for abx_name in self.antibiotic_names:
-            model = self.amr_balloon_models[abx_name]
-            
-            # Have to make a copy of the model state, then set the volume to the current visible AMR level, then compute delta volume for counterfactual doses
-            model_copy = model.copy()
-            model_copy.reset(initial_amr_level=self.visible_amr_levels[abx_name])
-            
-            # Compute volume with actual number of doses, then with one less dose.
-            delta_visible_amr = model_copy.get_delta_volume_for_counterfactual_num_doses_vs_one_less(effective_doses[abx_name])
-            delta_visible_amr_per_antibiotic[abx_name] = delta_visible_amr
+
+        delta_visible_amr_per_antibiotic = {
+            abx_name: self.visible_amr_levels[abx_name] - previous_visible_amr_levels[abx_name]
+            for abx_name in self.antibiotic_names
+        }
         
         # Increment time step
         self.current_time_step += 1
@@ -911,7 +830,6 @@ class ABXAMREnv(gym.Env):
             actions=multi_action,
             antibiotic_names=self.antibiotic_names,
             visible_amr_levels=self.visible_amr_levels,
-            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
             rng=self.np_random,
         )
         
@@ -933,8 +851,8 @@ class ABXAMREnv(gym.Env):
             'current_time_step': self.current_time_step,
             'actual_amr_levels': {abx_name: self.amr_balloon_models[abx_name].get_volume() for abx_name in self.antibiotic_names},
             'visible_amr_levels': self.visible_amr_levels.copy(),
-            'prescriptions_per_abx': antibiotic_prescription_counts,
             'delta_visible_amr_per_antibiotic': delta_visible_amr_per_antibiotic,
+            'prescriptions_per_abx': antibiotic_prescription_counts,
             'effective_doses': effective_doses,
             'crossresistance_applied': crossresistance_applied,
             'patient_stats': patient_stats,

@@ -42,7 +42,6 @@ class TestEnvironmentFactory:
                     }
                 },
                 'lambda_weight': 0.5,
-                'epsilon': 0.05,
             }
             rc_path = tmpdir_path / "rc.yaml"
             with open(rc_path, 'w') as f:
@@ -152,7 +151,6 @@ class TestEnvironmentFactory:
                     }
                 },
                 'lambda_weight': 0.5,
-                'epsilon': 0.05,
             }
             rc_path = tmpdir_path / "rc.yaml"
             with open(rc_path, 'w') as f:
@@ -261,7 +259,6 @@ class TestEnvironmentFactory:
                     }
                 },
                 'lambda_weight': 0.5,
-                'epsilon': 0.05,
             }
             rc_path = tmpdir_path / "rc.yaml"
             with open(rc_path, 'w') as f:
@@ -373,7 +370,6 @@ class TestEnvironmentFactory:
                     }
                 },
                 'lambda_weight': 0.5,
-                'epsilon': 0.05,
             }
             rc_path = tmpdir_path / "rc.yaml"
             with open(rc_path, 'w') as f:

@@ -41,7 +41,6 @@ def _create_reward_calculator() -> RewardCalculator:
             },
         },
         'lambda_weight': 0.0,
-        'epsilon': 0.05,
         'seed': 123,
     }
     return RewardCalculator(config=config)

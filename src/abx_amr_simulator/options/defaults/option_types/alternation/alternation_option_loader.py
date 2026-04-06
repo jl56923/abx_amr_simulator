@@ -68,7 +68,7 @@ class AlternationOption(OptionBase):
         return list(self.sequence)
 
 
-def load_alternation_option(name: str, config: Dict[str, Any]) -> OptionBase:
+def load_alternation_option(config: Dict[str, Any]) -> OptionBase:
     """Instantiate an AlternationOption from config.
 
     Expected config keys:
@@ -77,6 +77,12 @@ def load_alternation_option(name: str, config: Dict[str, Any]) -> OptionBase:
     """
     if not isinstance(config, dict):
         raise TypeError("config must be a dict")
+
+    option_name = config.get("option_name")
+    if option_name is None:
+        raise ValueError(
+            "load_alternation_option requires config['option_name'] from the standardized loader framework"
+        )
 
     if "sequence" not in config:
         raise ValueError("AlternationOption config missing required key 'sequence'")
@@ -92,7 +98,7 @@ def load_alternation_option(name: str, config: Dict[str, Any]) -> OptionBase:
         allowed_antibiotics=config.get("allowed_antibiotics"),
     )
 
-    return AlternationOption(name=name, sequence=sequence)
+    return AlternationOption(name=str(option_name), sequence=sequence)
 
 
 def _validate_allowed_antibiotics(sequence: List[str], allowed_antibiotics: Any) -> None:

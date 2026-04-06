@@ -75,7 +75,6 @@ def create_mock_reward_calculator(antibiotic_names=None):
             },
         },
         'lambda_weight': 0.5,
-        'epsilon': 0.05,
         'seed': None,
     }
     return RewardCalculator(config=config)

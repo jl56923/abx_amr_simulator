@@ -39,14 +39,12 @@ class TestRewardCalculatorOwnership:
         actions = np.array([1])  # prescribe antibiotic
         antibiotic_names = ['A']
         amr_levels = {'A': 0.0}
-        delta_amr = {'A': 0.01}
         
         reward, info = rc.calculate_reward(
             patients=patients,
             actions=actions,
             antibiotic_names=antibiotic_names,
             visible_amr_levels=amr_levels,
-            delta_visible_amr_per_antibiotic=delta_amr,
             # No rng argument - should use self.rng
         )
         assert isinstance(reward, float)
@@ -61,7 +59,6 @@ class TestRewardCalculatorOwnership:
         actions = np.array([1])
         antibiotic_names = ['A']
         amr_levels = {'A': 0.0}
-        delta_amr = {'A': 0.01}
         
         with pytest.raises(ValueError, match="environment-owned.*requires explicit rng"):
             rc.calculate_reward(
@@ -69,7 +66,6 @@ class TestRewardCalculatorOwnership:
                 actions=actions,
                 antibiotic_names=antibiotic_names,
                 visible_amr_levels=amr_levels,
-                delta_visible_amr_per_antibiotic=delta_amr,
                 # Missing rng argument
             )
     
@@ -83,7 +79,6 @@ class TestRewardCalculatorOwnership:
         actions = np.array([1])
         antibiotic_names = ['A']
         amr_levels = {'A': 0.0}
-        delta_amr = {'A': 0.01}
         rng = np.random.default_rng(42)
         
         # Should not raise
@@ -92,7 +87,6 @@ class TestRewardCalculatorOwnership:
             actions=actions,
             antibiotic_names=antibiotic_names,
             visible_amr_levels=amr_levels,
-            delta_visible_amr_per_antibiotic=delta_amr,
             rng=rng,
         )
         assert isinstance(reward, float)
@@ -307,7 +301,6 @@ class TestNoTreatmentRNGSkipping:
         
         antibiotic_names = ['A']
         amr_levels = {'A': 0.0}
-        delta_amr = {'A': 0.0}
         
         # Run twice with same seed - should get identical results
         rng1 = np.random.default_rng(42)
@@ -316,7 +309,6 @@ class TestNoTreatmentRNGSkipping:
             actions=actions,
             antibiotic_names=antibiotic_names,
             visible_amr_levels=amr_levels,
-            delta_visible_amr_per_antibiotic=delta_amr,
             rng=rng1,
         )
         
@@ -326,7 +318,6 @@ class TestNoTreatmentRNGSkipping:
             actions=actions,
             antibiotic_names=antibiotic_names,
             visible_amr_levels=amr_levels,
-            delta_visible_amr_per_antibiotic=delta_amr,
             rng=rng2,
         )
         
@@ -367,7 +358,6 @@ class TestNoTreatmentRNGSkipping:
         
         antibiotic_names = ['A']
         amr_levels = {'A': 0.0}
-        delta_amr = {'A': 0.01}
         
         rng1 = np.random.default_rng(42)
         state_before = rng1.bit_generator.state
@@ -377,7 +367,6 @@ class TestNoTreatmentRNGSkipping:
             actions=actions,
             antibiotic_names=antibiotic_names,
             visible_amr_levels=amr_levels,
-            delta_visible_amr_per_antibiotic=delta_amr,
             rng=rng1,
         )
         

@@ -246,6 +246,87 @@ class PatientStatsLoggingCallback(BaseCallback):
         return aggregated
 
 
+def _save_primitive_patient_arrays(
+    *,
+    save_dict: dict,
+    ep_prefix: str,
+    primitive_patient_full_data: list,
+    primitive_individual_rewards: list,
+    primitive_patients_actually_infected: list,
+) -> None:
+    """Build and store padded primitive-step patient arrays into save_dict.
+
+    Each argument is a list (macro_steps) of lists (substeps) where substep lists
+    may have different lengths (shorter options have fewer substeps). We pad with
+    zeros to the maximum substep count so every macro step contributes the same
+    number of rows, and record the true count per macro step in primitive_substep_counts.
+
+    Keys written into save_dict:
+        {ep_prefix}/primitive_patient_true             : (macro_steps, max_substeps, patients, attrs)
+        {ep_prefix}/primitive_patient_observed         : (macro_steps, max_substeps, patients, attrs)
+        {ep_prefix}/primitive_patient_attrs            : (num_attrs,) str array
+        {ep_prefix}/primitive_individual_rewards       : (macro_steps, max_substeps, patients)
+        {ep_prefix}/primitive_patients_actually_infected : (macro_steps, max_substeps, patients)
+        {ep_prefix}/primitive_substep_counts           : (macro_steps,) int — real substeps per macro step
+    """
+    num_macro_steps = len(primitive_patient_full_data)
+    if num_macro_steps == 0:
+        return
+
+    # Determine dimensions from the first non-None substep entry.
+    attr_names = None
+    num_patients = None
+    num_attrs = None
+    for macro_substeps in primitive_patient_full_data:
+        for substep_data in macro_substeps:
+            if substep_data is not None:
+                attr_names = list(substep_data['true'].keys())
+                num_patients = len(substep_data['true'][attr_names[0]])
+                num_attrs = len(attr_names)
+                break
+        if attr_names is not None:
+            break
+
+    if attr_names is None:
+        # No valid substep data found; nothing to save.
+        return
+
+    # Compute actual substep counts and maximum substep count.
+    substep_counts = [len(macro_substeps) for macro_substeps in primitive_patient_full_data]
+    max_substeps = max(substep_counts) if substep_counts else 0
+    if max_substeps == 0:
+        return
+
+    true_arr  = np.zeros((num_macro_steps, max_substeps, num_patients, num_attrs), dtype=np.float64)
+    obs_arr   = np.zeros((num_macro_steps, max_substeps, num_patients, num_attrs), dtype=np.float64)
+    rewards_arr  = np.zeros((num_macro_steps, max_substeps, num_patients), dtype=np.float64)
+    infected_arr = np.zeros((num_macro_steps, max_substeps, num_patients), dtype=np.float64)
+
+    for macro_idx, macro_substeps in enumerate(primitive_patient_full_data):
+        for substep_idx, substep_data in enumerate(macro_substeps):
+            if substep_data is not None:
+                for attr_idx, attr_name in enumerate(attr_names):
+                    true_arr[macro_idx, substep_idx, :, attr_idx]  = substep_data['true'][attr_name]
+                    obs_arr[macro_idx, substep_idx, :, attr_idx]   = substep_data['observed'][attr_name]
+
+        reward_substeps = primitive_individual_rewards[macro_idx] if macro_idx < len(primitive_individual_rewards) else []
+        for substep_idx, substep_rewards in enumerate(reward_substeps):
+            if substep_rewards is not None:
+                rewards_arr[macro_idx, substep_idx, :] = substep_rewards
+
+        infected_substeps = primitive_patients_actually_infected[macro_idx] if macro_idx < len(primitive_patients_actually_infected) else []
+        for substep_idx, substep_infected in enumerate(infected_substeps):
+            if substep_infected is not None:
+                infected_arr[macro_idx, substep_idx, :] = substep_infected
+
+    save_dict[f'{ep_prefix}/primitive_patient_true']              = true_arr
+    save_dict[f'{ep_prefix}/primitive_patient_observed']          = obs_arr
+    save_dict[f'{ep_prefix}/primitive_patient_attrs']             = np.array(attr_names)
+    save_dict[f'{ep_prefix}/primitive_individual_rewards']        = rewards_arr
+    save_dict[f'{ep_prefix}/primitive_patients_actually_infected'] = infected_arr
+    save_dict[f'{ep_prefix}/primitive_substep_counts']            = np.array(substep_counts, dtype=np.int32)
+
+
 class DetailedEvalCallback(EvalCallback):
     """Extended EvalCallback that collects and saves full patient trajectories.
     
@@ -289,9 +370,10 @@ class DetailedEvalCallback(EvalCallback):
         verbose: int = 1,
         warn: bool = True,
         save_patient_trajectories: bool = True,
+        save_granular_trajectories: bool = False,
     ):
         """Initialize the DetailedEvalCallback.
-        
+
         Args:
             eval_env (VecEnv): Vectorized environment for evaluation (typically
                 DummyVecEnv wrapping a single ABXAMREnv).
@@ -311,6 +393,14 @@ class DetailedEvalCallback(EvalCallback):
             warn (bool): If True, warn about evaluation issues. Default: True.
             save_patient_trajectories (bool): If True, save full patient trajectories
                 to .npz files. Default: True.
+            save_granular_trajectories (bool): If True, additionally log per-primitive-step
+                patient data for every substep within each HRL macro-step. This includes
+                primitive_patient_true, primitive_patient_observed, primitive_individual_rewards,
+                primitive_patients_actually_infected, primitive_substep_counts, option_id, and
+                primitive_actions in the saved NPZ. Only meaningful for HRL runs; has no effect
+                for flat-policy runs (primitive_infos will be absent from info). Default: False.
+                WARNING: Significantly increases NPZ file size. Only enable for post-hoc
+                best-model evaluation passes, not during training.
         """
         super().__init__(
             eval_env=eval_env,
@@ -327,8 +417,9 @@ class DetailedEvalCallback(EvalCallback):
         )
         
         self.save_patient_trajectories = save_patient_trajectories
+        self.save_granular_trajectories = save_granular_trajectories
         self.eval_count = 0
-        
+
         # Create eval_logs directory if saving trajectories
         if self.save_patient_trajectories and log_path is not None:
             self.trajectory_dir = Path(log_path) / 'eval_logs'
@@ -411,6 +502,14 @@ class DetailedEvalCallback(EvalCallback):
                 'steps_clipped': [],                # Number of steps clipped
                 'manager_transition_trainable': [],  # Trainability flag for manager training
             }
+            # HRL primitive-level logging: only collected when save_granular_trajectories=True.
+            # Keeping this off by default avoids large NPZ files during training eval passes.
+            if self.save_granular_trajectories:
+                episode_data['option_id'] = []
+                episode_data['primitive_actions'] = []
+                episode_data['primitive_patient_full_data'] = []   # list of lists: [macro_step][substep] -> patient_full_data dict
+                episode_data['primitive_individual_rewards'] = []  # list of lists: [macro_step][substep] -> reward array
+                episode_data['primitive_patients_actually_infected'] = []  # list of lists: [macro_step][substep] -> infected array
             
             done = False
             while not done:
@@ -440,6 +539,26 @@ class DetailedEvalCallback(EvalCallback):
                     episode_data['manager_clipped'].append(info.get('manager_clipped', False))
                     episode_data['steps_clipped'].append(info.get('steps_clipped', 0))
                     episode_data['manager_transition_trainable'].append(info.get('manager_transition_trainable', True))
+
+                    # HRL granular primitive-level logging (only when save_granular_trajectories=True)
+                    if self.save_granular_trajectories:
+                        episode_data['option_id'].append(info.get('option_id', None))
+                        episode_data['primitive_actions'].append(info.get('primitive_actions', None))
+
+                        # primitive_infos is a list of base-env info dicts, one per substep.
+                        # Each element has the same keys as a normal base-env step info dict
+                        # (patient_full_data, individual_rewards, patients_actually_infected, etc.).
+                        primitive_infos = info.get('primitive_infos', [])
+                        substep_patient_full_data = []
+                        substep_individual_rewards = []
+                        substep_patients_actually_infected = []
+                        for substep_info in primitive_infos:
+                            substep_patient_full_data.append(substep_info.get('patient_full_data', None))
+                            substep_individual_rewards.append(substep_info.get('individual_rewards', None))
+                            substep_patients_actually_infected.append(substep_info.get('patients_actually_infected', None))
+                        episode_data['primitive_patient_full_data'].append(substep_patient_full_data)
+                        episode_data['primitive_individual_rewards'].append(substep_individual_rewards)
+                        episode_data['primitive_patients_actually_infected'].append(substep_patients_actually_infected)
                 
                 episode_reward += reward
                 episode_length += 1
@@ -529,7 +648,45 @@ class DetailedEvalCallback(EvalCallback):
     ):
         """
         Save evaluation trajectories to disk as .npz files.
-        
+
+        Output npz schema
+        -----------------
+        Top-level keys:
+            episode_rewards          : (num_episodes,) total reward per episode
+            episode_lengths          : (num_episodes,) length per episode
+            num_episodes             : scalar
+            timestep                 : scalar – training step at eval time
+            antibiotic_names         : (num_abx,) str array
+
+        Per-episode keys (prefix ``episode_N/``):
+            patient_true             : (steps, patients, attrs) true patient attributes
+            patient_observed         : (steps, patients, attrs) observed patient attributes
+            patient_attrs            : (num_attrs,) attribute name strings
+            actions                  : (steps, ...) manager's option_id at each macro-step
+                                       NOTE: for HRL runs this is the option index, NOT a
+                                       primitive prescription. Use ``primitive_actions`` for
+                                       per-step antibiotic decisions.
+            rewards                  : (steps,) reward at each macro-step
+            patients_actually_infected : (steps, patients) bool
+            individual_rewards       : (steps, patients) per-patient reward
+            actual_amr_levels        : (steps, num_abx) true AMR time series
+            visible_amr_levels       : (steps, num_abx) observable AMR time series
+            manager_clipped          : (steps,) bool – macro-action clipped at episode boundary
+            steps_clipped            : (steps,) int  – number of primitive steps clipped
+            manager_transition_trainable : (steps,) bool – manager transition usable for training
+            option_id                : (steps,) int  – only when save_granular_trajectories=True;
+                                       manager's selected option index (redundant with ``actions``)
+            primitive_actions        : (steps,) object array of lists – only when save_granular_trajectories=True;
+                                       each element is a list of length k containing the worker's
+                                       primitive action index at each primitive step within that macro-step
+            primitive_patient_true             : (steps, max_substeps, patients, attrs) – only when
+                                                 save_granular_trajectories=True; per-primitive-step true attrs
+            primitive_patient_observed         : (steps, max_substeps, patients, attrs) – same
+            primitive_patient_attrs            : (num_attrs,) str array – attribute names for primitive arrays
+            primitive_individual_rewards       : (steps, max_substeps, patients) – per-primitive-step rewards
+            primitive_patients_actually_infected : (steps, max_substeps, patients) – per-primitive-step infection
+            primitive_substep_counts           : (steps,) int – actual substep count per macro-step (rest is padding)
+
         Args:
             trajectories: List of episode trajectory dicts
             episode_rewards: List of total rewards per episode
@@ -613,7 +770,34 @@ class DetailedEvalCallback(EvalCallback):
 
                 save_dict[f'{ep_prefix}/actual_amr_levels'] = actual_amr_arr
                 save_dict[f'{ep_prefix}/visible_amr_levels'] = visible_amr_arr
-        
+
+            # Save Phase B clipping metadata
+            save_dict[f'{ep_prefix}/manager_clipped'] = np.array(traj['manager_clipped'])
+            save_dict[f'{ep_prefix}/steps_clipped'] = np.array(traj['steps_clipped'])
+            save_dict[f'{ep_prefix}/manager_transition_trainable'] = np.array(traj['manager_transition_trainable'])
+
+            # HRL granular data — only present when save_granular_trajectories=True
+            option_ids = traj.get('option_id', [])
+            if option_ids and any(v is not None for v in option_ids):
+                save_dict[f'{ep_prefix}/option_id'] = np.array(option_ids)
+
+            primitive_actions = traj.get('primitive_actions', [])
+            if primitive_actions and any(v is not None for v in primitive_actions):
+                save_dict[f'{ep_prefix}/primitive_actions'] = np.array(primitive_actions, dtype=object)
+
+            # Per-primitive-step patient data — only present when save_granular_trajectories=True.
+            # primitive_patient_full_data is a list (macro_steps) of lists (substeps) of dicts.
+            # We pad shorter options with zeros so all macro steps have the same max_substeps dim.
+            prim_patient_full = traj.get('primitive_patient_full_data', [])
+            if prim_patient_full:
+                _save_primitive_patient_arrays(
+                    save_dict=save_dict,
+                    ep_prefix=ep_prefix,
+                    primitive_patient_full_data=prim_patient_full,
+                    primitive_individual_rewards=traj.get('primitive_individual_rewards', []),
+                    primitive_patients_actually_infected=traj.get('primitive_patients_actually_infected', []),
+                )
+
         # Save to file
         np.savez_compressed(filename, **save_dict)
         

@@ -517,27 +517,24 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "Options
 
 
 def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str] = None, verbose: int = 0) -> Any:
-    """Instantiate RL agent (PPO, A2C, RecurrentPPO, HRL_PPO, HRL_RPPO, or MBPO) from config.
+    """Instantiate RL agent (PPO, A2C, RecurrentPPO, HRL_PPO, or HRL_RPPO) from config.
     
     Extracts algorithm type and hyperparameters from config, then creates the
     appropriate agent class. For standard agents (PPO/A2C/RecurrentPPO), uses
-    'MlpPolicy' (or 'MlpLstmPolicy' for RecurrentPPO). For MBPO, returns an MBPOAgent
-    instance that orchestrates model-based policy optimization.
+    'MlpPolicy' (or 'MlpLstmPolicy' for RecurrentPPO).
     
     Args:
         config (Dict[str, Any]): Full experiment config dictionary. Must contain:
-            - 'algorithm': 'PPO' | 'A2C' | 'RecurrentPPO' | 'HRL_PPO' | 'HRL_RPPO' | 'MBPO'
+                        - 'algorithm': 'PPO' | 'A2C' | 'RecurrentPPO' | 'HRL_PPO' | 'HRL_RPPO'
             - '{algorithm_lowercase}': Dict with algorithm-specific hyperparameters
               (e.g., 'ppo': {'learning_rate': 3e-4, 'n_steps': 2048, ...})
-              (e.g., 'mbpo': {...}, 'dynamics_model': {...} for MBPO)
         env (gym.Env): Training environment instance (from create_environment).
         tb_log_path (str, optional): Path for tensorboard logs. If None, no logging.
         verbose (int): Verbosity level for stable-baselines3 output. Default: 0 (silent).
     
     Returns:
-        PPO | A2C | RecurrentPPO | MBPOAgent: Initialized agent ready for training.
+        PPO | A2C | RecurrentPPO: Initialized agent ready for training.
         For standard agents, use via .learn(total_timesteps).
-        For MBPO, use via .train(total_episodes).
     
     Raises:
         ValueError: If algorithm is unknown or config missing required hyperparameters.
@@ -548,9 +545,6 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
         >>> agent = create_agent(config, env, tb_log_path='results/run_1/logs')
         >>> agent.learn(total_timesteps=100000)  # For standard agents
         
-        >>> config = load_config('mbpo_baseline.yaml')
-        >>> agent = create_agent(config, env, tb_log_path='results/run_1/logs')
-        >>> agent.train(total_episodes=200)  # For MBPO
     """
     algorithm = config.get('algorithm', 'PPO')
     action_mode = config.get('action_mode', 'multidiscrete')
@@ -635,12 +629,6 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
             tensorboard_log=tb_log_path,
             seed=seed,
         )
-    elif algorithm == 'MBPO':
-        from abx_amr_simulator.mbpo.mbpo_agent import MBPOAgent
-        
-        # Instantiate MBPOAgent with full config dict
-        # MBPOAgent expects: env, config (containing 'ppo', 'mbpo', 'dynamics_model' sections)
-        agent = MBPOAgent(env=env, config=config)
     elif algorithm == 'HRL_PPO':
         # Hierarchical RL with options-based wrapper
         # Env is already wrapped with OptionsWrapper before reaching here
@@ -711,7 +699,10 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
             seed=seed,
         )
     else:
-        raise ValueError(f"Unknown algorithm: {algorithm}")
+        raise ValueError(
+            f"Unknown algorithm: {algorithm}. Supported algorithms are: "
+            "PPO, A2C, RecurrentPPO, HRL_PPO, HRL_RPPO"
+        )
     
     return agent
 

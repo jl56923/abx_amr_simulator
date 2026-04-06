@@ -606,14 +606,6 @@ def main():
         float(rew_cfg.get("lambda_weight", 0.5)),
         disabled=continue_training
     )
-    epsilon = st.slider(
-        "epsilon",
-        0.0, 0.5,
-        float(rew_cfg.get("epsilon", 0.05)),
-        disabled=continue_training,
-        help="AMR penalty weight (0-0.5). Epsilon represents the AMR penalty as a percentage of the normalized reward scale."
-    )
-    st.caption("💡 Epsilon scales consistently with clinical rewards. For example, epsilon=0.05 means '5% AMR penalty relative to clinical reward scale'.")
     
     st.subheader("Antibiotics Clinical Reward/Penalties Configuration")
     # Get existing config or defaults
@@ -829,7 +821,6 @@ def main():
                 config.setdefault("reward_calculator", {})
                 config["reward_calculator"].update({
                     "lambda_weight": float(lambda_weight),
-                    "epsilon": float(epsilon),
                     "abx_clinical_reward_penalties_info_dict": abx_clinical_dict,
                 })
             

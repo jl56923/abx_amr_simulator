@@ -195,14 +195,12 @@ class SeverityRewardCalculator(BaseRewardCalculator):
         num_abx: int,
         lambda_weight: float,
         abx_clinical_reward_penalties_info_dict: dict,
-        epsilon: float = 0.05,
         seed: int = None,
     ):
         super().__init__(
             num_abx=num_abx,
             lambda_weight=lambda_weight,
             abx_clinical_reward_penalties_info_dict=abx_clinical_reward_penalties_info_dict,
-            epsilon=epsilon,
             seed=seed,
         )
     
@@ -253,9 +251,6 @@ class SeverityRewardCalculator(BaseRewardCalculator):
                 if self.rng.random() < adverse_prob:
                     individual_rewards[i] -= 2.0
             
-            # Marginal AMR contribution penalty (standard)
-            individual_rewards[i] -= self.epsilon * delta_AMR_levels.sum()
-        
         return individual_rewards
 ```
 
@@ -297,7 +292,6 @@ def create_severity_reward_calculator(config: dict, seed: int = None) -> Severit
         num_abx=len(config['environment']['antibiotic_names']),
         lambda_weight=rc_config['lambda_weight'],
         abx_clinical_reward_penalties_info_dict=rc_config['abx_clinical_reward_penalties_info_dict'],
-        epsilon=rc_config.get('epsilon', 0.05),
         seed=seed,
     )
 ```

@@ -32,7 +32,6 @@ def create_test_reward_calculator(antibiotic_names=None):
             },
         },
         'lambda_weight': 0.5,
-        'epsilon': 0.05,
         'seed': None,
     }
     
