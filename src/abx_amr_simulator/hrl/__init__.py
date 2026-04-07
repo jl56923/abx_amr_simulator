@@ -14,6 +14,7 @@ from abx_amr_simulator.hrl.base_option import OptionBase
 from abx_amr_simulator.hrl.options import OptionLibrary
 from abx_amr_simulator.hrl.option_loaders import OptionLibraryLoader
 from abx_amr_simulator.hrl.wrapper import OptionsWrapper
+from abx_amr_simulator.hrl.marl_wrapper import MARLOptionsWrapper
 from abx_amr_simulator.hrl.setup_options import setup_options_folders_with_defaults
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     'OptionLibrary',
     'OptionLibraryLoader',
     'OptionsWrapper',
+    'MARLOptionsWrapper',
     'setup_options_folders_with_defaults',
 ]

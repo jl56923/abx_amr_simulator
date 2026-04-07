@@ -49,54 +49,54 @@ class OptionLibraryLoader:
     @staticmethod
     def load_library(
         library_config_path: str,
-        env: Any,
+        reward_calculator: Any,
         library_name: str = None,
     ) -> Tuple[OptionLibrary, Dict[str, Any]]:
         """Load an option library from YAML configuration.
-        
+
         Args:
             library_config_path: Path to library meta-config YAML file.
                 Example: 'experiments/options/option_libraries/default_deterministic.yaml'
-            env: The ABXAMREnv instance (passed to OptionLibrary for antibiotic mapping extraction).
-            library_name: Optional override for library name (from config if not provided).
+            reward_calculator: A RewardCalculator (or compatible) instance that exposes
+                ``abx_name_to_index``. This is the single source of truth for antibiotic
+                action encoding used by all options in the library.
+            library_name: Optional override for library name (uses config value if not given).
 
         Path handling:
-                        - Relative paths inside the library config (option_subconfig_file, loader_module)
-                            are resolved relative to the directory containing the library config file.
-                        - Absolute paths are used as-is.
-                        - loader_module can also be a Python module path (e.g.,
-                            "abx_amr_simulator.options.heuristic_loader").
-        
+            - Relative paths inside the library config (option_subconfig_file, loader_module)
+              are resolved relative to the directory containing the library config file.
+            - Absolute paths are used as-is.
+            - loader_module can also be a Python module path (e.g.,
+              "abx_amr_simulator.options.heuristic_loader").
+
         Returns:
             Tuple of:
                 - OptionLibrary: Instantiated and populated option library
-                - resolved_config: Dict with all instantiated option configs (for logging/reproducibility)
-        
+                - resolved_config: Dict with all instantiated option configs (for
+                  logging/reproducibility)
+
         Raises:
             FileNotFoundError: If library config file not found.
             ValueError: If config format invalid.
             RuntimeError: If any option fails to load.
-        
+
         Example:
             lib, resolved_cfg = OptionLibraryLoader.load_library(
-                library_config_path='experiments/options/option_libraries/default_deterministic.yaml',
-                env=env
+                library_config_path='experiments/options/option_libraries/default.yaml',
+                reward_calculator=rc,
             )
-            # Now lib contains all options, ready for OptionsWrapper
+            # lib contains all options, ready for OptionsWrapper or MARLOptionsWrapper
         """
-        # Resolve path
         config_path = Path(library_config_path).resolve()
         if not config_path.exists():
             raise FileNotFoundError(f"Library config not found: {config_path}")
 
-        # Load library meta-config
         with open(config_path, 'r') as f:
             lib_config = yaml.safe_load(f)
 
         if not lib_config:
             raise ValueError(f"Library config is empty: {config_path}")
 
-        # Extract library metadata
         lib_name = library_name or lib_config.get('library_name', 'default')
         lib_description = lib_config.get('description', '')
         options_specs = lib_config.get('options', [])
@@ -104,11 +104,9 @@ class OptionLibraryLoader:
         if not options_specs:
             raise ValueError(f"Library config has no options: {config_path}")
 
-        # Create library (pass env to extract antibiotic mappings)
-        library = OptionLibrary(env=env, name=lib_name)
+        library = OptionLibrary(reward_calculator=reward_calculator, name=lib_name)
         resolved_options = []
 
-        # Load each option
         base_dir = config_path.parent
         for i, opt_spec in enumerate(options_specs):
             try:
@@ -120,7 +118,6 @@ class OptionLibraryLoader:
                 if not opt_type:
                     raise ValueError(f"Option '{opt_name}' missing 'option_type'")
 
-                # Load option
                 option, opt_resolved_cfg = OptionLibraryLoader._load_single_option(
                     name=opt_name,
                     option_type=opt_type,
@@ -128,7 +125,6 @@ class OptionLibraryLoader:
                     base_dir=base_dir,
                 )
 
-                # Add to library
                 library.add_option(option)
                 resolved_options.append(opt_resolved_cfg)
 
@@ -138,7 +134,6 @@ class OptionLibraryLoader:
                     f"Option spec: {opt_spec}"
                 )
 
-        # Build resolved config
         resolved_config = {
             'library_name': lib_name,
             'library_description': lib_description,
@@ -147,6 +142,41 @@ class OptionLibraryLoader:
         }
 
         return library, resolved_config
+
+    @staticmethod
+    def load_library_from_env(
+        library_config_path: str,
+        env: Any,
+        library_name: str = None,
+    ) -> Tuple[OptionLibrary, Dict[str, Any]]:
+        """Load an option library using a single-agent ABXAMREnv as the RC source.
+
+        Convenience wrapper for existing single-agent call sites. Extracts
+        ``env.unwrapped.reward_calculator`` and delegates to ``load_library``.
+
+        Args:
+            library_config_path: Path to library meta-config YAML file.
+            env: A Gymnasium environment whose ``.unwrapped`` exposes
+                ``reward_calculator``.
+            library_name: Optional override for library name.
+
+        Returns:
+            Same as ``load_library``.
+
+        Raises:
+            ValueError: If env does not expose reward_calculator.
+        """
+        try:
+            rc = env.unwrapped.reward_calculator
+        except AttributeError as e:
+            raise ValueError(
+                f"env.unwrapped must have reward_calculator. Error: {e}"
+            )
+        return OptionLibraryLoader.load_library(
+            library_config_path=library_config_path,
+            reward_calculator=rc,
+            library_name=library_name,
+        )
 
     @staticmethod
     def _load_single_option(

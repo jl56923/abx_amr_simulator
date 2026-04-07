@@ -32,7 +32,7 @@ class ConstantOption(OptionBase):
 
 
 def _build_library(env, action_name: str | None = None) -> OptionLibrary:
-    library = OptionLibrary(env=env)
+    library = OptionLibrary.from_env(env)
     if action_name is None:
         action_name = "no_treatment"
     library.add_option(
@@ -53,7 +53,7 @@ def test_wrapper_init_requires_patient_generator() -> None:
 
 def test_wrapper_init_invalid_option_library_raises() -> None:
     env = create_mock_environment(antibiotic_names=["A"])
-    library = OptionLibrary(env=env)
+    library = OptionLibrary.from_env(env)
 
     with pytest.raises(ValueError, match="incompatible"):
         OptionsWrapper(env=env, option_library=library, gamma=0.99)

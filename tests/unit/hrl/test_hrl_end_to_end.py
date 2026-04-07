@@ -201,7 +201,7 @@ def test_option_library_loads_from_real_configs(temp_workspace):
     library_config_path = temp_workspace / "options" / "option_libraries" / "default_deterministic.yaml"
     
     # Load library - this should work if antibiotic names match
-    library, resolved_config = OptionLibraryLoader.load_library(
+    library, resolved_config = OptionLibraryLoader.load_library_from_env(
         library_config_path=str(library_config_path),
         env=env,
     )
@@ -229,7 +229,7 @@ def test_options_wrapper_wraps_environment_with_real_defaults(temp_workspace):
     
     # Load the real default_deterministic library
     library_config_path = temp_workspace / "options" / "option_libraries" / "default_deterministic.yaml"
-    library, _ = OptionLibraryLoader.load_library(
+    library, _ = OptionLibraryLoader.load_library_from_env(
         library_config_path=str(library_config_path),
         env=env,
     )

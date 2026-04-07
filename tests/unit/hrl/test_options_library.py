@@ -82,24 +82,24 @@ class TestOptionLibraryInitialization:
     def test_init_with_environment(self):
         """Test OptionLibrary initialization with environment."""
         env = create_mock_environment(antibiotic_names=["A", "B"])
-        library = OptionLibrary(env=env, name="test_lib")
+        library = OptionLibrary.from_env(env, name="test_lib")
 
         assert library.name == "test_lib"
-        assert library.env is not None
+        assert library._reward_calculator is not None
         assert len(library) == 0
         assert library.abx_name_to_index == {"A": 0, "B": 1, "no_treatment": 2}
 
     def test_init_with_default_name(self):
         """Test OptionLibrary initialization with default name."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
 
         assert library.name == "default"
 
     def test_init_extracts_antibiotic_mapping(self):
         """Test that init extracts antibiotic name-to-index mapping from environment."""
         env = create_mock_environment(antibiotic_names=["X", "Y", "Z"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
 
         assert "X" in library.abx_name_to_index
         assert "Y" in library.abx_name_to_index
@@ -107,15 +107,9 @@ class TestOptionLibraryInitialization:
         assert "no_treatment" in library.abx_name_to_index
 
     def test_init_missing_reward_calculator_raises(self):
-        """Test that init raises ValueError if environment lacks reward_calculator."""
-        # Create a mock without unwrapped.reward_calculator
-        class BadEnv:
-            class Unwrapped:
-                pass
-            unwrapped = Unwrapped()
-
-        with pytest.raises(ValueError, match="reward_calculator.abx_name_to_index"):
-            OptionLibrary(env=BadEnv())
+        """Test that init raises AttributeError if reward_calculator lacks abx_name_to_index."""
+        with pytest.raises(ValueError, match="abx_name_to_index"):
+            OptionLibrary(reward_calculator=object())
 
 
 class TestAddOption:
@@ -124,7 +118,7 @@ class TestAddOption:
     def test_add_single_option(self):
         """Test adding a single option to library."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         option = create_test_option(name="opt1")
 
         library.add_option(option=option)
@@ -135,7 +129,7 @@ class TestAddOption:
     def test_add_multiple_options(self):
         """Test adding multiple options to library."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
 
         for i in range(3):
             option = create_test_option(name=f"opt{i}")
@@ -148,7 +142,7 @@ class TestAddOption:
     def test_add_duplicate_name_raises(self):
         """Test that adding option with duplicate name raises ValueError."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         option1 = create_test_option(name="duplicate")
         option2 = create_test_option(name="duplicate")
 
@@ -160,7 +154,7 @@ class TestAddOption:
     def test_add_non_option_raises(self):
         """Test that adding non-OptionBase instance raises TypeError."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
 
         with pytest.raises(TypeError, match="must be OptionBase instance"):
             library.add_option(option="not_an_option")  # type: ignore
@@ -172,7 +166,7 @@ class TestOptionRetrieval:
     def test_getitem_by_name(self):
         """Test retrieving option by name using __getitem__."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         option = create_test_option(name="test_opt")
         library.add_option(option=option)
 
@@ -184,7 +178,7 @@ class TestOptionRetrieval:
     def test_getitem_invalid_name_raises(self):
         """Test that accessing non-existent option by name raises KeyError."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
 
         with pytest.raises(KeyError, match="not in library"):
             _ = library["nonexistent"]
@@ -192,7 +186,7 @@ class TestOptionRetrieval:
     def test_get_option_by_index(self):
         """Test retrieving option by integer index using get_option()."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         options = [create_test_option(name=f"opt{i}") for i in range(3)]
 
         for opt in options:
@@ -210,7 +204,7 @@ class TestOptionRetrieval:
     def test_get_option_invalid_index_raises(self):
         """Test that get_option with out-of-range index raises IndexError."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         option = create_test_option(name="opt")
         library.add_option(option=option)
 
@@ -220,7 +214,7 @@ class TestOptionRetrieval:
     def test_get_option_negative_index_raises(self):
         """Test that get_option with negative index raises IndexError."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         option = create_test_option(name="opt")
         library.add_option(option=option)
 
@@ -230,7 +224,7 @@ class TestOptionRetrieval:
     def test_len(self):
         """Test library length with __len__."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
 
         assert len(library) == 0
 
@@ -247,16 +241,16 @@ class TestValidationEnvironmentCompatibility:
         """Test that validating empty library raises ValueError."""
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
 
         with pytest.raises(ValueError, match="is empty"):
-            library.validate_environment_compatibility(env=env, patient_generator=pg)
+            library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_single_compatible_option(self):
         """Test validation passes for compatible option."""
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         option = create_test_option(
             name="compatible",
             requires_observation_attributes=["prob_infected"],
@@ -264,13 +258,13 @@ class TestValidationEnvironmentCompatibility:
         library.add_option(option=option)
 
         # Should not raise
-        library.validate_environment_compatibility(env=env, patient_generator=pg)
+        library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_missing_patient_attribute_raises(self):
         """Test that missing patient attribute raises ValueError."""
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         option = create_test_option(
             name="requires_unknown",
             requires_observation_attributes=["nonexistent_attribute"],
@@ -278,13 +272,13 @@ class TestValidationEnvironmentCompatibility:
         library.add_option(option=option)
 
         with pytest.raises(ValueError, match="requires patient attributes"):
-            library.validate_environment_compatibility(env=env, patient_generator=pg)
+            library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_missing_antibiotic_raises(self):
         """Test that missing antibiotic raises ValueError."""
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(
             option=create_test_option(
                 name="bad",
@@ -292,14 +286,14 @@ class TestValidationEnvironmentCompatibility:
             )
         )
 
-        with pytest.raises(ValueError, match="not in environment's action space"):
-            library.validate_environment_compatibility(env=env, patient_generator=pg)
+        with pytest.raises(ValueError, match="not in the reward calculator's action space"):
+            library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_no_treatment_special_case(self):
         """Test validation handles 'no_treatment' antibiotic correctly."""
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(
             option=create_test_option(
                 name="no_rx",
@@ -308,13 +302,13 @@ class TestValidationEnvironmentCompatibility:
         )
 
         # Should not raise; no_treatment is always available
-        library.validate_environment_compatibility(env=env, patient_generator=pg)
+        library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_invalid_no_treatment_variant_raises(self):
         """Test that invalid no_treatment variant raises helpful ValueError."""
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(
             option=create_test_option(
                 name="bad",
@@ -323,7 +317,7 @@ class TestValidationEnvironmentCompatibility:
         )
 
         with pytest.raises(ValueError, match="NO_RX"):
-            library.validate_environment_compatibility(env=env, patient_generator=pg)
+            library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_option_not_implementing_get_referenced_antibiotics_raises(self):
         """Test that option without get_referenced_antibiotics() raises."""
@@ -341,11 +335,11 @@ class TestValidationEnvironmentCompatibility:
             def get_referenced_antibiotics(self) -> list:
                 raise NotImplementedError("Not implemented for test")
 
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(option=BadOption())
 
         with pytest.raises(ValueError, match="does not implement get_referenced_antibiotics"):
-            library.validate_environment_compatibility(env=env, patient_generator=pg)
+            library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_requires_amr_levels_with_amr(self):
         """Test validation passes when option requires AMR and env has it."""
@@ -355,11 +349,11 @@ class TestValidationEnvironmentCompatibility:
             name="needs_amr",
             requires_amr_levels=True,
         )
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(option=option)
 
         # Should not raise; mock environment has amr_balloon_models
-        library.validate_environment_compatibility(env=env, patient_generator=pg)
+        library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_missing_patient_generator_attribute_raises(self):
         """Test that missing patient_generator.visible_patient_attributes raises."""
@@ -368,11 +362,11 @@ class TestValidationEnvironmentCompatibility:
         class BadPG:
             pass
 
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(option=create_test_option(name="opt"))
 
         with pytest.raises(ValueError, match="visible_patient_attributes"):
-            library.validate_environment_compatibility(env=env, patient_generator=BadPG())
+            library.validate_environment_compatibility(patient_generator=BadPG())
 
     def test_validate_missing_prob_infected_raises(self):
         """Test that missing prob_infected in visible attributes raises."""
@@ -380,11 +374,11 @@ class TestValidationEnvironmentCompatibility:
         pg = create_mock_patient_generator()
         pg.visible_patient_attributes = []
 
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(option=create_test_option(name="opt"))
 
         with pytest.raises(ValueError, match="prob_infected"):
-            library.validate_environment_compatibility(env=env, patient_generator=pg)
+            library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_no_antibiotics_in_environment_raises(self):
         """Test that environment with no antibiotics raises ValueError."""
@@ -392,30 +386,27 @@ class TestValidationEnvironmentCompatibility:
         pg = create_mock_patient_generator()
 
         # Manually clear the antibiotic mapping
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.abx_name_to_index = {}  # Empty mapping
 
         library.add_option(option=create_test_option(name="opt"))
 
         with pytest.raises(ValueError, match="no antibiotics configured"):
-            library.validate_environment_compatibility(env=env, patient_generator=pg)
+            library.validate_environment_compatibility(patient_generator=pg)
 
-    def test_validate_requires_amr_levels_missing_amr_raises(self):
-        """Test that missing AMR tracking raises ValueError."""
+    def test_validate_requires_amr_levels_flag_does_not_block_validation(self):
+        """Test that an option with REQUIRES_AMR_LEVELS=True still validates successfully."""
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
         option = create_test_option(
             name="needs_amr",
             requires_amr_levels=True,
         )
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(option=option)
 
-        if hasattr(env.unwrapped, "amr_balloon_models"):
-            delattr(env.unwrapped, "amr_balloon_models")
-
-        with pytest.raises(ValueError, match="requires AMR levels"):
-            library.validate_environment_compatibility(env=env, patient_generator=pg)
+        # Should not raise; the REQUIRES_AMR_LEVELS flag is informational only
+        library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_requires_step_number_is_deprecated(self):
         """Test that requires_step_number attribute is not used (Phase A: removed).
@@ -434,22 +425,22 @@ class TestValidationEnvironmentCompatibility:
             "REQUIRES_STEP_NUMBER should be removed from OptionBase (Phase A cleanup)"
         
         # Verify validation still works without step number requirements
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(option=option)
         
         # Should not raise - step numbers are no longer required
-        library.validate_environment_compatibility(env=env, patient_generator=pg)
+        library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_injects_observable_attributes(self):
         """Test that validation injects observable attributes into options."""
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
         pg.visible_patient_attributes = ["prob_infected", "benefit_value_multiplier"]
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         option = ObservableOption(name="observable")
         library.add_option(option=option)
 
-        library.validate_environment_compatibility(env=env, patient_generator=pg)
+        library.validate_environment_compatibility(patient_generator=pg)
 
         assert option.observed_attributes == ["prob_infected", "benefit_value_multiplier"]
 
@@ -461,10 +452,10 @@ class TestValidationEnvironmentCompatibility:
             name="terminating",
             provides_termination=True,
         )
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
         library.add_option(option=option)
 
-        library.validate_environment_compatibility(env=env, patient_generator=pg)
+        library.validate_environment_compatibility(patient_generator=pg)
 
 
 class TestLibraryIntegration:
@@ -474,7 +465,7 @@ class TestLibraryIntegration:
         """Test complete workflow: init, add options, validate, retrieve."""
         env = create_mock_environment(antibiotic_names=["A", "B"])
         pg = create_mock_patient_generator()
-        library = OptionLibrary(env=env, name="integration_test")
+        library = OptionLibrary.from_env(env, name="integration_test")
 
         # Add multiple options
         opts = [
@@ -486,7 +477,7 @@ class TestLibraryIntegration:
             library.add_option(option=opt)
 
         # Validate all compatible
-        library.validate_environment_compatibility(env=env, patient_generator=pg)
+        library.validate_environment_compatibility(patient_generator=pg)
 
         # Retrieve and verify
         assert len(library) == 3
@@ -496,7 +487,7 @@ class TestLibraryIntegration:
     def test_library_preserves_insertion_order(self):
         """Test that library preserves option insertion order."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
 
         names = ["first", "second", "third", "fourth", "fifth"]
         for name in names:
@@ -508,7 +499,7 @@ class TestLibraryIntegration:
     def test_list_options_returns_ordered_names(self):
         """Test list_options returns names in insertion order."""
         env = create_mock_environment(antibiotic_names=["A"])
-        library = OptionLibrary(env=env)
+        library = OptionLibrary.from_env(env)
 
         names = ["alpha", "beta", "gamma"]
         for name in names:
@@ -519,7 +510,7 @@ class TestLibraryIntegration:
     def test_to_dict_serializes_options(self):
         """Test to_dict returns expected serialized structure."""
         env = create_mock_environment(antibiotic_names=["A", "B"])
-        library = OptionLibrary(env=env, name="serialize_test")
+        library = OptionLibrary.from_env(env, name="serialize_test")
 
         library.add_option(option=create_test_option(name="finite", k=3))
         library.add_option(option=create_test_option(name="infinite", k=float("inf")))

@@ -491,7 +491,7 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "Options
             f"  option_library: {option_library_path}"
         )
 
-    option_library, resolved_option_library_config = OptionLibraryLoader.load_library(
+    option_library, resolved_option_library_config = OptionLibraryLoader.load_library_from_env(
         library_config_path=str(library_path),
         env=env,
     )

@@ -44,7 +44,7 @@ class TestOptionLibraryLoaderBasic:
         _write_yaml(path=lib_config_path, data=lib_config)
 
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib, resolved = OptionLibraryLoader.load_library(
+        lib, resolved = OptionLibraryLoader.load_library_from_env(
             library_config_path=str(lib_config_path),
             env=env,
         )
@@ -78,7 +78,7 @@ class TestOptionLibraryLoaderBasic:
         _write_yaml(path=lib_config_path, data=lib_config)
 
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib, resolved = OptionLibraryLoader.load_library(
+        lib, resolved = OptionLibraryLoader.load_library_from_env(
             library_config_path=str(lib_config_path),
             env=env,
         )
@@ -120,7 +120,7 @@ class TestOptionLibraryLoaderBasic:
         _write_yaml(path=lib_config_path, data=lib_config)
 
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib, resolved = OptionLibraryLoader.load_library(
+        lib, resolved = OptionLibraryLoader.load_library_from_env(
             library_config_path=str(lib_config_path),
             env=env,
         )
@@ -135,7 +135,7 @@ class TestOptionLibraryLoaderBasic:
         """Test loading from nonexistent file."""
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(FileNotFoundError):
-            OptionLibraryLoader.load_library(library_config_path='/nonexistent/path/config.yaml', env=env)
+            OptionLibraryLoader.load_library_from_env(library_config_path='/nonexistent/path/config.yaml', env=env)
 
     def test_load_library_empty_config(self, tmp_path):
         """Test loading from empty config."""
@@ -144,7 +144,7 @@ class TestOptionLibraryLoaderBasic:
         
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(ValueError):
-            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
+            OptionLibraryLoader.load_library_from_env(library_config_path=str(lib_config_path), env=env)
 
     def test_load_library_no_options(self, tmp_path):
         """Test loading config with no options."""
@@ -157,7 +157,7 @@ class TestOptionLibraryLoaderBasic:
         
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(ValueError):
-            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
+            OptionLibraryLoader.load_library_from_env(library_config_path=str(lib_config_path), env=env)
 
 
 class TestOptionLibraryLoaderMultipleOptions:
@@ -188,7 +188,7 @@ class TestOptionLibraryLoaderMultipleOptions:
         _write_yaml(path=lib_config_path, data=lib_config)
 
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib, _ = OptionLibraryLoader.load_library(
+        lib, _ = OptionLibraryLoader.load_library_from_env(
             library_config_path=str(lib_config_path),
             env=env,
         )
@@ -252,7 +252,7 @@ class TestOptionLibraryLoaderMultipleOptions:
         _write_yaml(path=lib_config_path, data=lib_config)
 
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        lib, resolved = OptionLibraryLoader.load_library(
+        lib, resolved = OptionLibraryLoader.load_library_from_env(
             library_config_path=str(lib_config_path),
             env=env,
         )
@@ -286,7 +286,7 @@ class TestOptionLibraryLoaderErrors:
         
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(RuntimeError) as exc_info:
-            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
+            OptionLibraryLoader.load_library_from_env(library_config_path=str(lib_config_path), env=env)
         
         assert 'option_name' in str(exc_info.value)
 
@@ -310,7 +310,7 @@ class TestOptionLibraryLoaderErrors:
         
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
         with pytest.raises(RuntimeError):
-            OptionLibraryLoader.load_library(library_config_path=str(lib_config_path), env=env)
+            OptionLibraryLoader.load_library_from_env(library_config_path=str(lib_config_path), env=env)
 
     def test_unsupported_option_type_fails_loudly(self, tmp_path):
         subconfig_path = tmp_path / 'x.yaml'
@@ -331,7 +331,7 @@ class TestOptionLibraryLoaderErrors:
 
         env = create_mock_environment(antibiotic_names=['A'])
         with pytest.raises(RuntimeError, match="unsupported option_type 'Block'.*Allowed values are"):
-            OptionLibraryLoader.load_library(
+            OptionLibraryLoader.load_library_from_env(
                 library_config_path=str(config_path),
                 env=env,
             )
@@ -359,7 +359,7 @@ class TestOptionLibraryLoaderErrors:
 
         env = create_mock_environment(antibiotic_names=['A'])
         with pytest.raises(RuntimeError, match="canonical option_type 'block'.*must not include plugin"):
-            OptionLibraryLoader.load_library(
+            OptionLibraryLoader.load_library_from_env(
                 library_config_path=str(config_path),
                 env=env,
             )
@@ -391,7 +391,7 @@ class TestOptionLibraryLoaderErrors:
 
         env = create_mock_environment(antibiotic_names=['A'])
         with pytest.raises(RuntimeError, match='missing required plugin fields'):
-            OptionLibraryLoader.load_library(
+            OptionLibraryLoader.load_library_from_env(
                 library_config_path=str(config_path),
                 env=env,
             )
@@ -413,7 +413,7 @@ class TestOptionLibraryLoaderErrors:
 
         env = create_mock_environment(antibiotic_names=['A'])
         with pytest.raises(RuntimeError, match='legacy top-level loader keys') as exc_info:
-            OptionLibraryLoader.load_library(
+            OptionLibraryLoader.load_library_from_env(
                 library_config_path=str(config_path),
                 env=env,
             )
@@ -460,7 +460,7 @@ class TestOptionLibraryLoaderErrors:
 
         env = create_mock_environment(antibiotic_names=['A'])
         with pytest.raises(RuntimeError, match='Plugin loader returned invalid type'):
-            OptionLibraryLoader.load_library(
+            OptionLibraryLoader.load_library_from_env(
                 library_config_path=str(config_path),
                 env=env,
             )
@@ -497,7 +497,7 @@ class TestOptionLibraryLoaderConfigMerge:
         _write_yaml(path=lib_config_path, data=lib_config)
 
         env = create_mock_environment(antibiotic_names=['A', 'B'], num_patients_per_time_step=1)
-        _, resolved = OptionLibraryLoader.load_library(
+        _, resolved = OptionLibraryLoader.load_library_from_env(
             library_config_path=str(lib_config_path),
             env=env,
         )

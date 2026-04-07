@@ -40,7 +40,7 @@ def test_load_library_missing_config_file_raises(tmp_path: Path) -> None:
     missing_path = tmp_path / "missing.yaml"
 
     with pytest.raises(FileNotFoundError):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(missing_path),
             env=env,
         )
@@ -52,7 +52,7 @@ def test_load_library_empty_config_raises(tmp_path: Path) -> None:
     config_path.write_text("")
 
     with pytest.raises(ValueError, match="empty"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -64,7 +64,7 @@ def test_load_library_no_options_raises(tmp_path: Path) -> None:
     _write_yaml(path=config_path, data=_build_library_config(option_specs=[]))
 
     with pytest.raises(ValueError, match="no options"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -83,7 +83,7 @@ def test_load_library_missing_option_name_raises(tmp_path: Path) -> None:
     _write_yaml(path=config_path, data=_build_library_config(option_specs=option_specs))
 
     with pytest.raises(RuntimeError, match="missing 'option_name'"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -102,7 +102,7 @@ def test_load_library_missing_option_type_raises(tmp_path: Path) -> None:
     _write_yaml(path=config_path, data=_build_library_config(option_specs=option_specs))
 
     with pytest.raises(RuntimeError, match="missing 'option_type'"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -118,7 +118,7 @@ def test_load_single_option_missing_subconfig_raises(tmp_path: Path) -> None:
 
     env = create_mock_environment(antibiotic_names=["A"])
     with pytest.raises(RuntimeError, match="missing 'option_subconfig_file'"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -138,7 +138,7 @@ def test_load_single_option_missing_loader_module_raises(tmp_path: Path) -> None
 
     env = create_mock_environment(antibiotic_names=["A"])
     with pytest.raises(RuntimeError, match="must include a 'plugin' mapping"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -155,7 +155,7 @@ def test_load_single_option_missing_paths_raises(tmp_path: Path) -> None:
 
     env = create_mock_environment(antibiotic_names=["A"])
     with pytest.raises(RuntimeError, match="Option subconfig not found"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -184,7 +184,7 @@ def test_import_loader_function_missing_loader_raises(
 
     env = create_mock_environment(antibiotic_names=["A"])
     with pytest.raises(RuntimeError, match="missing expected function 'load_block_option_does_not_exist'"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -216,7 +216,7 @@ def test_import_loader_function_syntax_error_raises(
 
     env = create_mock_environment(antibiotic_names=["A"])
     with pytest.raises(RuntimeError, match="is not callable"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -241,7 +241,7 @@ def test_load_single_option_with_module_loader(tmp_path: Path) -> None:
     _write_yaml(path=config_path, data=_build_library_config(option_specs=[option_spec]))
 
     env = create_mock_environment(antibiotic_names=["A"])
-    library, resolved_config = OptionLibraryLoader.load_library(
+    library, resolved_config = OptionLibraryLoader.load_library_from_env(
         library_config_path=str(config_path),
         env=env,
     )
@@ -273,7 +273,7 @@ def test_module_loader_missing_expected_function_raises(
 
     env = create_mock_environment(antibiotic_names=["A"])
     with pytest.raises(RuntimeError, match="missing expected function 'load_block_option'"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -307,7 +307,7 @@ def load_custom_option(config):
 
     env = create_mock_environment(antibiotic_names=["A"])
     with pytest.raises(RuntimeError, match="Plugin loader returned invalid type"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -341,7 +341,7 @@ def load_custom_option(config):
 
     env = create_mock_environment(antibiotic_names=["A"])
     with pytest.raises(RuntimeError, match="Plugin loader function raised an exception"):
-        OptionLibraryLoader.load_library(
+        OptionLibraryLoader.load_library_from_env(
             library_config_path=str(config_path),
             env=env,
         )
@@ -398,7 +398,7 @@ def load_custom_option(config):
     _write_yaml(path=config_path, data=_build_library_config(option_specs=[option_spec]))
 
     env = create_mock_environment(antibiotic_names=["A"])
-    library, resolved = OptionLibraryLoader.load_library(
+    library, resolved = OptionLibraryLoader.load_library_from_env(
         library_config_path=str(config_path),
         env=env,
     )
@@ -432,7 +432,7 @@ def test_load_library_handles_multiple_options(tmp_path: Path) -> None:
     _write_yaml(path=config_path, data=_build_library_config(option_specs=option_specs))
 
     env = create_mock_environment(antibiotic_names=["A"])
-    library, resolved = OptionLibraryLoader.load_library(
+    library, resolved = OptionLibraryLoader.load_library_from_env(
         library_config_path=str(config_path),
         env=env,
     )

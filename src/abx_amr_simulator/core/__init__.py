@@ -1,6 +1,7 @@
 """ABX AMR Environment and related utilities."""
 
 from .abx_amr_env import ABXAMREnv
+from .abx_amr_parallel_env import ABXAMRParallelEnv
 from .reward_calculator import RewardCalculator
 from .leaky_balloon import AMR_LeakyBalloon
 from .types import Patient
@@ -43,6 +44,7 @@ def validate_compatibility(pg: PatientGeneratorBase, rc: RewardCalculatorBase) -
 
 __all__ = [
     'ABXAMREnv',
+    'ABXAMRParallelEnv',
     'RewardCalculator',
     'AMR_LeakyBalloon',
     'PatientGenerator',

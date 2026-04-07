@@ -1,19 +1,32 @@
-import sys, os
+"""
+Real-instance helpers for creating PatientGenerator, RewardCalculator, and ABXAMREnv
+in tests.
+
+All helpers construct genuine objects — no stubs or MagicMocks.  If you need to
+change how test environments are built, update these helpers and every test that
+imports them will pick up the change automatically.
+"""
+
+import sys
+import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-"""
-Reference helpers for creating mock PatientGenerator, RewardCalculator, and ABXAMREnv for tests.
-Update these helpers to change mock environment construction globally.
-"""
 import numpy as np
-from abx_amr_simulator.core import ABXAMREnv
-from abx_amr_simulator.core import RewardCalculator
-from abx_amr_simulator.core import PatientGenerator
+from abx_amr_simulator.core import ABXAMREnv, RewardCalculator, PatientGenerator
 
-def create_mock_patient_generator( baseline_probability_of_infection=0.5, std_dev_probability_of_infection=0.1):
+
+def make_pg(
+    baseline_probability_of_infection: float = 0.5,
+    std_dev_probability_of_infection: float = 0.1,
+) -> PatientGenerator:
+    """Return a real PatientGenerator with lightweight constant distributions."""
     config = {
         'prob_infected': {
-            'prob_dist': {'type': 'gaussian', 'mu': baseline_probability_of_infection, 'sigma': std_dev_probability_of_infection},
+            'prob_dist': {
+                'type': 'gaussian',
+                'mu': baseline_probability_of_infection,
+                'sigma': std_dev_probability_of_infection,
+            },
             'obs_bias_multiplier': 1.0,
             'obs_noise_one_std_dev': 0.0,
             'obs_noise_std_dev_fraction': 0.0,
@@ -58,7 +71,9 @@ def create_mock_patient_generator( baseline_probability_of_infection=0.5, std_de
     }
     return PatientGenerator(config=config)
 
-def create_mock_reward_calculator(antibiotic_names=None):
+
+def make_rc(antibiotic_names=None) -> RewardCalculator:
+    """Return a real RewardCalculator for the given antibiotic names."""
     if antibiotic_names is None:
         antibiotic_names = ["A"]
     config = {
@@ -71,7 +86,8 @@ def create_mock_reward_calculator(antibiotic_names=None):
                 name: {
                     'adverse_effect_penalty': -2.0,
                     'adverse_effect_probability': 0.0,
-                } for name in antibiotic_names
+                }
+                for name in antibiotic_names
             },
         },
         'lambda_weight': 0.5,
@@ -79,7 +95,9 @@ def create_mock_reward_calculator(antibiotic_names=None):
     }
     return RewardCalculator(config=config)
 
-def create_mock_antibiotics_dict(antibiotic_names=None):
+
+def make_antibiotics_dict(antibiotic_names=None) -> dict:
+    """Return a minimal antibiotics AMR dict for the given antibiotic names."""
     if antibiotic_names is None:
         antibiotic_names = ["A"]
     return {
@@ -87,38 +105,44 @@ def create_mock_antibiotics_dict(antibiotic_names=None):
             'leak': 0.05,
             'flatness_parameter': 1.0,
             'permanent_residual_volume': 0.0,
-            'initial_amr_level': 0.0
-        } for name in antibiotic_names
+            'initial_amr_level': 0.0,
+        }
+        for name in antibiotic_names
     }
 
-def create_mock_environment(
+
+def make_env(
     antibiotic_names=None,
-    num_patients_per_time_step=5,
-    max_time_steps=10,
-    update_visible_AMR_levels_every_n_timesteps=1,
-    add_noise_to_visible_AMR_levels=0.0,
-    add_bias_to_visible_AMR_levels=0.0,
+    num_patients_per_time_step: int = 5,
+    max_time_steps: int = 10,
+    update_visible_AMR_levels_every_n_timesteps: int = 1,
+    add_noise_to_visible_AMR_levels: float = 0.0,
+    add_bias_to_visible_AMR_levels: float = 0.0,
     crossresistance_matrix=None,
     visible_patient_attributes=None,
-    include_steps_since_amr_update_in_obs=False,
+    include_steps_since_amr_update_in_obs: bool = False,
     patient_generator=None,
     reward_calculator=None,
     antibiotics_AMR_dict=None,
-):
+) -> ABXAMREnv:
+    """Return a real lightweight ABXAMREnv instance.
+
+    All components are real objects.  Override individual components by passing
+    pre-built patient_generator, reward_calculator, or antibiotics_AMR_dict.
+    """
     if antibiotic_names is None:
         antibiotic_names = ["A"]
     if patient_generator is None:
-        patient_generator = create_mock_patient_generator()
+        patient_generator = make_pg()
     if reward_calculator is None:
-        reward_calculator = create_mock_reward_calculator(antibiotic_names)
+        reward_calculator = make_rc(antibiotic_names)
     if antibiotics_AMR_dict is None:
-        antibiotics_AMR_dict = create_mock_antibiotics_dict(antibiotic_names)
+        antibiotics_AMR_dict = make_antibiotics_dict(antibiotic_names)
     if visible_patient_attributes is None:
         visible_patient_attributes = ['prob_infected']
-    
-    # Set visibility in patient_generator
+
     patient_generator.visible_patient_attributes = visible_patient_attributes
-    
+
     return ABXAMREnv(
         reward_calculator=reward_calculator,
         patient_generator=patient_generator,
@@ -131,3 +155,13 @@ def create_mock_environment(
         crossresistance_matrix=crossresistance_matrix,
         include_steps_since_amr_update_in_obs=include_steps_since_amr_update_in_obs,
     )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat aliases — kept so that any remaining old import sites
+# continue to work during migration.  Remove once all callers are updated.
+# ---------------------------------------------------------------------------
+create_mock_patient_generator = make_pg
+create_mock_reward_calculator = make_rc
+create_mock_antibiotics_dict = make_antibiotics_dict
+create_mock_environment = make_env

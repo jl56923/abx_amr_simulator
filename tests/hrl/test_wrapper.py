@@ -62,7 +62,7 @@ class TestOptionsWrapperInit:
     def test_init_with_valid_env_and_library(self):
         """Test initialization with valid environment and library."""
         env = create_test_environment(num_patients=2, num_abx=2)
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         lib.add_option(SimpleOption(name='opt1', action_value=0, k=5))
         
         wrapper = OptionsWrapper(env=env, option_library=lib, gamma=0.99)
@@ -75,7 +75,7 @@ class TestOptionsWrapperInit:
         """Test initialization fails if env missing reward_calculator."""
         # Create a valid env for OptionLibrary initialization
         valid_env = create_test_environment()
-        lib = OptionLibrary(env=valid_env)
+        lib = OptionLibrary.from_env(valid_env)
         lib.add_option(SimpleOption(name='opt1', action_value=0))
         
         # Create invalid env with patient_generator set to None for OptionsWrapper
@@ -92,7 +92,7 @@ class TestOptionsWrapperInit:
     def test_init_validates_option_library_compatibility(self):
         """Test that init calls validation."""
         env = create_test_environment(num_abx=1)
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         
         class BadOption(SimpleOption):
             def get_referenced_antibiotics(self):
@@ -112,7 +112,7 @@ class TestOptionsWrapperReset:
     def test_reset_returns_manager_obs(self):
         """Test that reset returns manager observation."""
         env = create_test_environment(num_patients=2, num_abx=2)
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         lib.add_option(SimpleOption(name='opt1', action_value=0))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
@@ -138,7 +138,7 @@ class TestOptionsWrapperReset:
             num_abx=2,
             visible_attrs=visible_attrs,
         )
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         lib.add_option(SimpleOption(name='opt1', action_value=0))
 
         wrapper = OptionsWrapper(env=env, option_library=lib, front_edge_use_full_vector=False)
@@ -162,7 +162,7 @@ class TestOptionsWrapperReset:
             num_abx=2,
             visible_attrs=visible_attrs,
         )
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         lib.add_option(SimpleOption(name='opt1', action_value=0))
 
         wrapper = OptionsWrapper(env=env, option_library=lib, front_edge_use_full_vector=True)
@@ -176,7 +176,7 @@ class TestOptionsWrapperReset:
     def test_reset_calls_option_reset(self):
         """Test that reset calls reset on all options."""
         env = create_test_environment()
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
 
         class ResetTrackingOption(SimpleOption):
             def __init__(self, name: str, action_value: int, k: int = 5):
@@ -204,7 +204,7 @@ class TestOptionsWrapperStep:
     def test_step_with_valid_manager_action(self):
         """Test step with valid manager action."""
         env = create_test_environment()
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         lib.add_option(SimpleOption(name='opt1', action_value='no_treatment', k=2))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
@@ -222,7 +222,7 @@ class TestOptionsWrapperStep:
     def test_step_executes_option_for_k_steps(self):
         """Test that step executes option for k substeps."""
         env = create_test_environment()
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         lib.add_option(SimpleOption(name='opt1', action_value='no_treatment', k=3))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
@@ -246,7 +246,7 @@ class TestOptionsWrapperStep:
     def test_step_accumulates_discounted_reward(self):
         """Test that step accumulates rewards with discounting."""
         env = create_test_environment()
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         lib.add_option(SimpleOption(name='opt1', action_value='no_treatment', k=3))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
@@ -273,7 +273,7 @@ class TestOptionsWrapperStep:
     def test_step_with_invalid_manager_action(self):
         """Test step with invalid manager action."""
         env = create_test_environment()
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         lib.add_option(SimpleOption(name='opt1', action_value='no_treatment'))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
@@ -285,7 +285,7 @@ class TestOptionsWrapperStep:
     def test_step_early_termination_by_episode(self):
         """Test that step stops if episode terminates."""
         env = create_test_environment()
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         lib.add_option(SimpleOption(name='opt1', action_value='no_treatment', k=10))
         
         wrapper = OptionsWrapper(env=env, option_library=lib)
@@ -317,7 +317,7 @@ class TestOptionsWrapperActionValidation:
     def test_validate_actions_wrong_type(self):
         """Test validation fails if actions wrong type."""
         env = create_test_environment()
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         
         class BadOption(OptionBase):
             REQUIRES_OBSERVATION_ATTRIBUTES = []
@@ -340,7 +340,7 @@ class TestOptionsWrapperActionValidation:
     def test_validate_actions_wrong_shape(self):
         """Test validation fails if shape wrong."""
         env = create_test_environment(num_patients=2)
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         
         class BadOption(OptionBase):
             REQUIRES_OBSERVATION_ATTRIBUTES = []
@@ -363,7 +363,7 @@ class TestOptionsWrapperActionValidation:
     def test_validate_actions_out_of_range(self):
         """Test validation fails if action indices out of range."""
         env = create_test_environment(num_patients=2, num_abx=2)
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         
         class BadOption(OptionBase):
             REQUIRES_OBSERVATION_ATTRIBUTES = []
@@ -390,7 +390,7 @@ class TestOptionsWrapperBuildsEnvState:
     def test_build_env_state_structure(self):
         """Test that env_state has correct structure (timestep-free after Phase A)."""
         env = create_test_environment(num_patients=2, num_abx=2)
-        lib = OptionLibrary(env=env)
+        lib = OptionLibrary.from_env(env)
         
         class StateCheckOption(OptionBase):
             REQUIRES_OBSERVATION_ATTRIBUTES = []

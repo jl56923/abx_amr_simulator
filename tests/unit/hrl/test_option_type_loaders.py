@@ -82,7 +82,7 @@ def test_block_option_decide_returns_single_action():
         antibiotic_names=["A", "B"],
         num_patients_per_time_step=2,
     )
-    option_library = OptionLibrary(env=env)
+    option_library = OptionLibrary.from_env(env)
 
     module_path = _get_bundled_option_loader_path(loader_type="block")
     module = _load_module(module_name="block_option_loader", module_path=module_path)
@@ -101,7 +101,7 @@ def test_block_option_supports_no_rx_alias():
         antibiotic_names=["A", "B"],
         num_patients_per_time_step=2,
     )
-    option_library = OptionLibrary(env=env)
+    option_library = OptionLibrary.from_env(env)
 
     module_path = _get_bundled_option_loader_path(loader_type="block")
     module = _load_module(module_name="block_option_loader", module_path=module_path)
@@ -134,7 +134,7 @@ def test_alternation_option_sequences_actions():
         antibiotic_names=["A", "B"],
         num_patients_per_time_step=2,
     )
-    option_library = OptionLibrary(env=env)
+    option_library = OptionLibrary.from_env(env)
 
     module_path = _get_bundled_option_loader_path(loader_type="alternation")
     module = _load_module(module_name="alternation_option_loader", module_path=module_path)
@@ -168,7 +168,7 @@ def test_alternation_resets_via_explicit_reset_call():
         antibiotic_names=["A", "B"],
         num_patients_per_time_step=2,
     )
-    option_library = OptionLibrary(env=env)
+    option_library = OptionLibrary.from_env(env)
 
     module_path = _get_bundled_option_loader_path(loader_type="alternation")
     module = _load_module(module_name="alternation_option_loader", module_path=module_path)
@@ -230,7 +230,7 @@ def test_default_deterministic_library_loads():
         / "default_deterministic.yaml"
     )
 
-    library, resolved = OptionLibraryLoader.load_library(
+    library, resolved = OptionLibraryLoader.load_library_from_env(
         library_config_path=str(library_path),
         env=env,
     )

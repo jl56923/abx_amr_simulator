@@ -61,6 +61,10 @@ dev = [
 gui = [
     "streamlit>=1.28",
 ]
+marl = [
+    "pettingzoo>=1.24",
+    "supersuit>=3.9",
+]
 
 [project.scripts]
 abx-amr-simulator-experiment-runner = "abx_amr_simulator.gui.runner_entry:main"

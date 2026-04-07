@@ -250,7 +250,7 @@ def wrap_environment_for_hrl(
             return None
         
         loader = OptionLibraryLoader()
-        option_library, _ = loader.load_library(library_config_path=option_lib_path, env=env)
+        option_library, _ = loader.load_library_from_env(library_config_path=option_lib_path, env=env)
         
         wrapped_env = OptionsWrapper(env=env, option_library=option_library)
         return wrapped_env

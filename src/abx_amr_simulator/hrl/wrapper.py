@@ -79,7 +79,7 @@ class OptionsWrapper(gym.Wrapper):
 
         # Validate option library compatibility with environment
         try:
-            option_library.validate_environment_compatibility(env, self.patient_generator)
+            option_library.validate_environment_compatibility(self.patient_generator)
         except ValueError as e:
             raise ValueError(
                 f"Option library '{option_library.name}' incompatible with environment: {e}"

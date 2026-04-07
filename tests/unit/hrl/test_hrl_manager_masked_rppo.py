@@ -36,7 +36,7 @@ def create_test_hrl_env():
     """Create a test HRL environment with OptionsWrapper and option library."""
     base_env = create_mock_environment(antibiotic_names=["A"], num_patients_per_time_step=1)
     
-    library = OptionLibrary(env=base_env)
+    library = OptionLibrary.from_env(base_env)
     library.add_option(option=DummyOption(name="opt1", k=1))
     library.add_option(option=DummyOption(name="opt2", k=2))
     

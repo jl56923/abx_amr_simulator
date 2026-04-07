@@ -882,7 +882,7 @@ def analyze_hrl_single_run(run_dir: Path, max_eval_episodes: int = 5) -> Dict[st
             return {"error": f"No HRL option_library specified in config"}
         
         loader = OptionLibraryLoader()
-        option_library, _ = loader.load_library(library_config_path=option_lib_path, env=base_env)
+        option_library, _ = loader.load_library_from_env(library_config_path=option_lib_path, env=base_env)
     except Exception as e:
         return {"error": f"Failed to load option library: {e}"}
     
