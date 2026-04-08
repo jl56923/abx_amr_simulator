@@ -1,0 +1,147 @@
+# Minimal two-agent MARL config for unit testing.
+#
+# Uses inline patient_generator and reward_calculator configs so the fixture
+# has no external file dependencies. The option_library path is relative to
+# this file's directory and points at the built-in default_deterministic library
+# (shipped with abx_amr_simulator) which uses antibiotics A and B.
+
+environment:
+  shared:
+    antibiotics_amr_dict:
+      A:
+        leak: 0.05
+        flatness_parameter: 1.0
+        permanent_residual_volume: 0.0
+        initial_amr_level: 0.0
+      B:
+        leak: 0.05
+        flatness_parameter: 1.0
+        permanent_residual_volume: 0.0
+        initial_amr_level: 0.0
+    max_time_steps: 20
+
+  agents:
+    - agent_id: agent_0
+      n_patients: 3
+      patient_generator:
+        prob_infected:
+          prob_dist: {type: constant, value: 0.8, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, 1.0]
+        benefit_value_multiplier:
+          prob_dist: {type: constant, value: 1.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, null]
+        failure_value_multiplier:
+          prob_dist: {type: constant, value: 1.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, null]
+        benefit_probability_multiplier:
+          prob_dist: {type: constant, value: 1.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, null]
+        failure_probability_multiplier:
+          prob_dist: {type: constant, value: 1.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, null]
+        recovery_without_treatment_prob:
+          prob_dist: {type: constant, value: 0.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, 1.0]
+        visible_patient_attributes:
+          - prob_infected
+      reward_calculator:
+        abx_clinical_reward_penalties_info_dict:
+          clinical_benefit_reward: 10.0
+          clinical_benefit_probability: 1.0
+          clinical_failure_penalty: -10.0
+          clinical_failure_probability: 1.0
+          abx_adverse_effects_info:
+            A:
+              adverse_effect_penalty: -2.0
+              adverse_effect_probability: 0.1
+            B:
+              adverse_effect_penalty: -3.0
+              adverse_effect_probability: 0.15
+        lambda_weight: 0.0
+        seed: null
+      option_library: default_deterministic.yaml
+
+    - agent_id: agent_1
+      n_patients: 4
+      patient_generator:
+        prob_infected:
+          prob_dist: {type: constant, value: 0.6, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, 1.0]
+        benefit_value_multiplier:
+          prob_dist: {type: constant, value: 1.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, null]
+        failure_value_multiplier:
+          prob_dist: {type: constant, value: 1.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, null]
+        benefit_probability_multiplier:
+          prob_dist: {type: constant, value: 1.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, null]
+        failure_probability_multiplier:
+          prob_dist: {type: constant, value: 1.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, null]
+        recovery_without_treatment_prob:
+          prob_dist: {type: constant, value: 0.0, mu: null, sigma: null}
+          obs_bias_multiplier: 1.0
+          obs_noise_one_std_dev: 0.0
+          obs_noise_std_dev_fraction: 0.0
+          clipping_bounds: [0.0, 1.0]
+        visible_patient_attributes:
+          - prob_infected
+      reward_calculator:
+        abx_clinical_reward_penalties_info_dict:
+          clinical_benefit_reward: 10.0
+          clinical_benefit_probability: 1.0
+          clinical_failure_penalty: -10.0
+          clinical_failure_probability: 1.0
+          abx_adverse_effects_info:
+            A:
+              adverse_effect_penalty: -2.0
+              adverse_effect_probability: 0.1
+            B:
+              adverse_effect_penalty: -3.0
+              adverse_effect_probability: 0.15
+        lambda_weight: 0.0
+        seed: null
+      option_library: default_deterministic.yaml
+
+training:
+  n_steps: 8
+  batch_size: 4
+  n_epochs: 1
+  learning_rate: 0.0003
+  total_primitive_steps: 200
+  option_gamma: 0.99
+  seed: 42

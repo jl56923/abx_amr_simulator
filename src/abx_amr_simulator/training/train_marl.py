@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
@@ -42,6 +42,7 @@ from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.buffers import RolloutBuffer
 
+from abx_amr_simulator.callbacks.marl_callbacks import run_marl_eval_episodes
 from abx_amr_simulator.hrl.marl_wrapper import MARLOptionsWrapper
 
 
@@ -488,53 +489,11 @@ class MARLTrainer:
         Returns:
             Dict mapping agent_id → mean cumulative manager-level reward.
         """
-        cumulative_rewards: Dict[str, List[float]] = {
-            aid: [] for aid in self._agent_ids
-        }
-
-        for _ in range(self.n_eval_episodes):
-            episode_rewards: Dict[str, float] = {
-                aid: 0.0 for aid in self._agent_ids
-            }
-            obs_dict, _ = self.wrapper.reset()
-            last_obs_eval = dict(obs_dict)
-            last_ep_start_eval = {aid: True for aid in self._agent_ids}
-
-            # All agents get their first selection
-            pending = {}
-            for aid in self._agent_ids:
-                obs = last_obs_eval[aid][np.newaxis, :]
-                action, _ = self.agents[aid].policy.predict(
-                    obs, deterministic=True
-                )
-                pending[aid] = int(action[0])
-
-            episode_done = False
-            while not episode_done:
-                m_obs, m_rew, m_term, m_trunc, _ = self.wrapper.step(pending)
-
-                for aid, rew in m_rew.items():
-                    episode_rewards[aid] += rew
-                    last_obs_eval[aid] = m_obs[aid]
-
-                episode_done = any(m_term.values()) or any(m_trunc.values())
-
-                if not episode_done:
-                    pending = {}
-                    for aid in m_obs:
-                        obs = m_obs[aid][np.newaxis, :]
-                        action, _ = self.agents[aid].policy.predict(
-                            obs, deterministic=True
-                        )
-                        pending[aid] = int(action[0])
-
-            for aid in self._agent_ids:
-                cumulative_rewards[aid].append(episode_rewards[aid])
-
-        return {
-            aid: float(np.mean(cumulative_rewards[aid]))
-            for aid in self._agent_ids
-        }
+        return run_marl_eval_episodes(
+            wrapper=self.wrapper,
+            agents=self.agents,
+            n_episodes=self.n_eval_episodes,
+        )
 
     def _maybe_eval_and_checkpoint(
         self,

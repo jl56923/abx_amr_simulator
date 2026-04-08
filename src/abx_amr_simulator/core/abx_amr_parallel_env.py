@@ -214,6 +214,24 @@ class ABXAMRParallelEnv(ParallelEnv):
             aid: [] for aid in self.possible_agents
         }
 
+        # ------------------------------------------------------------------ #
+        # Granular trajectory logging
+        # ------------------------------------------------------------------ #
+        # When save_granular_trajectories is True, step() appends one entry
+        # per agent per step to episode_log.  The schema mirrors the
+        # single-agent ABXAMREnv: each entry is a dict with 'true' and
+        # 'observed' sub-dicts mapping attribute names to per-patient lists.
+        #
+        # episode_log structure:
+        #   {agent_id: [step_0_patient_full_data, step_1_patient_full_data, ...]}
+        #
+        # The log is cleared on reset() so callers should read it before
+        # calling reset() for the next episode.
+        self.save_granular_trajectories: bool = False
+        self.episode_log: Dict[str, List[Dict]] = {
+            aid: [] for aid in self.possible_agents
+        }
+
     # ---------------------------------------------------------------------- #
     # PettingZoo required method overrides
     # ---------------------------------------------------------------------- #
@@ -256,6 +274,7 @@ class ABXAMRParallelEnv(ParallelEnv):
         self.agents = list(self.possible_agents)
         self.current_time_step = 0
         self.steps_since_amr_update = 0
+        self.episode_log = {aid: [] for aid in self.possible_agents}
 
         # Reset AMR balloons to initial levels
         for abx_name, params in self._antibiotics_amr_dict.items():
@@ -410,6 +429,15 @@ class ABXAMRParallelEnv(ParallelEnv):
                 **reward_info,
             }
 
+            # Granular logging: record full patient attribute data for this step
+            if self.save_granular_trajectories:
+                patient_full_data = self._extract_full_patient_attributes(
+                    agent_id=aid,
+                    patients=patients_for_reward[aid],
+                )
+                self.episode_log[aid].append(patient_full_data)
+                infos[aid]["patient_full_data"] = patient_full_data
+
         if truncated_flag or terminated_flag:
             self.agents = []
 
@@ -529,3 +557,53 @@ class ABXAMRParallelEnv(ParallelEnv):
                 matrix[from_abx][to_abx] = float(ratio)
 
         return matrix
+
+    def _extract_full_patient_attributes(
+        self,
+        agent_id: str,
+        patients: List,
+    ) -> Dict:
+        """Extract full patient attribute data for granular trajectory logging.
+
+        Delegates to the agent's patient_generator if it provides an
+        `export_patient_attributes_for_logging` method; otherwise falls back
+        to extracting the standard set of Patient attributes directly.
+
+        The returned dict has 'true' and 'observed' sub-dicts, each mapping
+        attribute names to lists of per-patient values. This mirrors the schema
+        used by the single-agent ABXAMREnv for compatibility with the existing
+        granular metrics analysis pipeline.
+
+        Args:
+            agent_id: Agent whose patient generator to use.
+            patients: List of Patient objects from the current step.
+
+        Returns:
+            Dict with 'true' and 'observed' sub-dicts.
+        """
+        if not patients:
+            return {"true": {}, "observed": {}}
+
+        pg = self._patient_generators[agent_id]
+        export_fn = getattr(pg, "export_patient_attributes_for_logging", None)
+        if callable(export_fn):
+            return export_fn(patients=patients)
+
+        # Fallback: extract the standard Patient attributes directly.
+        true_attrs = {
+            "prob_infected": [float(p.prob_infected) for p in patients],
+            "benefit_value_multiplier": [float(p.benefit_value_multiplier) for p in patients],
+            "failure_value_multiplier": [float(p.failure_value_multiplier) for p in patients],
+            "benefit_probability_multiplier": [float(p.benefit_probability_multiplier) for p in patients],
+            "failure_probability_multiplier": [float(p.failure_probability_multiplier) for p in patients],
+            "recovery_without_treatment_prob": [float(p.recovery_without_treatment_prob) for p in patients],
+        }
+        obs_attrs = {
+            "prob_infected": [float(p.prob_infected_obs) for p in patients],
+            "benefit_value_multiplier": [float(p.benefit_value_multiplier_obs) for p in patients],
+            "failure_value_multiplier": [float(p.failure_value_multiplier_obs) for p in patients],
+            "benefit_probability_multiplier": [float(p.benefit_probability_multiplier_obs) for p in patients],
+            "failure_probability_multiplier": [float(p.failure_probability_multiplier_obs) for p in patients],
+            "recovery_without_treatment_prob": [float(p.recovery_without_treatment_prob_obs) for p in patients],
+        }
+        return {"true": true_attrs, "observed": obs_attrs}
