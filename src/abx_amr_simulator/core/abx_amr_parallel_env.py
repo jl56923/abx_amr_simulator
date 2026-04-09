@@ -63,15 +63,15 @@ class ABXAMRParallelEnv(ParallelEnv):
                 - 'patient_generator' (PatientGeneratorBase): pre-instantiated
                 - 'reward_calculator' (RewardCalculatorBase): pre-instantiated
             shared_env_config: AMR dynamics config dict. Required keys:
-                - 'antibiotics_amr_dict' (dict): maps antibiotic name →
+                - 'antibiotics_AMR_dict' (dict): maps antibiotic name →
                   {'leak', 'flatness_parameter', 'permanent_residual_volume',
                    'initial_amr_level'}
                 - 'max_time_steps' (int)
-                - 'update_visible_amr_levels_every_n_timesteps' (int, default 1)
+                - 'update_visible_AMR_levels_every_n_timesteps' (int, default 1)
                 Optional keys:
                 - 'crossresistance_matrix' (dict, default None)
-                - 'add_noise_to_visible_amr_levels' (float, default 0.0)
-                - 'add_bias_to_visible_amr_levels' (float, default 0.0)
+                - 'add_noise_to_visible_AMR_levels' (float, default 0.0)
+                - 'add_bias_to_visible_AMR_levels' (float, default 0.0)
                 - 'include_steps_since_amr_update_in_obs' (bool, default False)
             seed: Optional global seed for the shared RNG.
 
@@ -83,27 +83,27 @@ class ABXAMRParallelEnv(ParallelEnv):
         # ------------------------------------------------------------------ #
         # Validate and store shared AMR config
         # ------------------------------------------------------------------ #
-        antibiotics_amr_dict: Dict[str, Dict] = shared_env_config["antibiotics_amr_dict"]
-        if not antibiotics_amr_dict:
-            raise ValueError("antibiotics_amr_dict must contain at least one antibiotic.")
+        antibiotics_AMR_dict: Dict[str, Dict] = shared_env_config["antibiotics_AMR_dict"]
+        if not antibiotics_AMR_dict:
+            raise ValueError("antibiotics_AMR_dict must contain at least one antibiotic.")
 
-        self.antibiotic_names: List[str] = list(antibiotics_amr_dict.keys())
+        self.antibiotic_names: List[str] = list(antibiotics_AMR_dict.keys())
         self.num_abx: int = len(self.antibiotic_names)
         self.max_time_steps: int = int(shared_env_config["max_time_steps"])
         self.amr_update_frequency: int = int(
-            shared_env_config.get("update_visible_amr_levels_every_n_timesteps", 1)
+            shared_env_config.get("update_visible_AMR_levels_every_n_timesteps", 1)
         )
         self.add_noise_to_visible_amr: float = float(
-            shared_env_config.get("add_noise_to_visible_amr_levels", 0.0)
+            shared_env_config.get("add_noise_to_visible_AMR_levels", 0.0)
         )
         self.add_bias_to_visible_amr: float = float(
-            shared_env_config.get("add_bias_to_visible_amr_levels", 0.0)
+            shared_env_config.get("add_bias_to_visible_AMR_levels", 0.0)
         )
         self.include_steps_since_amr_update_in_obs: bool = bool(
             shared_env_config.get("include_steps_since_amr_update_in_obs", False)
         )
 
-        self._antibiotics_amr_dict = antibiotics_amr_dict
+        self._antibiotics_AMR_dict = antibiotics_AMR_dict
         self._crossresistance_matrix = self._build_crossresistance_matrix(
             crossresistance_dict=shared_env_config.get("crossresistance_matrix", None),
             antibiotic_names=self.antibiotic_names,
@@ -191,7 +191,7 @@ class ABXAMRParallelEnv(ParallelEnv):
         # Shared AMR balloon models
         # ------------------------------------------------------------------ #
         self.amr_balloon_models: Dict[str, AMRDynamicsBase] = {}
-        for abx_name, params in antibiotics_amr_dict.items():
+        for abx_name, params in antibiotics_AMR_dict.items():
             self.amr_balloon_models[abx_name] = AMR_LeakyBalloon(
                 leak=float(params.get("leak", 0.05)),
                 flatness_parameter=float(params.get("flatness_parameter", 1.0)),
@@ -277,7 +277,7 @@ class ABXAMRParallelEnv(ParallelEnv):
         self.episode_log = {aid: [] for aid in self.possible_agents}
 
         # Reset AMR balloons to initial levels
-        for abx_name, params in self._antibiotics_amr_dict.items():
+        for abx_name, params in self._antibiotics_AMR_dict.items():
             initial = float(params.get("initial_amr_level", 0.0))
             self.amr_balloon_models[abx_name].reset(initial_amr_level=initial)
 

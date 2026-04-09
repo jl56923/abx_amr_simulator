@@ -118,7 +118,7 @@ class TestBuildMarlEnvFromConfig:
             "environment:\n  shared:\n    max_time_steps: 10\n  agents: []\n"
             "training:\n  n_steps: 8\n"
         )
-        with pytest.raises(ValueError, match="antibiotics_amr_dict"):
+        with pytest.raises(ValueError, match="antibiotics_AMR_dict"):
             build_marl_env_from_config(load_marl_config(bad))
 
 

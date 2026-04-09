@@ -25,7 +25,7 @@ Config format (YAML)::
 
     environment:
       shared:
-        antibiotics_amr_dict:
+        antibiotics_AMR_dict:
           A: {leak: 0.05, flatness_parameter: 1.0, ...}
           B: {leak: 0.05, ...}
         max_time_steps: 1000
@@ -149,15 +149,19 @@ def _load_component_config(
     return loaded
 
 
-def _build_patient_generator(
+def build_patient_generator_from_config(
     pg_value: Any,
     config_dir: str,
     seed: Optional[int],
 ) -> PatientGeneratorBase:
     """Build a PatientGenerator from an inline dict or filename.
 
+    Public helper shared by MARL factory functions and single-agent tuning.
+    Supports plugin-based patient generators (e.g. PersonalizedPredPatientGenerator)
+    via the standard plugin loader.
+
     Args:
-        pg_value: Inline config dict or filename string.
+        pg_value: Inline config dict or filename string relative to config_dir.
         config_dir: Directory to resolve relative filenames against.
         seed: Training seed to inject (or None).
 
@@ -181,15 +185,19 @@ def _build_patient_generator(
     return PatientGenerator(config=pg_config)
 
 
-def _build_reward_calculator(
+def build_reward_calculator_from_config(
     rc_value: Any,
     config_dir: str,
     seed: Optional[int],
 ) -> RewardCalculatorBase:
     """Build a RewardCalculator from an inline dict or filename.
 
+    Public helper shared by MARL factory functions and single-agent tuning.
+    Each agent entry in a MARL config may specify a different reward calculator,
+    supporting heterogeneous reward functions across agents.
+
     Args:
-        rc_value: Inline config dict or filename string.
+        rc_value: Inline config dict or filename string relative to config_dir.
         config_dir: Directory to resolve relative filenames against.
         seed: Training seed to inject (or None).
 
@@ -241,9 +249,9 @@ def build_marl_env_from_config(config: Dict[str, Any]) -> ABXAMRParallelEnv:
     config_dir = config.get("_config_dir", ".")
     seed = training_config.get("seed", None)
 
-    if not shared_config.get("antibiotics_amr_dict"):
+    if not shared_config.get("antibiotics_AMR_dict"):
         raise ValueError(
-            "MARL config missing 'environment.shared.antibiotics_amr_dict'."
+            "MARL config missing 'environment.shared.antibiotics_AMR_dict'."
         )
     if not agent_entries:
         raise ValueError(
@@ -255,8 +263,8 @@ def build_marl_env_from_config(config: Dict[str, Any]) -> ABXAMRParallelEnv:
         aid = str(entry["agent_id"])
         n_patients = int(entry["n_patients"])
 
-        pg = _build_patient_generator(entry["patient_generator"], config_dir, seed)
-        rc = _build_reward_calculator(entry["reward_calculator"], config_dir, seed)
+        pg = build_patient_generator_from_config(entry["patient_generator"], config_dir, seed)
+        rc = build_reward_calculator_from_config(entry["reward_calculator"], config_dir, seed)
 
         agent_configs.append({
             "agent_id": aid,
@@ -335,16 +343,25 @@ def build_marl_wrapper_from_config(
 def build_marl_managers_from_config(
     config: Dict[str, Any],
     wrapper: MARLOptionsWrapper,
+    agent_hyperparams: Optional[Dict[str, Dict]] = None,
 ) -> Dict[str, Any]:
     """Build one PPO agent per agent in a MARLOptionsWrapper from config.
 
     Only HRL_PPO is supported. Raises ValueError for any other algorithm value.
-    PPO hyperparameters are read from the `training` section; per-agent overrides
-    are not currently supported (all agents use the same hyperparameters).
+    Base PPO hyperparameters are read from the `training` section and applied
+    uniformly to all agents. If `agent_hyperparams` is provided, per-agent
+    overrides are merged on top of the shared defaults for the matching agent —
+    this is the mechanism used by the training CLI to load tuning results.
+    Note: `batch_size` is always taken from the training config and is NOT
+    overridden by per-agent params (it is not included in ``best_params.json``).
 
     Args:
         config: MARL config dict as returned by `load_marl_config`.
         wrapper: Pre-built MARLOptionsWrapper (from `build_marl_wrapper_from_config`).
+        agent_hyperparams: Optional dict mapping agent_id → PPO kwargs dict.
+            If provided, each agent's PPO is constructed by overlaying these
+            values on top of the shared training-section defaults. Agents not
+            present in this dict use the shared defaults unchanged.
 
     Returns:
         Dict mapping agent_id → PPO object, ready for use with MARLTrainer.
@@ -366,25 +383,32 @@ def build_marl_managers_from_config(
                 "Only 'HRL_PPO' is supported for MARL training."
             )
 
-    n_steps = int(training_config.get("n_steps", 256))
-    batch_size = int(training_config.get("batch_size", 64))
-    n_epochs = int(training_config.get("n_epochs", 10))
-    learning_rate = float(training_config.get("learning_rate", 3e-4))
-    gamma = float(training_config.get("option_gamma", 0.99))
-    seed = training_config.get("seed", None)
+    # Shared defaults from training section.
+    shared_ppo_kwargs: Dict[str, Any] = {
+        "n_steps": int(training_config.get("n_steps", 256)),
+        "batch_size": int(training_config.get("batch_size", 64)),
+        "n_epochs": int(training_config.get("n_epochs", 10)),
+        "learning_rate": float(training_config.get("learning_rate", 3e-4)),
+        "gamma": float(training_config.get("option_gamma", 0.99)),
+        "seed": training_config.get("seed", None),
+    }
 
     agents = {}
     for entry in agent_entries:
         aid = str(entry["agent_id"])
+
+        # Start with shared defaults, then overlay per-agent tuning results.
+        # batch_size is excluded from the overlay: it is not a tuning param.
+        ppo_kwargs = dict(shared_ppo_kwargs)
+        if agent_hyperparams and aid in agent_hyperparams:
+            for k, v in agent_hyperparams[aid].items():
+                if k != "batch_size":
+                    ppo_kwargs[k] = v
+
         agents[aid] = make_ppo_for_agent(
             wrapper=wrapper,
             agent_id=aid,
-            n_steps=n_steps,
-            batch_size=batch_size,
-            n_epochs=n_epochs,
-            learning_rate=learning_rate,
-            gamma=gamma,
-            seed=seed,
+            **ppo_kwargs,
         )
 
     return agents

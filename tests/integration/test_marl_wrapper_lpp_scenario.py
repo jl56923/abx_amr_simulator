@@ -101,18 +101,15 @@ def _build_three_abx_parallel_env(
         )
 
     shared_env_config = {
-        "antibiotics_amr_dict": {
-            name: params
-            for name, params in env_config["antibiotics_AMR_dict"].items()
-        },
+        "antibiotics_AMR_dict": env_config["antibiotics_AMR_dict"],
         "max_time_steps": max_time_steps,
-        "update_visible_amr_levels_every_n_timesteps": env_config.get(
+        "update_visible_AMR_levels_every_n_timesteps": env_config.get(
             "update_visible_AMR_levels_every_n_timesteps", 1
         ),
-        "add_noise_to_visible_amr_levels": env_config.get(
+        "add_noise_to_visible_AMR_levels": env_config.get(
             "add_noise_to_visible_AMR_levels", 0.0
         ),
-        "add_bias_to_visible_amr_levels": env_config.get(
+        "add_bias_to_visible_AMR_levels": env_config.get(
             "add_bias_to_visible_AMR_levels", 0.0
         ),
         "crossresistance_matrix": env_config.get("crossresistance_matrix", None),

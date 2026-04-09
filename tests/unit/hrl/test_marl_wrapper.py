@@ -70,7 +70,7 @@ def make_parallel_env(
         )
 
     shared_env_config = {
-        "antibiotics_amr_dict": {
+        "antibiotics_AMR_dict": {
             name: {
                 "leak": 0.05,
                 "flatness_parameter": 1.0,

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -44,6 +44,124 @@ from stable_baselines3.common.buffers import RolloutBuffer
 
 from abx_amr_simulator.callbacks.marl_callbacks import run_marl_eval_episodes
 from abx_amr_simulator.hrl.marl_wrapper import MARLOptionsWrapper
+
+
+# --------------------------------------------------------------------------- #
+# Config override helpers
+# --------------------------------------------------------------------------- #
+
+def _coerce_value(value_str: str, existing: Any) -> Any:
+    """Coerce value_str to the same type as existing.
+
+    bool is checked before int because bool is a subtype of int in Python.
+    If existing is neither bool, int, nor float, the string is returned as-is.
+
+    Args:
+        value_str: String representation of the new value.
+        existing: Current value at the target path (used for type inference).
+
+    Returns:
+        value_str coerced to the type of existing, or value_str unchanged.
+
+    Raises:
+        ValueError: If existing is bool but value_str cannot be interpreted as one.
+    """
+    if isinstance(existing, bool):
+        lower = value_str.lower()
+        if lower in ("true", "1", "yes"):
+            return True
+        elif lower in ("false", "0", "no"):
+            return False
+        else:
+            raise ValueError(
+                f"Cannot coerce {value_str!r} to bool. "
+                "Use 'true'/'false', '1'/'0', or 'yes'/'no'."
+            )
+    elif isinstance(existing, int):
+        return int(value_str)
+    elif isinstance(existing, float):
+        return float(value_str)
+    else:
+        return value_str
+
+
+def _apply_overrides(config: Dict[str, Any], overrides: List[str]) -> Dict[str, Any]:
+    """Apply dot-path key=value overrides to a nested config dict (in-place).
+
+    Each override has the form ``"key.path=value"``. Path segments are split on
+    dots; integer-valued segments (e.g. ``agents.0``) index into lists. The
+    value string is coerced to the same Python type as the existing value at
+    that path (int, float, or bool); otherwise it is left as a string.
+
+    Args:
+        config: Nested config dict. Mutated in-place.
+        overrides: List of ``"key.path=value"`` strings.
+
+    Returns:
+        The same config dict after all overrides are applied.
+
+    Raises:
+        ValueError: If an override string has no ``=`` separator.
+        KeyError: If a path segment does not exist in the config.
+        IndexError: If an integer segment is out of range for a list.
+    """
+    for override in overrides:
+        if "=" not in override:
+            raise ValueError(
+                f"Override must have the form 'key.path=value', got: {override!r}"
+            )
+        key_path, value_str = override.split("=", 1)
+        segments = key_path.split(".")
+
+        # Walk to the parent of the target node.
+        node: Any = config
+        for seg in segments[:-1]:
+            if isinstance(node, list):
+                try:
+                    node = node[int(seg)]
+                except ValueError:
+                    raise KeyError(
+                        f"Expected integer list index at segment {seg!r} "
+                        f"in path {key_path!r}"
+                    )
+            elif isinstance(node, dict):
+                if seg not in node:
+                    raise KeyError(
+                        f"Key {seg!r} not found in config at path {key_path!r}"
+                    )
+                node = node[seg]
+            else:
+                raise KeyError(
+                    f"Cannot navigate into {type(node).__name__} "
+                    f"at segment {seg!r} in path {key_path!r}"
+                )
+
+        # Set the final segment.
+        last = segments[-1]
+        if isinstance(node, list):
+            try:
+                idx = int(last)
+            except ValueError:
+                raise KeyError(
+                    f"Expected integer list index for final segment {last!r} "
+                    f"in path {key_path!r}"
+                )
+            existing = node[idx]
+            node[idx] = _coerce_value(value_str, existing)
+        elif isinstance(node, dict):
+            if last not in node:
+                raise KeyError(
+                    f"Key {last!r} not found in config at path {key_path!r}"
+                )
+            existing = node[last]
+            node[last] = _coerce_value(value_str, existing)
+        else:
+            raise KeyError(
+                f"Cannot set value on {type(node).__name__} "
+                f"at final segment {last!r} in path {key_path!r}"
+            )
+
+    return config
 
 
 # --------------------------------------------------------------------------- #
@@ -536,3 +654,177 @@ class MARLTrainer:
                     f"  eval {aid}: mean_reward={mean_r:.3f} "
                     f"(best={self._best_mean_reward[aid]:.3f}){tag}"
                 )
+
+
+# --------------------------------------------------------------------------- #
+# CLI entry point
+# --------------------------------------------------------------------------- #
+
+def _main() -> None:
+    """CLI entry point for ``python -m abx_amr_simulator.training.train_marl``.
+
+    Loads a MARL config YAML, applies optional dot-path overrides, builds all
+    training components, and runs ``MARLTrainer.train()``. The resolved config
+    (with absolute option_library paths) is written to the run folder as
+    ``marl_full_agents_env_config.yaml`` before training begins, so the eval
+    script can reconstruct the environment without the original template YAML.
+
+    Per-agent PPO hyperparameters can be supplied via ``--agent-init-params``,
+    which points to an ``agent_init_params.json`` file written by the experiment
+    runner. Each entry maps an agent_id to a ``best_params_path`` (absolute path
+    to a ``best_params.json`` from a prior tuning study). If ``best_params_path``
+    is empty or omitted the agent uses default hyperparameters from the training
+    config section.
+    """
+    import argparse
+    import json
+
+    import yaml
+
+    from abx_amr_simulator.utils.marl_factories import (
+        build_marl_env_from_config,
+        build_marl_managers_from_config,
+        build_marl_wrapper_from_config,
+        load_marl_config,
+    )
+
+    parser = argparse.ArgumentParser(
+        description="Train a MARL HRL PPO experiment from a config YAML."
+    )
+    parser.add_argument(
+        "--marl-config",
+        required=True,
+        help="Path to the MARL template YAML file.",
+    )
+    parser.add_argument(
+        "--results-dir",
+        required=True,
+        help="Base directory where the run folder is created.",
+    )
+    parser.add_argument(
+        "--run-name",
+        required=True,
+        help="Name of the run folder (created under --results-dir).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed injected into config['training']['seed'].",
+    )
+    parser.add_argument(
+        "-p",
+        action="append",
+        dest="overrides",
+        default=[],
+        metavar="KEY.PATH=VALUE",
+        help=(
+            "Dot-path config override. May be repeated. "
+            "Example: -p environment.agents.0.patient_generator.personalized_auroc=0.7"
+        ),
+    )
+    parser.add_argument(
+        "--agent-init-params",
+        default=None,
+        help=(
+            "Optional path to agent_init_params.json. Maps agent_id → "
+            "{best_params_path, source_experiment_id}. Agents whose "
+            "best_params_path is non-empty are initialised with the "
+            "referenced tuning results; others use training-config defaults."
+        ),
+    )
+    parser.add_argument(
+        "--skip-if-exists",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip training if all final_model_{aid}.zip files already exist "
+            "in the checkpoints directory."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    # 1. Load config.
+    config = load_marl_config(args.marl_config)
+
+    # 2. Apply -p overrides.
+    if args.overrides:
+        _apply_overrides(config, args.overrides)
+
+    # 3. Inject seed.
+    config["training"]["seed"] = args.seed
+
+    # 4. Resolve run paths.
+    run_dir = Path(args.results_dir) / args.run_name
+    checkpoint_dir = run_dir / "checkpoints"
+
+    # 5. Skip check (needs config to know agent IDs).
+    if args.skip_if_exists:
+        agent_ids = [
+            str(e["agent_id"]) for e in config["environment"]["agents"]
+        ]
+        all_exist = all(
+            (checkpoint_dir / f"final_model_{aid}.zip").exists()
+            for aid in agent_ids
+        )
+        if all_exist:
+            print(
+                f"[skip] All final models already exist in {checkpoint_dir}. "
+                "Skipping training."
+            )
+            return
+
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # 6. Resolve relative option_library paths to absolute.
+    config_dir = config["_config_dir"]
+    for entry in config["environment"]["agents"]:
+        lib_value = entry.get("option_library")
+        if lib_value is not None and not Path(lib_value).is_absolute():
+            entry["option_library"] = str((Path(config_dir) / lib_value).resolve())
+
+    # 7. Write resolved config (strip internal keys that start with '_').
+    config_save_path = run_dir / "marl_full_agents_env_config.yaml"
+    config_to_save = {k: v for k, v in config.items() if not k.startswith("_")}
+    with open(config_save_path, "w") as f:
+        yaml.dump(config_to_save, f, default_flow_style=False, sort_keys=False)
+
+    # 8. Load per-agent init params if provided.
+    agent_hyperparams: Optional[Dict[str, Dict]] = None
+    if args.agent_init_params:
+        with open(args.agent_init_params) as f:
+            agent_init_data = json.load(f)
+        agent_hyperparams = {}
+        for aid, entry in agent_init_data.items():
+            best_params_path = entry.get("best_params_path") or ""
+            if best_params_path:
+                with open(best_params_path) as f:
+                    agent_hyperparams[aid] = json.load(f)
+
+    # 9. Build and run training.
+    # Load from the saved YAML so _config_dir is the run folder and all
+    # option_library paths are absolute and self-consistent.
+    saved_config = load_marl_config(config_save_path)
+    env = build_marl_env_from_config(saved_config)
+    wrapper = build_marl_wrapper_from_config(saved_config, env)
+    agents = build_marl_managers_from_config(
+        saved_config, wrapper, agent_hyperparams=agent_hyperparams
+    )
+
+    training_cfg = saved_config.get("training", {})
+    trainer = MARLTrainer(
+        wrapper=wrapper,
+        agents=agents,
+        n_steps=int(training_cfg.get("n_steps", 256)),
+        total_primitive_steps=int(training_cfg["total_primitive_steps"]),
+        checkpoint_dir=checkpoint_dir,
+        eval_freq_episodes=int(training_cfg.get("eval_freq_episodes", 10)),
+        n_eval_episodes=int(training_cfg.get("n_eval_episodes", 5)),
+        verbose=1,
+    )
+    trainer.train()
+
+
+if __name__ == "__main__":
+    _main()

@@ -42,7 +42,7 @@ def _make_env(seed: int = 0) -> ABXAMRParallelEnv:
         })
 
     shared_env_config = {
-        "antibiotics_amr_dict": {
+        "antibiotics_AMR_dict": {
             name: {
                 "leak": 0.05,
                 "flatness_parameter": 1.0,
