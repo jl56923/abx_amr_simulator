@@ -193,6 +193,70 @@ class TestBuildMarlManagersAgentHyperparams:
 
 
 # --------------------------------------------------------------------------- #
+# run_marl_training public API
+# --------------------------------------------------------------------------- #
+
+class TestRunMarlTraining:
+    """Tests for the public run_marl_training function (called directly by runner)."""
+
+    def test_produces_final_model_files(self, tmp_path):
+        """run_marl_training writes final_model_{aid}.zip without sys.argv."""
+        from abx_amr_simulator.training.train_marl import run_marl_training
+
+        run_marl_training(
+            marl_config_path=_FIXTURE_CONFIG,
+            results_dir=tmp_path,
+            run_name="api_run",
+            seed=0,
+        )
+        checkpoint_dir = tmp_path / "api_run" / "checkpoints"
+        assert (checkpoint_dir / "final_model_agent_0.zip").exists()
+        assert (checkpoint_dir / "final_model_agent_1.zip").exists()
+
+    def test_overrides_applied(self, tmp_path):
+        """run_marl_training applies overrides before saving config."""
+        from abx_amr_simulator.training.train_marl import run_marl_training
+
+        run_marl_training(
+            marl_config_path=_FIXTURE_CONFIG,
+            results_dir=tmp_path,
+            run_name="api_run",
+            seed=3,
+            overrides=["training.n_steps=4"],
+        )
+        saved = yaml.safe_load(
+            (tmp_path / "api_run" / "marl_full_agents_env_config.yaml").read_text()
+        )
+        assert saved["training"]["n_steps"] == 4
+        assert saved["training"]["seed"] == 3
+
+    def test_skip_if_exists(self, tmp_path):
+        """run_marl_training with skip_if_exists=True skips on second call."""
+        from abx_amr_simulator.training.train_marl import run_marl_training
+
+        run_marl_training(
+            marl_config_path=_FIXTURE_CONFIG,
+            results_dir=tmp_path,
+            run_name="api_run",
+            seed=0,
+        )
+        mtime = (
+            tmp_path / "api_run" / "checkpoints" / "final_model_agent_0.zip"
+        ).stat().st_mtime
+
+        run_marl_training(
+            marl_config_path=_FIXTURE_CONFIG,
+            results_dir=tmp_path,
+            run_name="api_run",
+            seed=99,
+            skip_if_exists=True,
+        )
+        assert (
+            tmp_path / "api_run" / "checkpoints" / "final_model_agent_0.zip"
+        ).stat().st_mtime == mtime
+
+
+# --------------------------------------------------------------------------- #
 # _main() CLI integration
 # --------------------------------------------------------------------------- #
 

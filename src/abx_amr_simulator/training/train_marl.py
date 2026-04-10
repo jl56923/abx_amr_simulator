@@ -657,26 +657,46 @@ class MARLTrainer:
 
 
 # --------------------------------------------------------------------------- #
-# CLI entry point
+# Public training entry point (callable from runner or CLI)
 # --------------------------------------------------------------------------- #
 
-def _main() -> None:
-    """CLI entry point for ``python -m abx_amr_simulator.training.train_marl``.
+def run_marl_training(
+    marl_config_path: "str | Path",
+    results_dir: "str | Path",
+    run_name: str,
+    seed: int = 0,
+    overrides: Optional[List[str]] = None,
+    agent_init_params_path: Optional["str | Path"] = None,
+    skip_if_exists: bool = False,
+) -> None:
+    """Load a MARL config, build all components, and run MARLTrainer.
 
-    Loads a MARL config YAML, applies optional dot-path overrides, builds all
-    training components, and runs ``MARLTrainer.train()``. The resolved config
-    (with absolute option_library paths) is written to the run folder as
-    ``marl_full_agents_env_config.yaml`` before training begins, so the eval
-    script can reconstruct the environment without the original template YAML.
+    This is the canonical entry point for a single training run. The CLI
+    ``_main()`` and the experiment runner ``run_marl_experiment_set.py`` both
+    call this function — the CLI via argparse, the runner via direct import.
 
-    Per-agent PPO hyperparameters can be supplied via ``--agent-init-params``,
-    which points to an ``agent_init_params.json`` file written by the experiment
-    runner. Each entry maps an agent_id to a ``best_params_path`` (absolute path
-    to a ``best_params.json`` from a prior tuning study). If ``best_params_path``
-    is empty or omitted the agent uses default hyperparameters from the training
-    config section.
+    The resolved config (with absolute option_library paths, seed injected,
+    and all overrides applied) is written to
+    ``<results_dir>/<run_name>/marl_full_agents_env_config.yaml`` before
+    training begins so that the eval script can reconstruct the environment
+    without the original template YAML.
+
+    Args:
+        marl_config_path: Path to the MARL template YAML file.
+        results_dir: Base directory where the run folder is created.
+        run_name: Name of the run folder (created under ``results_dir``).
+        seed: Random seed injected into ``config["training"]["seed"]``.
+        overrides: Optional list of dot-path ``"key.path=value"`` overrides
+            applied to the config before training. Coercion follows the same
+            rules as ``_apply_overrides``.
+        agent_init_params_path: Optional path to ``agent_init_params.json``.
+            Maps agent_id → ``{best_params_path, source_run_name}``. Agents
+            whose ``best_params_path`` is non-empty are initialised with the
+            referenced tuning results; others use training-config defaults.
+        skip_if_exists: If True and all ``final_model_{aid}.zip`` files
+            already exist in the checkpoints directory, return without
+            re-running training.
     """
-    import argparse
     import json
 
     import yaml
@@ -687,6 +707,108 @@ def _main() -> None:
         build_marl_wrapper_from_config,
         load_marl_config,
     )
+
+    # 1. Load config.
+    config = load_marl_config(marl_config_path)
+
+    # 2. Apply dot-path overrides.
+    if overrides:
+        _apply_overrides(config, overrides)
+
+    # 3. Inject seed.
+    config["training"]["seed"] = seed
+
+    # 4. Resolve run paths.
+    run_dir = Path(results_dir) / run_name
+    checkpoint_dir = run_dir / "checkpoints"
+
+    # 5. Skip check (needs config to know agent IDs).
+    if skip_if_exists:
+        agent_ids = [
+            str(e["agent_id"]) for e in config["environment"]["agents"]
+        ]
+        all_exist = all(
+            (checkpoint_dir / f"final_model_{aid}.zip").exists()
+            for aid in agent_ids
+        )
+        if all_exist:
+            print(
+                f"[skip] All final models already exist in {checkpoint_dir}. "
+                "Skipping training."
+            )
+            return
+
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # 6. Resolve relative paths to absolute so the saved config is self-contained.
+    # The saved config is loaded from the run folder, so any relative path that
+    # was valid relative to the original marl_configs dir must be made absolute
+    # before writing.
+    config_dir = config["_config_dir"]
+    for entry in config["environment"]["agents"]:
+        # Resolve option_library path.
+        lib_value = entry.get("option_library")
+        if lib_value is not None and not Path(lib_value).is_absolute():
+            entry["option_library"] = str((Path(config_dir) / lib_value).resolve())
+
+        # Resolve patient_generator path when it is a filename reference (string).
+        pg_value = entry.get("patient_generator")
+        if isinstance(pg_value, str) and not Path(pg_value).is_absolute():
+            entry["patient_generator"] = str((Path(config_dir) / pg_value).resolve())
+
+    # 7. Write resolved config (strip internal keys that start with '_').
+    config_save_path = run_dir / "marl_full_agents_env_config.yaml"
+    config_to_save = {k: v for k, v in config.items() if not k.startswith("_")}
+    with open(config_save_path, "w") as f:
+        yaml.dump(config_to_save, f, default_flow_style=False, sort_keys=False)
+
+    # 8. Load per-agent init params if provided.
+    agent_hyperparams: Optional[Dict[str, Dict]] = None
+    if agent_init_params_path:
+        with open(agent_init_params_path) as f:
+            agent_init_data = json.load(f)
+        agent_hyperparams = {}
+        for aid, entry in agent_init_data.items():
+            best_params_path = entry.get("best_params_path") or ""
+            if best_params_path:
+                with open(best_params_path) as f:
+                    agent_hyperparams[aid] = json.load(f)
+
+    # 9. Build and run training.
+    # Load from the saved YAML so _config_dir is the run folder and all
+    # option_library paths are absolute and self-consistent.
+    saved_config = load_marl_config(config_save_path)
+    env = build_marl_env_from_config(saved_config)
+    wrapper = build_marl_wrapper_from_config(saved_config, env)
+    agents = build_marl_managers_from_config(
+        saved_config, wrapper, agent_hyperparams=agent_hyperparams
+    )
+
+    training_cfg = saved_config.get("training", {})
+    trainer = MARLTrainer(
+        wrapper=wrapper,
+        agents=agents,
+        n_steps=int(training_cfg.get("n_steps", 256)),
+        total_primitive_steps=int(training_cfg["total_primitive_steps"]),
+        checkpoint_dir=checkpoint_dir,
+        eval_freq_episodes=int(training_cfg.get("eval_freq_episodes", 10)),
+        n_eval_episodes=int(training_cfg.get("n_eval_episodes", 5)),
+        verbose=1,
+    )
+    trainer.train()
+
+
+# --------------------------------------------------------------------------- #
+# CLI entry point
+# --------------------------------------------------------------------------- #
+
+def _main() -> None:
+    """CLI entry point for ``python -m abx_amr_simulator.training.train_marl``.
+
+    Thin wrapper around ``run_marl_training`` that parses CLI arguments and
+    delegates. See ``run_marl_training`` for full parameter documentation.
+    """
+    import argparse
 
     parser = argparse.ArgumentParser(
         description="Train a MARL HRL PPO experiment from a config YAML."
@@ -728,7 +850,7 @@ def _main() -> None:
         default=None,
         help=(
             "Optional path to agent_init_params.json. Maps agent_id → "
-            "{best_params_path, source_experiment_id}. Agents whose "
+            "{best_params_path, source_run_name}. Agents whose "
             "best_params_path is non-empty are initialised with the "
             "referenced tuning results; others use training-config defaults."
         ),
@@ -744,86 +866,15 @@ def _main() -> None:
     )
 
     args = parser.parse_args()
-
-    # 1. Load config.
-    config = load_marl_config(args.marl_config)
-
-    # 2. Apply -p overrides.
-    if args.overrides:
-        _apply_overrides(config, args.overrides)
-
-    # 3. Inject seed.
-    config["training"]["seed"] = args.seed
-
-    # 4. Resolve run paths.
-    run_dir = Path(args.results_dir) / args.run_name
-    checkpoint_dir = run_dir / "checkpoints"
-
-    # 5. Skip check (needs config to know agent IDs).
-    if args.skip_if_exists:
-        agent_ids = [
-            str(e["agent_id"]) for e in config["environment"]["agents"]
-        ]
-        all_exist = all(
-            (checkpoint_dir / f"final_model_{aid}.zip").exists()
-            for aid in agent_ids
-        )
-        if all_exist:
-            print(
-                f"[skip] All final models already exist in {checkpoint_dir}. "
-                "Skipping training."
-            )
-            return
-
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    # 6. Resolve relative option_library paths to absolute.
-    config_dir = config["_config_dir"]
-    for entry in config["environment"]["agents"]:
-        lib_value = entry.get("option_library")
-        if lib_value is not None and not Path(lib_value).is_absolute():
-            entry["option_library"] = str((Path(config_dir) / lib_value).resolve())
-
-    # 7. Write resolved config (strip internal keys that start with '_').
-    config_save_path = run_dir / "marl_full_agents_env_config.yaml"
-    config_to_save = {k: v for k, v in config.items() if not k.startswith("_")}
-    with open(config_save_path, "w") as f:
-        yaml.dump(config_to_save, f, default_flow_style=False, sort_keys=False)
-
-    # 8. Load per-agent init params if provided.
-    agent_hyperparams: Optional[Dict[str, Dict]] = None
-    if args.agent_init_params:
-        with open(args.agent_init_params) as f:
-            agent_init_data = json.load(f)
-        agent_hyperparams = {}
-        for aid, entry in agent_init_data.items():
-            best_params_path = entry.get("best_params_path") or ""
-            if best_params_path:
-                with open(best_params_path) as f:
-                    agent_hyperparams[aid] = json.load(f)
-
-    # 9. Build and run training.
-    # Load from the saved YAML so _config_dir is the run folder and all
-    # option_library paths are absolute and self-consistent.
-    saved_config = load_marl_config(config_save_path)
-    env = build_marl_env_from_config(saved_config)
-    wrapper = build_marl_wrapper_from_config(saved_config, env)
-    agents = build_marl_managers_from_config(
-        saved_config, wrapper, agent_hyperparams=agent_hyperparams
+    run_marl_training(
+        marl_config_path=args.marl_config,
+        results_dir=args.results_dir,
+        run_name=args.run_name,
+        seed=args.seed,
+        overrides=args.overrides or None,
+        agent_init_params_path=args.agent_init_params,
+        skip_if_exists=args.skip_if_exists,
     )
-
-    training_cfg = saved_config.get("training", {})
-    trainer = MARLTrainer(
-        wrapper=wrapper,
-        agents=agents,
-        n_steps=int(training_cfg.get("n_steps", 256)),
-        total_primitive_steps=int(training_cfg["total_primitive_steps"]),
-        checkpoint_dir=checkpoint_dir,
-        eval_freq_episodes=int(training_cfg.get("eval_freq_episodes", 10)),
-        n_eval_episodes=int(training_cfg.get("n_eval_episodes", 5)),
-        verbose=1,
-    )
-    trainer.train()
 
 
 if __name__ == "__main__":
