@@ -54,6 +54,7 @@ from abx_amr_simulator.utils.marl_factories import (
     build_patient_generator_from_config,
     build_reward_calculator_from_config,
     load_marl_config,
+    resolve_runtime_path,
 )
 
 # ------------------------------------------------------------------ #
@@ -114,7 +115,9 @@ def build_single_agent_env_from_marl_config(
     # are covered during tuning (tuning is insensitive to coverage fraction).
     pg_config = (
         pg_value if isinstance(pg_value, dict)
-        else yaml.safe_load(open(Path(config_dir) / pg_value))
+        else yaml.safe_load(
+            open(resolve_runtime_path(value=pg_value, config_dir=config_dir))
+        )
     )
     if pg_config.get("create_personal_pred", False):
         pg_value = dict(pg_config)
@@ -189,7 +192,7 @@ def build_single_agent_wrapper_from_marl_config(
             f"Agent '{agent_id}' config missing 'option_library' key."
         )
 
-    lib_path = Path(config_dir) / lib_value
+    lib_path = resolve_runtime_path(value=lib_value, config_dir=config_dir)
     if not lib_path.exists():
         raise FileNotFoundError(
             f"Option library not found: {lib_path} "
