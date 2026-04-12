@@ -50,7 +50,6 @@ Config format (YAML)::
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -71,133 +70,17 @@ from abx_amr_simulator.utils.plugin_loader import load_plugin_component
 # Config loading
 # --------------------------------------------------------------------------- #
 
-def _infer_project_root_from_config_path(config_path: Path) -> Path:
-    """Infer the repository root for a MARL config path.
-
-    Prefer the centralized path-constants exports when available. Otherwise,
-    walk up the filesystem looking for a directory that contains a
-    ``workspace/`` subdirectory, which matches the repository layout used by
-    both local and cluster runs.
-    """
-    for env_name in ("PATH_PROJECT_ROOT", "PROJECT_ROOT"):
-        raw_value = os.environ.get(env_name, "").strip()
-        if raw_value:
-            return Path(raw_value).resolve()
-
-    resolved_path = config_path.resolve()
-    for candidate in resolved_path.parents:
-        if (candidate / "workspace").is_dir():
-            return candidate
-
-    parts = resolved_path.parts
-    if "workspace" in parts:
-        workspace_index = parts.index("workspace")
-        return Path(*parts[:workspace_index])
-
-    raise ValueError(
-        "Could not infer project root from MARL config path. "
-        f"config_path={resolved_path}"
-    )
-
-def _remap_config_project_root_paths(
-    *,
-    config: Any,
-    target_project_root: Path,
-) -> Any:
-    """Recursively rewrite host-specific absolute project-root prefixes.
-
-    This is intended for configs authored on one machine and executed on
-    another, for example local absolute paths copied into MARL YAML files and
-    later run on the cluster. Remapping happens at load time while preserving
-    the original config directory for relative component resolution.
-
-    Source prefixes come from centralized path-constants environment variables.
-    If none are set, the config is returned unchanged.
-    """
-    source_prefixes = []
-    for env_name in (
-        "PATH_CONFIG_SOURCE_PROJECT_ROOT",
-        "PATH_CANONICAL_LOCAL_PROJECT_ROOT",
-        "LOCAL_PROJECT_ROOT",
-    ):
-        raw_value = os.environ.get(env_name, "").strip()
-        if raw_value:
-            source_prefixes.append(str(Path(raw_value).resolve()))
-
-    source_prefixes = list(dict.fromkeys(source_prefixes))
-    if not source_prefixes:
-        return config
-
-    target_prefix = str(target_project_root.resolve())
-
-    def _remap(value: Any) -> Any:
-        if isinstance(value, str):
-            remapped = value
-            for source_prefix in source_prefixes:
-                remapped = remapped.replace(source_prefix, target_prefix)
-            return remapped
-        if isinstance(value, dict):
-            return {key: _remap(subvalue) for key, subvalue in value.items()}
-        if isinstance(value, list):
-            return [_remap(item) for item in value]
-        return value
-
-    remapped_config = _remap(config)
-    if remapped_config != config:
-        sources_str = ", ".join([f"'{prefix}'" for prefix in source_prefixes])
-        print(
-            "[path-remap] Rewrote MARL config project-root prefixes "
-            f"from [{sources_str}] to '{target_prefix}'."
-        )
-    return remapped_config
-
 
 def resolve_runtime_path(value: str | Path, config_dir: str | Path) -> Path:
-    """Resolve a config-authored path against the active runtime repository.
+    """Resolve a config-authored path to an absolute path.
 
-    Resolution order:
-      1. Existing absolute path.
-      2. Existing path relative to ``config_dir``.
-      3. Absolute path remapped onto the active project root when the original
-         path was authored on another machine.
-
-    This makes MARL configs robust to cross-machine absolute paths even if the
-    loader-level remap did not run for some reason.
+    If ``value`` is absolute, return it directly.
+    Otherwise, resolve it relative to ``config_dir``.
     """
     raw_path = Path(value)
-    config_dir_path = Path(config_dir).resolve()
-
-    if raw_path.is_absolute() and raw_path.exists():
+    if raw_path.is_absolute():
         return raw_path
-
-    relative_path = (config_dir_path / raw_path).resolve()
-    if not raw_path.is_absolute() and relative_path.exists():
-        return relative_path
-
-    project_root = _infer_project_root_from_config_path(config_dir_path)
-    authored_parts = raw_path.parts
-
-    candidate_paths = []
-    if project_root.name in authored_parts:
-        matching_indices = [
-            index for index, part in enumerate(authored_parts)
-            if part == project_root.name
-        ]
-        for index in reversed(matching_indices):
-            suffix_parts = authored_parts[index + 1 :]
-            if suffix_parts:
-                candidate_paths.append(project_root.joinpath(*suffix_parts))
-
-    for anchor in ("workspace", "external"):
-        if anchor in authored_parts:
-            anchor_index = authored_parts.index(anchor)
-            candidate_paths.append(project_root.joinpath(*authored_parts[anchor_index:]))
-
-    for candidate_path in candidate_paths:
-        if candidate_path.exists():
-            return candidate_path.resolve()
-
-    return raw_path if raw_path.is_absolute() else relative_path
+    return (Path(config_dir).resolve() / raw_path).resolve()
 
 def load_marl_config(config_path: str | Path) -> Dict[str, Any]:
     """Load a MARL config YAML and inject _config_dir for path resolution.
@@ -225,12 +108,6 @@ def load_marl_config(config_path: str | Path) -> Dict[str, Any]:
 
     if not config:
         raise ValueError(f"MARL config is empty: {path}")
-
-    project_root = _infer_project_root_from_config_path(path)
-    config = _remap_config_project_root_paths(
-        config=config,
-        target_project_root=project_root,
-    )
 
     for key in ("environment", "training"):
         if key not in config:
