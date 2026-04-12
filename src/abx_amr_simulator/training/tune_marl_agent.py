@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -277,6 +278,50 @@ def _resolve_batch_size_for_n_steps(
     )
 
 
+def _compute_distributed_worker_quota(
+    *,
+    n_trials: int,
+    worker_id: int,
+    total_workers: int,
+) -> Dict[str, int]:
+    """Compute deterministic trial range/quota for one distributed worker.
+
+    Splits ``n_trials`` across ``total_workers`` with remainder distributed to
+    lower worker IDs, matching single-agent tuning behavior.
+    """
+    if n_trials < 0:
+        raise ValueError(f"n_trials must be >= 0, got {n_trials}")
+    if total_workers < 1:
+        raise ValueError(f"total_workers must be >= 1, got {total_workers}")
+    if worker_id < 0:
+        raise ValueError(f"worker_id must be >= 0, got {worker_id}")
+    if worker_id >= total_workers:
+        raise ValueError(
+            f"worker_id ({worker_id}) must be < total_workers ({total_workers})"
+        )
+
+    base_trials_per_worker = n_trials // total_workers
+    remainder = n_trials % total_workers
+
+    if worker_id < remainder:
+        start = worker_id * (base_trials_per_worker + 1)
+        end = start + base_trials_per_worker + 1
+    else:
+        start = (
+            remainder * (base_trials_per_worker + 1)
+            + (worker_id - remainder) * base_trials_per_worker
+        )
+        end = start + base_trials_per_worker
+
+    return {
+        "start": start,
+        "end": end,
+        "quota": end - start,
+        "base_trials_per_worker": base_trials_per_worker,
+        "remainder": remainder,
+    }
+
+
 def _make_objective(
     config: Dict[str, Any],
     agent_id: str,
@@ -425,6 +470,8 @@ def run_marl_agent_tuning(
     skip_if_exists: bool = False,
     overwrite_existing_study: bool = False,
     tuning_n_patients: int = 20,
+    worker_id: int = 0,
+    total_workers: int = 1,
 ) -> Dict[str, Any]:
     """Tune PPO hyperparameters for one agent extracted from a MARL config.
 
@@ -446,12 +493,23 @@ def run_marl_agent_tuning(
         overwrite_existing_study: If True, delete any existing SQLite DB and
                                   start a fresh study.
         tuning_n_patients: Patient count override during tuning (default 20).
+        worker_id: Worker index for distributed tuning (0-indexed).
+        total_workers: Total distributed workers for this study.
 
     Returns:
         Dict of best PPO hyperparameters (same format as best_params.json).
     """
     run_dir = Path(optimization_dir) / run_name
     best_params_path = run_dir / "best_params.json"
+
+    if worker_id < 0:
+        raise ValueError(f"worker_id must be >= 0, got {worker_id}")
+    if total_workers < 1:
+        raise ValueError(f"total_workers must be >= 1, got {total_workers}")
+    if worker_id >= total_workers:
+        raise ValueError(
+            f"worker_id ({worker_id}) must be < total_workers ({total_workers})"
+        )
 
     if skip_if_exists and best_params_path.exists():
         print(f"Skipping tuning for {run_name}: best_params.json already exists.")
@@ -463,8 +521,12 @@ def run_marl_agent_tuning(
     # Remove existing SQLite DB if overwriting
     db_path = run_dir / "optuna_study.db"
     if overwrite_existing_study and db_path.exists():
-        db_path.unlink()
-        print(f"Deleted existing study DB for fresh run: {db_path}")
+        if worker_id == 0:
+            db_path.unlink()
+            print(f"Deleted existing study DB for fresh run: {db_path}")
+        else:
+            # Let worker 0 clear/recreate DB to avoid delete/create races.
+            time.sleep(3)
 
     opt_config = tuning_config["optimization"]
     effective_n_trials = n_trials if n_trials is not None else int(opt_config["n_trials"])
@@ -481,20 +543,66 @@ def run_marl_agent_tuning(
         else optuna.samplers.RandomSampler(seed=seed)
     )
 
-    study = optuna.create_study(
-        study_name=run_name,
-        storage=storage_url,
-        direction=opt_config.get("direction", "maximize"),
-        sampler=sampler,
-        load_if_exists=not overwrite_existing_study,
-    )
+    load_if_exists = not overwrite_existing_study
+    study = None
+    for attempt in range(3):
+        try:
+            study = optuna.create_study(
+                study_name=run_name,
+                storage=storage_url,
+                direction=opt_config.get("direction", "maximize"),
+                sampler=sampler,
+                load_if_exists=load_if_exists,
+            )
+            break
+        except Exception as exc:
+            error_str = str(exc).lower()
+            error_type = type(exc).__name__.lower()
+            sqlite_race = (
+                ("table" in error_str and "already exists" in error_str)
+                or ("database is locked" in error_str)
+                or ("duplicatedstudyerror" in error_type)
+                or ("unique constraint failed" in error_str and "study_name" in error_str)
+            )
+            if sqlite_race and attempt < 2:
+                load_if_exists = True
+                time.sleep(1 + attempt)
+                continue
+            raise
 
-    completed = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    if study is None:
+        raise RuntimeError("Failed to create or load Optuna study")
+
+    completed = len(
+        [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    )
     remaining = max(0, effective_n_trials - completed)
     if remaining == 0:
         print(f"Study '{run_name}' already has {completed} completed trials — nothing to run.")
     else:
-        print(f"Running {remaining} trials for {run_name} (agent: {agent_id})")
+        worker_allocation = _compute_distributed_worker_quota(
+            n_trials=effective_n_trials,
+            worker_id=worker_id,
+            total_workers=total_workers,
+        )
+        if total_workers > 1:
+            remaining = worker_allocation["quota"]
+            print(
+                f"Running {remaining} distributed trial(s) for {run_name} "
+                f"(agent: {agent_id}, worker {worker_id}/{total_workers - 1}, "
+                f"range {worker_allocation['start']}-{worker_allocation['end'] - 1})"
+            )
+        else:
+            print(f"Running {remaining} trials for {run_name} (agent: {agent_id})")
+
+    if remaining <= 0:
+        if total_workers > 1:
+            print(
+                f"Worker {worker_id}: quota is {remaining}; exiting without optimization."
+            )
+        else:
+            print("No remaining trials; exiting without optimization.")
+    else:
         callbacks = []
         es_config = opt_config.get("early_stopping", {})
         if es_config.get("enabled", False):
@@ -569,6 +677,18 @@ def _main() -> None:
         "--overwrite-existing-study", action="store_true",
         help="Delete existing Optuna DB and start fresh.",
     )
+    parser.add_argument(
+        "--worker-id",
+        type=int,
+        default=0,
+        help="Worker ID for distributed tuning (0-indexed).",
+    )
+    parser.add_argument(
+        "--total-workers",
+        type=int,
+        default=1,
+        help="Total distributed workers for this study.",
+    )
     args = parser.parse_args()
 
     config = load_marl_config(args.marl_config)
@@ -586,6 +706,8 @@ def _main() -> None:
         skip_if_exists=args.skip_if_exists,
         overwrite_existing_study=args.overwrite_existing_study,
         tuning_n_patients=args.tuning_n_patients,
+        worker_id=args.worker_id,
+        total_workers=args.total_workers,
     )
 
 

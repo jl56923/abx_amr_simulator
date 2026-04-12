@@ -22,6 +22,7 @@ from abx_amr_simulator.training.tune_marl_agent import (
     build_single_agent_wrapper_from_marl_config,
     run_marl_agent_tuning,
     _resolve_batch_size_for_n_steps,
+    _compute_distributed_worker_quota,
 )
 from abx_amr_simulator.utils.marl_factories import load_marl_config
 
@@ -78,6 +79,43 @@ class TestResolveBatchSizeForNSteps:
             requested_batch_size=64,
         )
         assert resolved == 32
+
+
+class TestComputeDistributedWorkerQuota:
+    def test_even_split(self):
+        q0 = _compute_distributed_worker_quota(
+            n_trials=6,
+            worker_id=0,
+            total_workers=3,
+        )
+        q1 = _compute_distributed_worker_quota(
+            n_trials=6,
+            worker_id=1,
+            total_workers=3,
+        )
+        q2 = _compute_distributed_worker_quota(
+            n_trials=6,
+            worker_id=2,
+            total_workers=3,
+        )
+        assert q0["quota"] == 2
+        assert q1["quota"] == 2
+        assert q2["quota"] == 2
+
+    def test_remainder_goes_to_early_workers(self):
+        q0 = _compute_distributed_worker_quota(
+            n_trials=5,
+            worker_id=0,
+            total_workers=2,
+        )
+        q1 = _compute_distributed_worker_quota(
+            n_trials=5,
+            worker_id=1,
+            total_workers=2,
+        )
+        assert q0["quota"] == 3
+        assert q1["quota"] == 2
+        assert q0["end"] == q1["start"]
 
 
 # --------------------------------------------------------------------------- #
@@ -319,3 +357,47 @@ class TestRunMarlAgentTuning:
             overwrite_existing_study=True,
         )
         assert isinstance(best, dict)
+
+    def test_raises_on_invalid_worker_id(self, tmp_path):
+        config = _load()
+        with pytest.raises(ValueError, match="worker_id"):
+            run_marl_agent_tuning(
+                config=config,
+                agent_id="agent_0",
+                tuning_config=_MINIMAL_TUNING_CONFIG,
+                optimization_dir=tmp_path,
+                run_name="bad_worker",
+                worker_id=2,
+                total_workers=2,
+            )
+
+    def test_distributed_two_workers_reaches_target_trials(self, tmp_path):
+        config = _load()
+        tuning_cfg = copy.deepcopy(_MINIMAL_TUNING_CONFIG)
+        tuning_cfg["optimization"]["n_trials"] = 2
+
+        run_marl_agent_tuning(
+            config=config,
+            agent_id="agent_0",
+            tuning_config=tuning_cfg,
+            optimization_dir=tmp_path,
+            run_name="dist_run",
+            seed=0,
+            worker_id=0,
+            total_workers=2,
+        )
+        run_marl_agent_tuning(
+            config=config,
+            agent_id="agent_0",
+            tuning_config=tuning_cfg,
+            optimization_dir=tmp_path,
+            run_name="dist_run",
+            seed=0,
+            worker_id=1,
+            total_workers=2,
+        )
+
+        summary_path = tmp_path / "dist_run" / "study_summary.json"
+        assert summary_path.exists()
+        summary = json.loads(summary_path.read_text())
+        assert summary["n_trials_completed"] == 2
