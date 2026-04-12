@@ -72,11 +72,15 @@ def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
         >>> # rc.seed now matches config['training']['seed']
     """
     reward_config_for_plugin = config.get('reward_calculator', {})
+    reward_config_dir_hint = (
+        config.get('_reward_calculator_config_dir')
+        or config.get('_umbrella_config_dir')
+    )
     plugin_result = load_plugin_component(
         component_config=reward_config_for_plugin,
         expected_base_class=RewardCalculatorBase,
         default_loader_fn_name='load_reward_calculator_component',
-        config_dir_hint=config.get('_umbrella_config_dir'),
+        config_dir_hint=reward_config_dir_hint,
     )
     if plugin_result is not None:
         return plugin_result
@@ -134,7 +138,10 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
         component_config=patient_gen_config,
         expected_base_class=PatientGeneratorBase,
         default_loader_fn_name='load_patient_generator_component',
-        config_dir_hint=config.get('_umbrella_config_dir'),
+        config_dir_hint=(
+            config.get('_patient_generator_config_dir')
+            or config.get('_umbrella_config_dir')
+        ),
     )
     if plugin_result is not None:
         return plugin_result
@@ -284,7 +291,10 @@ def create_amr_dynamics(config: Dict[str, Any]) -> Dict[str, AMRDynamicsBase]:
         component_config=amr_dynamics_config,
         expected_base_class=dict,
         default_loader_fn_name='load_amr_dynamics_component',
-        config_dir_hint=config.get('_umbrella_config_dir'),
+        config_dir_hint=(
+            config.get('_environment_config_dir')
+            or config.get('_umbrella_config_dir')
+        ),
     )
     if plugin_result is not None:
         for abx_name, dynamics_instance in plugin_result.items():

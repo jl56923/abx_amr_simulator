@@ -20,6 +20,7 @@ from abx_amr_simulator.utils import (
     apply_subconfig_overrides,
     apply_param_overrides,
     setup_config_folders_with_defaults,
+    create_patient_generator,
 )
 
 
@@ -93,6 +94,101 @@ class TestLoadConfig:
             assert config["environment"]["max_time_steps"] == 1000
             assert config["reward_calculator"]["lambda_weight"] == 0.5
             assert config["config_folder_location"] == "../components"
+
+    def test_load_nested_config_sets_component_source_dirs(self):
+        """Nested load should preserve source dirs for component-relative plugin paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            umbrella_dir = tmpdir / "umbrella"
+            components_dir = tmpdir / "components"
+            umbrella_dir.mkdir(parents=True)
+            components_dir.mkdir(parents=True)
+
+            (components_dir / "environment.yaml").write_text(
+                yaml.dump(data={"max_time_steps": 10, "num_patients": 1})
+            )
+            (components_dir / "reward.yaml").write_text(
+                yaml.dump(data={"lambda_weight": 0.5})
+            )
+            (components_dir / "patient.yaml").write_text(
+                yaml.dump(data={"visible_patient_attributes": ["prob_infected"]})
+            )
+
+            umbrella_config = {
+                "config_folder_location": "../components",
+                "environment": "environment.yaml",
+                "reward_calculator": "reward.yaml",
+                "patient_generator": "patient.yaml",
+            }
+            config_path = umbrella_dir / "base.yaml"
+            config_path.write_text(yaml.dump(data=umbrella_config))
+
+            config = load_config(config_path=str(config_path))
+
+            expected_component_dir = str(components_dir.resolve())
+            assert config["_umbrella_config_dir"] == str(umbrella_dir.resolve())
+            assert config["_environment_config_dir"] == expected_component_dir
+            assert config["_reward_calculator_config_dir"] == expected_component_dir
+            assert config["_patient_generator_config_dir"] == expected_component_dir
+
+    def test_patient_plugin_loader_module_resolves_from_patient_config_dir(self):
+        """create_patient_generator should resolve plugin paths from patient YAML dir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            umbrella_dir = tmpdir / "umbrella"
+            components_dir = tmpdir / "components"
+            shared_dir = tmpdir / "shared"
+            umbrella_dir.mkdir(parents=True)
+            components_dir.mkdir(parents=True)
+            shared_dir.mkdir(parents=True)
+
+            plugin_file = shared_dir / "custom_pg_loader.py"
+            plugin_file.write_text(
+                "from abx_amr_simulator.core.base_patient_generator import PatientGeneratorBase\n"
+                "class DummyPG(PatientGeneratorBase):\n"
+                "    PROVIDES_ATTRIBUTES = ['prob_infected']\n"
+                "    visible_patient_attributes = ['prob_infected']\n"
+                "    def sample(self, n, true_amr_levels, rng):\n"
+                "        return []\n"
+                "    def observe(self, patients):\n"
+                "        import numpy as np\n"
+                "        return np.asarray([], dtype=float)\n"
+                "    def obs_dim(self, num_patients):\n"
+                "        return 0\n"
+                "def load_patient_generator_component(config):\n"
+                "    return DummyPG()\n"
+            )
+
+            (components_dir / "environment.yaml").write_text(
+                yaml.dump(data={"max_time_steps": 10, "num_patients": 1})
+            )
+            (components_dir / "reward.yaml").write_text(
+                yaml.dump(data={"lambda_weight": 0.5})
+            )
+            (components_dir / "patient.yaml").write_text(
+                yaml.dump(
+                    data={
+                        "plugin": {
+                            "loader_module": "../shared/custom_pg_loader.py",
+                            "loader_function": "load_patient_generator_component",
+                        }
+                    }
+                )
+            )
+
+            umbrella_config = {
+                "config_folder_location": "../components",
+                "environment": "environment.yaml",
+                "reward_calculator": "reward.yaml",
+                "patient_generator": "patient.yaml",
+                "training": {"seed": 1},
+            }
+            config_path = umbrella_dir / "base.yaml"
+            config_path.write_text(yaml.dump(data=umbrella_config))
+
+            config = load_config(config_path=str(config_path))
+            pg = create_patient_generator(config=config)
+            assert pg.__class__.__name__ == "DummyPG"
 
     
     def test_load_flat_config(self):

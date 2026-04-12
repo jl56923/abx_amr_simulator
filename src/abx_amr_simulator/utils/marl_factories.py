@@ -126,8 +126,8 @@ def load_marl_config(config_path: str | Path) -> Dict[str, Any]:
 def _load_component_config(
     value: Any,
     config_dir: str,
-) -> Dict[str, Any]:
-    """Return a component config dict, loading from file if value is a filename.
+) -> Tuple[Dict[str, Any], Path]:
+    """Return component config and the directory it should resolve plugin paths from.
 
     If `value` is a dict, return it directly (inline config).
     If `value` is a string, treat it as a YAML filename relative to `config_dir`
@@ -138,14 +138,14 @@ def _load_component_config(
         config_dir: Directory to resolve relative filenames against.
 
     Returns:
-        Component config dict.
+        Tuple of (component config dict, component config directory path).
 
     Raises:
         FileNotFoundError: If a filename is given but the file does not exist.
         ValueError: If the loaded YAML is empty.
     """
     if isinstance(value, dict):
-        return value
+        return value, Path(config_dir).resolve()
 
     # Treat as a filename
     filepath = resolve_runtime_path(value=value, config_dir=config_dir)
@@ -158,7 +158,7 @@ def _load_component_config(
         loaded = yaml.safe_load(f)
     if not loaded:
         raise ValueError(f"Component config file is empty: {filepath}")
-    return loaded
+    return loaded, filepath.parent.resolve()
 
 
 def build_patient_generator_from_config(
@@ -180,14 +180,14 @@ def build_patient_generator_from_config(
     Returns:
         Instantiated PatientGeneratorBase.
     """
-    pg_config = _load_component_config(pg_value, config_dir)
+    pg_config, pg_config_dir = _load_component_config(pg_value, config_dir)
 
     # Support plugin-based patient generators
     plugin_result = load_plugin_component(
         component_config=pg_config,
         expected_base_class=PatientGeneratorBase,
         default_loader_fn_name="load_patient_generator_component",
-        config_dir_hint=config_dir,
+        config_dir_hint=str(pg_config_dir),
     )
     if plugin_result is not None:
         return plugin_result
@@ -216,14 +216,14 @@ def build_reward_calculator_from_config(
     Returns:
         Instantiated RewardCalculatorBase.
     """
-    rc_config = _load_component_config(rc_value, config_dir)
+    rc_config, rc_config_dir = _load_component_config(rc_value, config_dir)
 
     # Support plugin-based reward calculators
     plugin_result = load_plugin_component(
         component_config=rc_config,
         expected_base_class=RewardCalculatorBase,
         default_loader_fn_name="load_reward_calculator_component",
-        config_dir_hint=config_dir,
+        config_dir_hint=str(rc_config_dir),
     )
     if plugin_result is not None:
         return plugin_result

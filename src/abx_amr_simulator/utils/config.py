@@ -48,7 +48,9 @@ def load_config(config_path: str) -> Dict[str, Any]:
         10
     """
     
-    with open(config_path, 'r') as f:
+    config_file_path = Path(config_path).resolve()
+
+    with open(config_file_path, 'r') as f:
         config = yaml.safe_load(f)
     
     # Check if this is a nested config
@@ -59,11 +61,17 @@ def load_config(config_path: str) -> Dict[str, Any]:
     )
     
     if not is_nested:
-        # Flat format - return as-is
+        # Flat format - return as-is, but preserve source directory metadata
+        # for downstream relative plugin path resolution.
+        config = copy.deepcopy(config)
+        config.setdefault('_umbrella_config_dir', str(config_file_path.parent))
+        config.setdefault('_environment_config_dir', str(config_file_path.parent))
+        config.setdefault('_reward_calculator_config_dir', str(config_file_path.parent))
+        config.setdefault('_patient_generator_config_dir', str(config_file_path.parent))
         return config
     
     # Nested format - load and merge component configs
-    umbrella_dir = Path(config_path).parent
+    umbrella_dir = config_file_path.parent
     
     # Determine base directory for config resolution
     if 'config_folder_location' in config:
@@ -89,6 +97,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
         with open(env_path, 'r') as f:
             env_config = yaml.safe_load(f)
         merged_config['environment'] = env_config
+        merged_config['_environment_config_dir'] = str(env_path.resolve().parent)
     
     # Load reward_calculator config
     if 'reward_calculator' in config and isinstance(config['reward_calculator'], str):
@@ -96,6 +105,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
         with open(reward_path, 'r') as f:
             reward_config = yaml.safe_load(f)
         merged_config['reward_calculator'] = reward_config
+        merged_config['_reward_calculator_config_dir'] = str(reward_path.resolve().parent)
     
     # Load patient_generator config
     if 'patient_generator' in config and isinstance(config['patient_generator'], str):
@@ -105,6 +115,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
             
         # Merge patient_generator config at top level
         merged_config['patient_generator'] = patient_gen_config
+        merged_config['_patient_generator_config_dir'] = str(patient_gen_path.resolve().parent)
     
     # Load agent_algorithm config
     if 'agent_algorithm' in config and isinstance(config['agent_algorithm'], str):

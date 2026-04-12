@@ -5,11 +5,11 @@ All tests use real components — no mocks.
 """
 
 from __future__ import annotations
-
 from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 from gymnasium import spaces
 from stable_baselines3 import PPO
 
@@ -120,6 +120,79 @@ class TestBuildMarlEnvFromConfig:
         )
         with pytest.raises(ValueError, match="antibiotics_AMR_dict"):
             build_marl_env_from_config(load_marl_config(bad))
+
+    def test_plugin_loader_module_resolves_from_component_yaml_dir(self, tmp_path):
+        """Relative plugin.loader_module should resolve from component YAML location."""
+        plugin_dir = tmp_path / "shared" / "plugins"
+        plugin_dir.mkdir(parents=True)
+        plugin_loader = plugin_dir / "stub_pg_loader.py"
+        plugin_loader.write_text(
+            "from __future__ import annotations\n"
+            "import numpy as np\n"
+            "from abx_amr_simulator.core.base_patient_generator import PatientGeneratorBase\n"
+            "from abx_amr_simulator.core.types import Patient\n"
+            "\n"
+            "class StubPG(PatientGeneratorBase):\n"
+            "    PROVIDES_ATTRIBUTES = ['prob_infected']\n"
+            "    visible_patient_attributes = ['prob_infected']\n"
+            "\n"
+            "    def sample(self, n, true_amr_levels, rng):\n"
+            "        return [Patient(prob_infected=0.5, prob_infected_obs=0.5) for _ in range(n)]\n"
+            "\n"
+            "    def observe(self, patients):\n"
+            "        obs = [float(getattr(p, 'prob_infected_obs')) for p in patients]\n"
+            "        return np.asarray(obs, dtype=np.float32)\n"
+            "\n"
+            "    def obs_dim(self, num_patients):\n"
+            "        return int(num_patients)\n"
+            "\n"
+            "def load_patient_generator_component(config):\n"
+            "    return StubPG()\n"
+        )
+
+        component_dir = tmp_path / "group" / "marl_configs" / "patient_generators"
+        component_dir.mkdir(parents=True)
+        patient_yaml = component_dir / "pg_with_plugin.yaml"
+        patient_yaml.write_text(
+            "plugin:\n"
+            "  loader_module: ../../../shared/plugins/stub_pg_loader.py\n"
+            "  loader_function: load_patient_generator_component\n"
+        )
+
+        marl_config_dir = tmp_path / "results_scratch" / "seed_run"
+        marl_config_dir.mkdir(parents=True)
+        marl_config_path = marl_config_dir / "marl.yaml"
+
+        fixture = _load()
+        rc_config = fixture["environment"]["agents"][0]["reward_calculator"]
+
+        config_payload = {
+            "environment": {
+                "shared": fixture["environment"]["shared"],
+                "agents": [
+                    {
+                        "agent_id": "agent_0",
+                        "n_patients": 2,
+                        "patient_generator": str(patient_yaml),
+                        "reward_calculator": rc_config,
+                    }
+                ],
+            },
+            "training": {
+                "n_steps": 8,
+                "batch_size": 4,
+                "n_epochs": 1,
+                "learning_rate": 3e-4,
+                "total_primitive_steps": 10,
+                "option_gamma": 0.99,
+                "seed": 7,
+            },
+        }
+        marl_config_path.write_text(yaml.safe_dump(config_payload, sort_keys=False))
+
+        loaded = load_marl_config(marl_config_path)
+        env = build_marl_env_from_config(loaded)
+        assert isinstance(env, ABXAMRParallelEnv)
 
 
 # --------------------------------------------------------------------------- #
