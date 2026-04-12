@@ -301,7 +301,7 @@ class MARLTrainer:
         self,
         wrapper: MARLOptionsWrapper,
         agents: Dict[str, PPO],
-        n_steps: int,
+        n_steps: int | Dict[str, int],
         total_primitive_steps: int,
         checkpoint_dir: Path,
         eval_freq_episodes: int = 10,
@@ -316,8 +316,10 @@ class MARLTrainer:
                 per agent in wrapper.base_env.possible_agents. Each PPO object
                 must have been constructed with the matching observation/action
                 space (e.g. via make_ppo_for_agent()).
-            n_steps: Rollout buffer capacity per agent in manager steps. Should
-                match the n_steps used when constructing each PPO object.
+            n_steps: Rollout buffer capacity per agent in manager steps. May
+                be a single shared integer for all agents or a dict mapping
+                each agent_id to its own rollout size. Values should match the
+                n_steps used when constructing each PPO object.
             total_primitive_steps: Training budget measured in primitive env
                 steps (not manager steps). Training stops when this is reached.
             checkpoint_dir: Directory for saving model checkpoints. Created if
@@ -329,11 +331,11 @@ class MARLTrainer:
 
         Raises:
             ValueError: If any agent in wrapper is missing from agents, or if
-                n_steps does not match an agent's rollout buffer size.
+                an expected rollout size does not match that agent's PPO
+                rollout buffer size.
         """
         self.wrapper = wrapper
         self.agents = agents
-        self.n_steps = n_steps
         self.total_primitive_steps = total_primitive_steps
         self.checkpoint_dir = Path(checkpoint_dir)
         self.eval_freq_episodes = eval_freq_episodes
@@ -350,16 +352,29 @@ class MARLTrainer:
                     f"agents keys: {sorted(agents.keys())}"
                 )
 
+        if isinstance(n_steps, int):
+            self.n_steps = {aid: n_steps for aid in self._agent_ids}
+        else:
+            self.n_steps = {}
+            for aid in self._agent_ids:
+                if aid not in n_steps:
+                    raise ValueError(
+                        f"Missing n_steps entry for '{aid}'. "
+                        f"Provided keys: {sorted(n_steps.keys())}"
+                    )
+                self.n_steps[aid] = int(n_steps[aid])
+
         # Validate and extract rollout buffers from the PPO objects.
         # The PPO objects already own RolloutBuffers — we use them directly.
         self._buffers: Dict[str, RolloutBuffer] = {}
         for aid in self._agent_ids:
             buf = agents[aid].rollout_buffer
-            if buf.buffer_size != n_steps:
+            expected_n_steps = self.n_steps[aid]
+            if buf.buffer_size != expected_n_steps:
                 raise ValueError(
                     f"Agent '{aid}': PPO rollout buffer size {buf.buffer_size} "
-                    f"does not match n_steps={n_steps}. Construct PPO with "
-                    f"n_steps={n_steps}."
+                    f"does not match n_steps={expected_n_steps}. Construct PPO with "
+                    f"n_steps={expected_n_steps}."
                 )
             self._buffers[aid] = buf
 
@@ -785,10 +800,14 @@ def run_marl_training(
     )
 
     training_cfg = saved_config.get("training", {})
+    trainer_n_steps = {
+        aid: int(agent.rollout_buffer.buffer_size)
+        for aid, agent in agents.items()
+    }
     trainer = MARLTrainer(
         wrapper=wrapper,
         agents=agents,
-        n_steps=int(training_cfg.get("n_steps", 256)),
+        n_steps=trainer_n_steps,
         total_primitive_steps=int(training_cfg["total_primitive_steps"]),
         checkpoint_dir=checkpoint_dir,
         eval_freq_episodes=int(training_cfg.get("eval_freq_episodes", 10)),

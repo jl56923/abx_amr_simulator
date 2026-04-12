@@ -472,3 +472,67 @@ class TestTrainMarlCLI:
         checkpoint_dir = tmp_path / "test_run" / "checkpoints"
         assert (checkpoint_dir / "final_model_agent_0.zip").exists()
         assert (checkpoint_dir / "final_model_agent_1.zip").exists()
+
+    def test_agent_init_params_supports_mixed_per_agent_n_steps(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Different tuned n_steps values per agent should train successfully."""
+        from abx_amr_simulator.training.train_marl import _main
+
+        best_params_agent_0 = {
+            "learning_rate": 1.5e-4,
+            "n_steps": 8,
+            "gamma": 0.97,
+            "gae_lambda": 0.95,
+            "ent_coef": 0.05,
+            "clip_range": 0.2,
+            "n_epochs": 1,
+        }
+        best_params_agent_1 = {
+            "learning_rate": 2.5e-4,
+            "n_steps": 16,
+            "gamma": 0.99,
+            "gae_lambda": 0.92,
+            "ent_coef": 0.01,
+            "clip_range": 0.15,
+            "n_epochs": 2,
+        }
+
+        best_params_path_0 = tmp_path / "best_params_agent_0.json"
+        best_params_path_0.write_text(json.dumps(best_params_agent_0))
+        best_params_path_1 = tmp_path / "best_params_agent_1.json"
+        best_params_path_1.write_text(json.dumps(best_params_agent_1))
+
+        agent_init_params = {
+            "agent_0": {
+                "best_params_path": str(best_params_path_0),
+                "source_experiment_id": "1a",
+            },
+            "agent_1": {
+                "best_params_path": str(best_params_path_1),
+                "source_experiment_id": "1b",
+            },
+        }
+        agent_init_path = tmp_path / "agent_init_params_mixed.json"
+        agent_init_path.write_text(json.dumps(agent_init_params))
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "train_marl",
+                "--marl-config", str(_FIXTURE_CONFIG),
+                "--results-dir", str(tmp_path),
+                "--run-name", "mixed_n_steps_run",
+                "--seed", "0",
+                "--agent-init-params", str(agent_init_path),
+            ],
+        )
+
+        _main()
+
+        checkpoint_dir = tmp_path / "mixed_n_steps_run" / "checkpoints"
+        assert (checkpoint_dir / "final_model_agent_0.zip").exists()
+        assert (checkpoint_dir / "final_model_agent_1.zip").exists()
