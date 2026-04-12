@@ -137,6 +137,13 @@ class ABXAMREnv(gym.Env):
         
         # Store patient generator with type hint
         self.patient_generator: PatientGeneratorBase = patient_generator
+
+        # Bind antibiotic order before any obs_dim()/observe() use so generators
+        # that depend on canonical antibiotic ordering can initialize correctly.
+        if hasattr(self.patient_generator, 'bind_antibiotic_order'):
+            self.patient_generator.bind_antibiotic_order(
+                antibiotic_names=self.antibiotic_names,
+            )
         
         # Seed synchronization: prefer RewardCalculator seed; warn if PatientGenerator differs
         if hasattr(reward_calculator, 'seed') and hasattr(patient_generator, 'seed'):

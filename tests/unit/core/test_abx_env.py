@@ -243,6 +243,42 @@ def test_observation_shape_order_and_dtype():
     assert np.all((amr_levels_obs >= 0.0) & (amr_levels_obs <= 1.0))
 
 
+def test_constructor_binds_antibiotic_order_before_obs_dim():
+    """Regression: env constructor must bind antibiotic order before obs_dim()."""
+
+    class BindRequiredPatientGenerator(PatientGenerator):
+        def __init__(self, config):
+            super().__init__(config=config)
+            self._is_bound = False
+
+        def bind_antibiotic_order(self, *, antibiotic_names):
+            self._is_bound = True
+            return super().bind_antibiotic_order(antibiotic_names=antibiotic_names)
+
+        def obs_dim(self, num_patients):
+            if not self._is_bound:
+                raise ValueError("obs_dim requires bind_antibiotic_order first")
+            return super().obs_dim(num_patients=num_patients)
+
+    antibiotic_names = ["A", "B"]
+    reward_calculator = create_test_reward_calculator(antibiotic_names=antibiotic_names)
+    antibiotics_AMR_dict = create_test_antibiotics_dict(antibiotic_names=antibiotic_names)
+
+    pg_config = PatientGenerator.default_config()
+    pg_config["visible_patient_attributes"] = ["prob_infected"]
+    bind_required_pg = BindRequiredPatientGenerator(config=pg_config)
+
+    env = ABXAMREnv(
+        reward_calculator=reward_calculator,
+        patient_generator=bind_required_pg,
+        antibiotics_AMR_dict=antibiotics_AMR_dict,
+        num_patients_per_time_step=3,
+        max_time_steps=5,
+    )
+    assert env.observation_space.shape == (5,)
+    env.close()
+
+
 def test_delta_amr_is_computed_and_included_in_info():
     """Test that delta AMR (change in AMR) is properly computed and included in the info dict.
     

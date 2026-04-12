@@ -241,6 +241,42 @@ def _run_eval_episodes(
     return float(np.mean(total_rewards))
 
 
+def _resolve_batch_size_for_n_steps(
+    *,
+    n_steps: int,
+    requested_batch_size: int,
+) -> int:
+    """Return a PPO mini-batch size that divides n_steps.
+
+    SB3 warns when batch_size does not divide the rollout buffer length
+    (n_steps * n_envs). MARL tuning uses n_envs=1, so we enforce divisibility
+    against n_steps directly to avoid truncated mini-batches.
+
+    If requested_batch_size already divides n_steps, it is returned unchanged.
+    Otherwise, returns the largest positive divisor of n_steps that is <=
+    requested_batch_size.
+    """
+    if n_steps <= 0:
+        raise ValueError(f"n_steps must be > 0, got {n_steps}")
+    if requested_batch_size <= 0:
+        raise ValueError(
+            f"requested_batch_size must be > 0, got {requested_batch_size}"
+        )
+
+    capped = min(requested_batch_size, n_steps)
+    if n_steps % capped == 0:
+        return capped
+
+    for candidate in range(capped, 0, -1):
+        if n_steps % candidate == 0:
+            return candidate
+
+    raise ValueError(
+        "Failed to resolve a valid batch size divisor. "
+        f"n_steps={n_steps}, requested_batch_size={requested_batch_size}"
+    )
+
+
 def _make_objective(
     config: Dict[str, Any],
     agent_id: str,
@@ -278,12 +314,20 @@ def _make_objective(
                 agent_id=agent_id,
                 env=env,
             )
+
+            resolved_n_steps = int(params.get("n_steps", 128))
+            requested_batch_size = int(params.get("batch_size", 64))
+            resolved_batch_size = _resolve_batch_size_for_n_steps(
+                n_steps=resolved_n_steps,
+                requested_batch_size=requested_batch_size,
+            )
+
             ppo = PPO(
                 policy="MlpPolicy",
                 env=wrapper,
                 learning_rate=params.get("learning_rate", 3e-4),
-                n_steps=params.get("n_steps", 128),
-                batch_size=params.get("batch_size", 64),
+                n_steps=resolved_n_steps,
+                batch_size=resolved_batch_size,
                 n_epochs=params.get("n_epochs", 10),
                 gamma=params.get("gamma", 0.99),
                 gae_lambda=params.get("gae_lambda", 0.95),

@@ -21,6 +21,7 @@ from abx_amr_simulator.training.tune_marl_agent import (
     build_single_agent_env_from_marl_config,
     build_single_agent_wrapper_from_marl_config,
     run_marl_agent_tuning,
+    _resolve_batch_size_for_n_steps,
 )
 from abx_amr_simulator.utils.marl_factories import load_marl_config
 
@@ -50,6 +51,33 @@ _MINIMAL_TUNING_CONFIG = {
 
 def _load() -> dict:
     return load_marl_config(_FIXTURE_CONFIG)
+
+
+# --------------------------------------------------------------------------- #
+# _resolve_batch_size_for_n_steps
+# --------------------------------------------------------------------------- #
+
+class TestResolveBatchSizeForNSteps:
+    def test_returns_requested_when_divisible(self):
+        resolved = _resolve_batch_size_for_n_steps(
+            n_steps=256,
+            requested_batch_size=64,
+        )
+        assert resolved == 64
+
+    def test_reduces_to_largest_divisor_when_not_divisible(self):
+        resolved = _resolve_batch_size_for_n_steps(
+            n_steps=224,
+            requested_batch_size=64,
+        )
+        assert resolved == 56
+
+    def test_caps_batch_size_to_n_steps(self):
+        resolved = _resolve_batch_size_for_n_steps(
+            n_steps=32,
+            requested_batch_size=64,
+        )
+        assert resolved == 32
 
 
 # --------------------------------------------------------------------------- #
