@@ -32,6 +32,8 @@ Usage:
 from __future__ import annotations
 
 import math
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +46,45 @@ from stable_baselines3.common.buffers import RolloutBuffer
 
 from abx_amr_simulator.callbacks.marl_callbacks import run_marl_eval_episodes
 from abx_amr_simulator.hrl.marl_wrapper import MARLOptionsWrapper
+
+
+_RUN_TIMESTAMP_SUFFIX_PATTERN = re.compile(pattern=r"_\d{8}_\d{6}$")
+
+
+def _ensure_timestamped_run_name(*, run_name: str) -> str:
+    """Return run_name with a YYYYMMDD_HHMMSS suffix.
+
+    If ``run_name`` already ends with ``_YYYYMMDD_HHMMSS``, it is returned
+    unchanged. Otherwise, the current timestamp is appended.
+    """
+    if _RUN_TIMESTAMP_SUFFIX_PATTERN.search(string=run_name):
+        return run_name
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{run_name}_{timestamp}"
+
+
+def _find_existing_timestamped_run_dir(
+    *,
+    results_dir: "str | Path",
+    run_name_prefix: str,
+    agent_ids: List[str],
+) -> Optional[Path]:
+    """Find a timestamped run dir whose final models are all present.
+
+    Returns the first matching run directory (sorted newest-first) that
+    contains all ``final_model_{aid}.zip`` files.
+    """
+    results_dir_path = Path(results_dir)
+    pattern = f"{run_name_prefix}_????????_??????"
+    for candidate in sorted(results_dir_path.glob(pattern), reverse=True):
+        checkpoint_dir = candidate / "checkpoints"
+        all_exist = all(
+            (checkpoint_dir / f"final_model_{aid}.zip").exists()
+            for aid in agent_ids
+        )
+        if all_exist:
+            return candidate
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -293,6 +334,7 @@ class MARLTrainer:
         total_primitive_steps: Training budget in primitive env steps.
         checkpoint_dir: Directory where model checkpoints are written.
         eval_freq_episodes: Evaluate every N completed episodes.
+        save_freq_episodes: Save periodic checkpoints every N completed episodes.
         n_eval_episodes: Number of deterministic eval episodes per evaluation.
         verbose: 0 = silent, 1 = progress summaries.
     """
@@ -305,6 +347,7 @@ class MARLTrainer:
         total_primitive_steps: int,
         checkpoint_dir: Path,
         eval_freq_episodes: int = 10,
+        save_freq_episodes: Optional[int] = None,
         n_eval_episodes: int = 5,
         verbose: int = 1,
     ) -> None:
@@ -326,6 +369,9 @@ class MARLTrainer:
                 it does not exist.
             eval_freq_episodes: Run evaluation every this many completed
                 training episodes.
+            save_freq_episodes: Save periodic checkpoints every this many
+                completed training episodes. If None, defaults to
+                eval_freq_episodes (backward-compatible behavior).
             n_eval_episodes: Number of deterministic episodes per evaluation.
             verbose: 0 = silent; 1 = print episode/eval summaries.
 
@@ -339,8 +385,20 @@ class MARLTrainer:
         self.total_primitive_steps = total_primitive_steps
         self.checkpoint_dir = Path(checkpoint_dir)
         self.eval_freq_episodes = eval_freq_episodes
+        self.save_freq_episodes = (
+            eval_freq_episodes if save_freq_episodes is None else save_freq_episodes
+        )
         self.n_eval_episodes = n_eval_episodes
         self.verbose = verbose
+
+        if self.eval_freq_episodes <= 0:
+            raise ValueError(
+                f"eval_freq_episodes must be > 0, got {self.eval_freq_episodes}"
+            )
+        if self.save_freq_episodes <= 0:
+            raise ValueError(
+                f"save_freq_episodes must be > 0, got {self.save_freq_episodes}"
+            )
 
         self._agent_ids: List[str] = list(wrapper.base_env.possible_agents)
 
@@ -635,40 +693,42 @@ class MARLTrainer:
     ) -> None:
         """Run evaluation and save checkpoints if the eval frequency is reached.
 
-        Saves `best_model_{aid}.zip` if any agent's mean eval reward improves.
-        Saves periodic checkpoints as `{aid}_checkpoint_{steps}.zip`.
+        Runs evaluation every `eval_freq_episodes` and saves
+        `best_model_{aid}.zip` if any agent's mean eval reward improves.
+        Saves periodic checkpoints every `save_freq_episodes` as
+        `{aid}_checkpoint_{steps}.zip`.
 
         Args:
             episodes_completed: Total completed training episodes so far.
             primitive_steps_elapsed: Total primitive steps elapsed so far.
         """
-        if episodes_completed % self.eval_freq_episodes != 0:
-            return
+        should_eval = (episodes_completed % self.eval_freq_episodes == 0)
+        should_save_ckpt = (episodes_completed % self.save_freq_episodes == 0)
 
-        mean_rewards = self._run_eval_episodes()
+        if should_eval:
+            mean_rewards = self._run_eval_episodes()
+            for aid, mean_r in mean_rewards.items():
+                if mean_r > self._best_mean_reward[aid]:
+                    self._best_mean_reward[aid] = mean_r
+                    best_path = self.checkpoint_dir / f"best_model_{aid}"
+                    self.agents[aid].save(str(best_path))
+                    tag = " (new best)"
+                else:
+                    tag = ""
 
-        for aid, mean_r in mean_rewards.items():
-            # Save best model
-            if mean_r > self._best_mean_reward[aid]:
-                self._best_mean_reward[aid] = mean_r
-                best_path = self.checkpoint_dir / f"best_model_{aid}"
-                self.agents[aid].save(str(best_path))
-                tag = " (new best)"
-            else:
-                tag = ""
+                if self.verbose >= 1:
+                    print(
+                        f"  eval {aid}: mean_reward={mean_r:.3f} "
+                        f"(best={self._best_mean_reward[aid]:.3f}){tag}"
+                    )
 
-            # Save periodic checkpoint
-            ckpt_path = (
-                self.checkpoint_dir
-                / f"{aid}_checkpoint_{primitive_steps_elapsed}"
-            )
-            self.agents[aid].save(str(ckpt_path))
-
-            if self.verbose >= 1:
-                print(
-                    f"  eval {aid}: mean_reward={mean_r:.3f} "
-                    f"(best={self._best_mean_reward[aid]:.3f}){tag}"
+        if should_save_ckpt:
+            for aid in self._agent_ids:
+                ckpt_path = (
+                    self.checkpoint_dir
+                    / f"{aid}_checkpoint_{primitive_steps_elapsed}"
                 )
+                self.agents[aid].save(str(ckpt_path))
 
 
 # --------------------------------------------------------------------------- #
@@ -692,14 +752,15 @@ def run_marl_training(
 
     The resolved config (with absolute option_library paths, seed injected,
     and all overrides applied) is written to
-    ``<results_dir>/<run_name>/marl_full_agents_env_config.yaml`` before
-    training begins so that the eval script can reconstruct the environment
-    without the original template YAML.
+    ``<results_dir>/<run_name>_<timestamp>/marl_full_agents_env_config.yaml``
+    before training begins so that the eval script can reconstruct the
+    environment without the original template YAML.
 
     Args:
         marl_config_path: Path to the MARL template YAML file.
         results_dir: Base directory where the run folder is created.
-        run_name: Name of the run folder (created under ``results_dir``).
+        run_name: Base name for the run folder. A timestamp suffix is appended
+            unless one is already present.
         seed: Random seed injected into ``config["training"]["seed"]``.
         overrides: Optional list of dot-path ``"key.path=value"`` overrides
             applied to the config before training. Coercion follows the same
@@ -709,8 +770,8 @@ def run_marl_training(
             whose ``best_params_path`` is non-empty are initialised with the
             referenced tuning results; others use training-config defaults.
         skip_if_exists: If True and all ``final_model_{aid}.zip`` files
-            already exist in the checkpoints directory, return without
-            re-running training.
+            already exist for an existing run with this base name (or exact
+            timestamped name), return without re-running training.
     """
     import json
 
@@ -734,7 +795,8 @@ def run_marl_training(
     config["training"]["seed"] = seed
 
     # 4. Resolve run paths.
-    run_dir = Path(results_dir) / run_name
+    timestamped_run_name = _ensure_timestamped_run_name(run_name=run_name)
+    run_dir = Path(results_dir) / timestamped_run_name
     checkpoint_dir = run_dir / "checkpoints"
 
     # 5. Skip check (needs config to know agent IDs).
@@ -742,16 +804,33 @@ def run_marl_training(
         agent_ids = [
             str(e["agent_id"]) for e in config["environment"]["agents"]
         ]
-        all_exist = all(
-            (checkpoint_dir / f"final_model_{aid}.zip").exists()
-            for aid in agent_ids
-        )
-        if all_exist:
-            print(
-                f"[skip] All final models already exist in {checkpoint_dir}. "
-                "Skipping training."
+
+        if timestamped_run_name == run_name:
+            all_exist = all(
+                (checkpoint_dir / f"final_model_{aid}.zip").exists()
+                for aid in agent_ids
             )
-            return
+            if all_exist:
+                print(
+                    f"[skip] All final models already exist in {checkpoint_dir}. "
+                    "Skipping training."
+                )
+                return
+        else:
+            existing_run_dir = _find_existing_timestamped_run_dir(
+                results_dir=results_dir,
+                run_name_prefix=run_name,
+                agent_ids=agent_ids,
+            )
+            if existing_run_dir is not None:
+                print(
+                    f"[skip] All final models already exist in "
+                    f"{existing_run_dir / 'checkpoints'}. Skipping training."
+                )
+                return
+
+    if timestamped_run_name != run_name:
+        print(f"[run] Resolved MARL run folder: {timestamped_run_name}")
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -843,6 +922,12 @@ def run_marl_training(
         total_primitive_steps=int(training_cfg["total_primitive_steps"]),
         checkpoint_dir=checkpoint_dir,
         eval_freq_episodes=int(training_cfg.get("eval_freq_episodes", 10)),
+        save_freq_episodes=int(
+            training_cfg.get(
+                "save_freq_episodes",
+                training_cfg.get("eval_freq_episodes", 10),
+            )
+        ),
         n_eval_episodes=int(training_cfg.get("n_eval_episodes", 5)),
         verbose=1,
     )

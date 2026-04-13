@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, Any
 import pytest
 
+from abx_amr_simulator.hrl import setup_options_folders_with_defaults
 from abx_amr_simulator.utils import (
     load_config,
     apply_subconfig_overrides,
@@ -495,6 +496,7 @@ class TestSetupConfigFoldersWithDefaults:
             
             # Check that all expected subdirectories were created
             assert (tmpdir / "configs" / "umbrella_configs").exists()
+            assert (tmpdir / "configs" / "marl").exists()
             assert (tmpdir / "configs" / "environment").exists()
             assert (tmpdir / "configs" / "reward_calculator").exists()
             assert (tmpdir / "configs" / "patient_generator").exists()
@@ -514,6 +516,7 @@ class TestSetupConfigFoldersWithDefaults:
             assert (tmpdir / "configs" / "agent_algorithm" / "default.yaml").exists()
             assert (tmpdir / "configs" / "agent_algorithm" / "hrl_rppo.yaml").exists()
             assert (tmpdir / "configs" / "umbrella_configs" / "base_experiment.yaml").exists()
+            assert (tmpdir / "configs" / "marl" / "minimal_two_agent.yaml").exists()
     
     def test_default_configs_are_valid_yaml(self):
         """Test that created config files contain valid YAML."""
@@ -529,6 +532,7 @@ class TestSetupConfigFoldersWithDefaults:
                 tmpdir / "configs" / "agent_algorithm" / "default.yaml",
                 tmpdir / "configs" / "agent_algorithm" / "hrl_rppo.yaml",
                 tmpdir / "configs" / "umbrella_configs" / "base_experiment.yaml",
+                tmpdir / "configs" / "marl" / "minimal_two_agent.yaml",
             ]
             
             for config_file in config_files:
@@ -562,6 +566,26 @@ class TestSetupConfigFoldersWithDefaults:
             
             # Verify files still exist
             assert (tmpdir / "configs" / "umbrella_configs" / "base_experiment.yaml").exists()
+
+    def test_marl_scaffold_builds_real_training_objects(self):
+        """Scaffolded MARL config should build real wrapper and PPO agents."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+
+            setup_config_folders_with_defaults(target_path=tmpdir)
+            setup_options_folders_with_defaults(target_path=tmpdir)
+
+            from abx_amr_simulator.utils.marl_factories import (
+                build_marl_training_run_from_config,
+            )
+
+            marl_config_path = tmpdir / "configs" / "marl" / "minimal_two_agent.yaml"
+            wrapper, agents = build_marl_training_run_from_config(
+                config_path=marl_config_path,
+            )
+
+            assert set(agents.keys()) == {"agent_0", "agent_1"}
+            assert set(wrapper.base_env.possible_agents) == {"agent_0", "agent_1"}
     
     def test_copies_default_mixer_yaml(self):
         """Test that default_mixer.yaml is copied into patient_generator folder."""
@@ -600,6 +624,9 @@ class TestSetupConfigFoldersWithDefaults:
             pg_dir = configs_dir / "patient_generator"
             assert (pg_dir / "default.yaml").exists()
             assert (pg_dir / "default_mixer.yaml").exists()
+
+            marl_dir = configs_dir / "marl"
+            assert (marl_dir / "minimal_two_agent.yaml").exists()
 
 
 if __name__ == "__main__":

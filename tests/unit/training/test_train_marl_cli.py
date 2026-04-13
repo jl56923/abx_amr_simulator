@@ -30,6 +30,15 @@ def _load() -> dict:
     return load_marl_config(_FIXTURE_CONFIG)
 
 
+def _find_timestamped_run_dir(*, results_dir: Path, run_name: str) -> Path:
+    candidates = sorted(results_dir.glob(f"{run_name}_????????_??????"))
+    assert len(candidates) == 1, (
+        f"Expected exactly one timestamped run dir for prefix {run_name!r}, "
+        f"found {len(candidates)}: {[c.name for c in candidates]}"
+    )
+    return candidates[0]
+
+
 # --------------------------------------------------------------------------- #
 # _apply_overrides
 # --------------------------------------------------------------------------- #
@@ -209,7 +218,8 @@ class TestRunMarlTraining:
             run_name="api_run",
             seed=0,
         )
-        checkpoint_dir = tmp_path / "api_run" / "checkpoints"
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="api_run")
+        checkpoint_dir = run_dir / "checkpoints"
         assert (checkpoint_dir / "final_model_agent_0.zip").exists()
         assert (checkpoint_dir / "final_model_agent_1.zip").exists()
 
@@ -224,8 +234,9 @@ class TestRunMarlTraining:
             seed=3,
             overrides=["training.n_steps=4"],
         )
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="api_run")
         saved = yaml.safe_load(
-            (tmp_path / "api_run" / "marl_full_agents_env_config.yaml").read_text()
+            (run_dir / "marl_full_agents_env_config.yaml").read_text()
         )
         assert saved["training"]["n_steps"] == 4
         assert saved["training"]["seed"] == 3
@@ -240,8 +251,9 @@ class TestRunMarlTraining:
             run_name="api_run",
             seed=0,
         )
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="api_run")
         mtime = (
-            tmp_path / "api_run" / "checkpoints" / "final_model_agent_0.zip"
+            run_dir / "checkpoints" / "final_model_agent_0.zip"
         ).stat().st_mtime
 
         run_marl_training(
@@ -252,7 +264,7 @@ class TestRunMarlTraining:
             skip_if_exists=True,
         )
         assert (
-            tmp_path / "api_run" / "checkpoints" / "final_model_agent_0.zip"
+            run_dir / "checkpoints" / "final_model_agent_0.zip"
         ).stat().st_mtime == mtime
 
     def test_inline_patient_plugin_loader_module_saved_as_absolute(self, tmp_path):
@@ -391,9 +403,13 @@ class TestRunMarlTraining:
             run_name="inline_plugin_run",
             seed=0,
         )
+        run_dir = _find_timestamped_run_dir(
+            results_dir=tmp_path,
+            run_name="inline_plugin_run",
+        )
 
         saved = yaml.safe_load(
-            (tmp_path / "inline_plugin_run" / "marl_full_agents_env_config.yaml").read_text()
+            (run_dir / "marl_full_agents_env_config.yaml").read_text()
         )
         loader_module = saved["environment"]["agents"][0]["patient_generator"]["plugin"]["loader_module"]
         assert Path(loader_module).is_absolute()
@@ -441,13 +457,61 @@ class TestRunMarlTraining:
             run_name="inline_reward_plugin_run",
             seed=0,
         )
+        run_dir = _find_timestamped_run_dir(
+            results_dir=tmp_path,
+            run_name="inline_reward_plugin_run",
+        )
 
         saved = yaml.safe_load(
-            (tmp_path / "inline_reward_plugin_run" / "marl_full_agents_env_config.yaml").read_text()
+            (run_dir / "marl_full_agents_env_config.yaml").read_text()
         )
         loader_module = saved["environment"]["agents"][0]["reward_calculator"]["plugin"]["loader_module"]
         assert Path(loader_module).is_absolute()
         assert Path(loader_module).resolve() == plugin_path.resolve()
+
+    def test_save_freq_episodes_decoupled_from_eval_freq_episodes(self, tmp_path):
+        """run_marl_training honors save_freq_episodes independently of eval_freq_episodes."""
+        from abx_amr_simulator.training.train_marl import run_marl_training
+
+        config = yaml.safe_load(_FIXTURE_CONFIG.read_text())
+        option_library_path = (
+            Path(__file__).resolve().parents[2]
+            / ".."
+            / "src"
+            / "abx_amr_simulator"
+            / "options"
+            / "defaults"
+            / "option_libraries"
+            / "default_deterministic.yaml"
+        ).resolve()
+        for agent_entry in config["environment"]["agents"]:
+            agent_entry["option_library"] = str(option_library_path)
+
+        config["environment"]["shared"]["max_time_steps"] = 10
+        config["training"]["total_primitive_steps"] = 60
+        config["training"]["eval_freq_episodes"] = 2
+        config["training"]["save_freq_episodes"] = 3
+        config_path = tmp_path / "save_freq_override_config.yaml"
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        run_marl_training(
+            marl_config_path=config_path,
+            results_dir=tmp_path,
+            run_name="save_freq_override_run",
+            seed=0,
+        )
+
+        run_dir = _find_timestamped_run_dir(
+            results_dir=tmp_path,
+            run_name="save_freq_override_run",
+        )
+        checkpoint_dir = run_dir / "checkpoints"
+        for aid in ["agent_0", "agent_1"]:
+            periodic = sorted(checkpoint_dir.glob(f"{aid}_checkpoint_*.zip"))
+            assert len(periodic) == 2, (
+                f"Expected exactly 2 periodic checkpoints for {aid}, got {len(periodic)}"
+            )
+            assert (checkpoint_dir / f"best_model_{aid}.zip").exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -474,7 +538,8 @@ class TestTrainMarlCLI:
         )
         _main()
 
-        checkpoint_dir = tmp_path / "test_run" / "checkpoints"
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="test_run")
+        checkpoint_dir = run_dir / "checkpoints"
         assert (checkpoint_dir / "final_model_agent_0.zip").exists()
         assert (checkpoint_dir / "final_model_agent_1.zip").exists()
 
@@ -495,7 +560,8 @@ class TestTrainMarlCLI:
         )
         _main()
 
-        saved_config_path = tmp_path / "test_run" / "marl_full_agents_env_config.yaml"
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="test_run")
+        saved_config_path = run_dir / "marl_full_agents_env_config.yaml"
         assert saved_config_path.exists()
         with open(saved_config_path) as f:
             saved = yaml.safe_load(f)
@@ -521,7 +587,8 @@ class TestTrainMarlCLI:
         )
         _main()
 
-        saved_config_path = tmp_path / "test_run" / "marl_full_agents_env_config.yaml"
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="test_run")
+        saved_config_path = run_dir / "marl_full_agents_env_config.yaml"
         with open(saved_config_path) as f:
             saved = yaml.safe_load(f)
         for entry in saved["environment"]["agents"]:
@@ -547,7 +614,8 @@ class TestTrainMarlCLI:
         )
         _main()
 
-        saved_config_path = tmp_path / "test_run" / "marl_full_agents_env_config.yaml"
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="test_run")
+        saved_config_path = run_dir / "marl_full_agents_env_config.yaml"
         with open(saved_config_path) as f:
             saved = yaml.safe_load(f)
         assert saved["training"]["seed"] == 13
@@ -570,7 +638,8 @@ class TestTrainMarlCLI:
         )
         _main()
 
-        saved_config_path = tmp_path / "test_run" / "marl_full_agents_env_config.yaml"
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="test_run")
+        saved_config_path = run_dir / "marl_full_agents_env_config.yaml"
         with open(saved_config_path) as f:
             saved = yaml.safe_load(f)
         assert saved["training"]["n_steps"] == 4
@@ -594,7 +663,8 @@ class TestTrainMarlCLI:
         _main()
 
         # Pre-modification time of final models
-        checkpoint_dir = tmp_path / "test_run" / "checkpoints"
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="test_run")
+        checkpoint_dir = run_dir / "checkpoints"
         mtime_before = (checkpoint_dir / "final_model_agent_0.zip").stat().st_mtime
 
         # Second call with --skip-if-exists should not re-run
@@ -663,7 +733,8 @@ class TestTrainMarlCLI:
         # Should complete without error; final models should exist
         _main()
 
-        checkpoint_dir = tmp_path / "test_run" / "checkpoints"
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="test_run")
+        checkpoint_dir = run_dir / "checkpoints"
         assert (checkpoint_dir / "final_model_agent_0.zip").exists()
         assert (checkpoint_dir / "final_model_agent_1.zip").exists()
 
@@ -727,6 +798,10 @@ class TestTrainMarlCLI:
 
         _main()
 
-        checkpoint_dir = tmp_path / "mixed_n_steps_run" / "checkpoints"
+        run_dir = _find_timestamped_run_dir(
+            results_dir=tmp_path,
+            run_name="mixed_n_steps_run",
+        )
+        checkpoint_dir = run_dir / "checkpoints"
         assert (checkpoint_dir / "final_model_agent_0.zip").exists()
         assert (checkpoint_dir / "final_model_agent_1.zip").exists()

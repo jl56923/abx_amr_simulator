@@ -274,6 +274,7 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
     Creates nested structure:
         target_path/configs/
             umbrella_configs/base_experiment.yaml, hrl_ppo_default.yaml
+            marl/minimal_two_agent.yaml
             agent_algorithm/default.yaml, ppo.yaml, a2c.yaml, hrl_ppo.yaml, hrl_rppo.yaml, recurrent_ppo.yaml
             environment/default.yaml
             patient_generator/default.yaml, patient_generator/default_mixer.yaml
@@ -297,12 +298,13 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
 
     base = Path(target_path) / "configs"
     umbrella_dir = base / "umbrella_configs"
+    marl_dir = base / "marl"
     agent_dir = base / "agent_algorithm"
     env_dir = base / "environment"
     pg_dir = base / "patient_generator"
     rc_dir = base / "reward_calculator"
 
-    for d in [umbrella_dir, agent_dir, env_dir, pg_dir, rc_dir]:
+    for d in [umbrella_dir, marl_dir, agent_dir, env_dir, pg_dir, rc_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     defaults_root = files("abx_amr_simulator").joinpath("configs/defaults")
@@ -311,6 +313,8 @@ def setup_config_folders_with_defaults(target_path: Path) -> None:
         # Umbrella config that stitches together the component defaults
         defaults_root.joinpath("umbrella/base_experiment.yaml"): umbrella_dir / "base_experiment.yaml",
         defaults_root.joinpath("umbrella/hrl_ppo_default.yaml"): umbrella_dir / "hrl_ppo_default.yaml",
+        # Canonical MARL example config
+        defaults_root.joinpath("marl/minimal_two_agent.yaml"): marl_dir / "minimal_two_agent.yaml",
         # Agent algorithm extras (not matched by 'default*' copy below)
         defaults_root.joinpath("agent_algorithm/ppo.yaml"): agent_dir / "ppo.yaml",
         defaults_root.joinpath("agent_algorithm/a2c.yaml"): agent_dir / "a2c.yaml",

@@ -315,3 +315,47 @@ class TestMARLTrainerSmoke:
             verbose=0,
         )
         trainer.train()  # should not raise
+
+    def test_save_freq_episodes_is_independent_of_eval_freq_episodes(self, tmp_path):
+        """Periodic checkpoints follow save cadence even when eval cadence differs."""
+        n_steps = 8
+        option_k = 1
+        max_time_steps = 10
+        total_primitive_steps = 60  # ~6 episodes with k=1 and max_time_steps=10
+
+        wrapper = _build_minimal_wrapper(option_k=option_k, max_time_steps=max_time_steps)
+        agents = {
+            aid: make_ppo_for_agent(
+                wrapper=wrapper,
+                agent_id=aid,
+                n_steps=n_steps,
+                batch_size=4,
+                n_epochs=1,
+                seed=0,
+            )
+            for aid in wrapper.base_env.possible_agents
+        }
+
+        checkpoint_dir = tmp_path / "checkpoints"
+        trainer = MARLTrainer(
+            wrapper=wrapper,
+            agents=agents,
+            n_steps=n_steps,
+            total_primitive_steps=total_primitive_steps,
+            checkpoint_dir=checkpoint_dir,
+            eval_freq_episodes=2,
+            save_freq_episodes=3,
+            n_eval_episodes=1,
+            verbose=0,
+        )
+        trainer.train()
+
+        for aid in wrapper.base_env.possible_agents:
+            periodic = sorted(checkpoint_dir.glob(f"{aid}_checkpoint_*.zip"))
+            # save every 3 episodes => exactly episodes 3 and 6 for this setup
+            assert len(periodic) == 2, (
+                f"Expected exactly 2 periodic checkpoints for {aid}, got {len(periodic)}"
+            )
+
+            best = checkpoint_dir / f"best_model_{aid}.zip"
+            assert best.exists(), f"Expected best model for {aid} from eval cadence"

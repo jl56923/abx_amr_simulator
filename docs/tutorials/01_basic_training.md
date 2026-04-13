@@ -66,10 +66,17 @@ python -c "from abx_amr_simulator.utils import setup_config_folders_with_default
 
 This creates a `configs/` folder with:
 - `configs/umbrella_configs/base_experiment.yaml` — Main config that coordinates all component subconfigs
+- `configs/marl/minimal_two_agent.yaml` — Canonical MARL starter config for the multi-agent training path
 - `configs/environment/default.yaml` — Environment parameters
 - `configs/reward_calculator/default.yaml` — Reward function settings
 - `configs/patient_generator/default.yaml` — Patient distribution settings
 - `configs/agent_algorithm/default.yaml` — PPO hyperparameters
+
+If you plan to run HRL or MARL experiments, also create the bundled option-library scaffold:
+
+```bash
+python -c "from abx_amr_simulator.hrl import setup_options_folders_with_defaults; from pathlib import Path; setup_options_folders_with_defaults(Path('.'))"
+```
 
 ---
 
