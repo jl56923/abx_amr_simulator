@@ -759,17 +759,49 @@ def run_marl_training(
     # The saved config is loaded from the run folder, so any relative path that
     # was valid relative to the original marl_configs dir must be made absolute
     # before writing.
-    config_dir = config["_config_dir"]
+    config_dir = Path(config["_config_dir"])
+
+    def _resolve_inline_plugin_loader_modules(obj: object) -> None:
+        """Recursively resolve relative plugin.loader_module paths.
+
+        Any inline config block may carry ``plugin.loader_module``. Since the
+        resolved config is saved then reloaded from a run directory, relative
+        plugin paths must be canonicalized to absolute paths first.
+        """
+        if isinstance(obj, dict):
+            plugin_cfg = obj.get("plugin")
+            if isinstance(plugin_cfg, dict):
+                loader_module = plugin_cfg.get("loader_module")
+                if isinstance(loader_module, str) and loader_module:
+                    loader_path = Path(loader_module)
+                    if not loader_path.is_absolute():
+                        plugin_cfg["loader_module"] = str((config_dir / loader_path).resolve())
+
+            for value in obj.values():
+                _resolve_inline_plugin_loader_modules(value)
+            return
+
+        if isinstance(obj, list):
+            for value in obj:
+                _resolve_inline_plugin_loader_modules(value)
+
+    # Resolve plugin loader paths across the whole environment block.
+    _resolve_inline_plugin_loader_modules(config.get("environment", {}))
+
     for entry in config["environment"]["agents"]:
         # Resolve option_library path.
         lib_value = entry.get("option_library")
         if lib_value is not None and not Path(lib_value).is_absolute():
-            entry["option_library"] = str((Path(config_dir) / lib_value).resolve())
+            entry["option_library"] = str((config_dir / lib_value).resolve())
 
         # Resolve patient_generator path when it is a filename reference (string).
         pg_value = entry.get("patient_generator")
         if isinstance(pg_value, str) and not Path(pg_value).is_absolute():
-            entry["patient_generator"] = str((Path(config_dir) / pg_value).resolve())
+            entry["patient_generator"] = str((config_dir / pg_value).resolve())
+
+        rc_value = entry.get("reward_calculator")
+        if isinstance(rc_value, str) and not Path(rc_value).is_absolute():
+            entry["reward_calculator"] = str((config_dir / rc_value).resolve())
 
     # 7. Write resolved config (strip internal keys that start with '_').
     config_save_path = run_dir / "marl_full_agents_env_config.yaml"

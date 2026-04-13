@@ -255,6 +255,200 @@ class TestRunMarlTraining:
             tmp_path / "api_run" / "checkpoints" / "final_model_agent_0.zip"
         ).stat().st_mtime == mtime
 
+    def test_inline_patient_plugin_loader_module_saved_as_absolute(self, tmp_path):
+        """Inline relative plugin loader paths are absolutized before replay."""
+        from abx_amr_simulator.training.train_marl import run_marl_training
+
+        plugin_dir = tmp_path / "plugins"
+        plugin_dir.mkdir(parents=True)
+        plugin_path = plugin_dir / "custom_pg_plugin.py"
+        plugin_path.write_text(
+            "from abx_amr_simulator.core.patient_generator import PatientGenerator\n"
+            "def load_patient_generator_component(config):\n"
+            "    cfg = dict(config)\n"
+            "    cfg.pop('plugin', None)\n"
+            "    return PatientGenerator(config=cfg)\n"
+        )
+
+        option_library_path = (
+            Path(__file__).resolve().parents[2]
+            / ".."
+            / "src"
+            / "abx_amr_simulator"
+            / "options"
+            / "defaults"
+            / "option_libraries"
+            / "default_deterministic.yaml"
+        ).resolve()
+
+        marl_config = {
+            "environment": {
+                "shared": {
+                    "antibiotics_AMR_dict": {
+                        "A": {
+                            "leak": 0.05,
+                            "flatness_parameter": 1.0,
+                            "permanent_residual_volume": 0.0,
+                            "initial_amr_level": 0.0,
+                        },
+                        "B": {
+                            "leak": 0.05,
+                            "flatness_parameter": 1.0,
+                            "permanent_residual_volume": 0.0,
+                            "initial_amr_level": 0.0,
+                        },
+                    },
+                    "max_time_steps": 5,
+                },
+                "agents": [
+                    {
+                        "agent_id": "agent_0",
+                        "n_patients": 2,
+                        "patient_generator": {
+                            "plugin": {
+                                "loader_module": "./plugins/custom_pg_plugin.py",
+                                "loader_function": "load_patient_generator_component",
+                            },
+                            "prob_infected": {
+                                "prob_dist": {"type": "constant", "value": 0.7, "mu": None, "sigma": None},
+                                "obs_bias_multiplier": 1.0,
+                                "obs_noise_one_std_dev": 0.0,
+                                "obs_noise_std_dev_fraction": 0.0,
+                                "clipping_bounds": [0.0, 1.0],
+                            },
+                            "benefit_value_multiplier": {
+                                "prob_dist": {"type": "constant", "value": 1.0, "mu": None, "sigma": None},
+                                "obs_bias_multiplier": 1.0,
+                                "obs_noise_one_std_dev": 0.0,
+                                "obs_noise_std_dev_fraction": 0.0,
+                                "clipping_bounds": [0.0, None],
+                            },
+                            "failure_value_multiplier": {
+                                "prob_dist": {"type": "constant", "value": 1.0, "mu": None, "sigma": None},
+                                "obs_bias_multiplier": 1.0,
+                                "obs_noise_one_std_dev": 0.0,
+                                "obs_noise_std_dev_fraction": 0.0,
+                                "clipping_bounds": [0.0, None],
+                            },
+                            "benefit_probability_multiplier": {
+                                "prob_dist": {"type": "constant", "value": 1.0, "mu": None, "sigma": None},
+                                "obs_bias_multiplier": 1.0,
+                                "obs_noise_one_std_dev": 0.0,
+                                "obs_noise_std_dev_fraction": 0.0,
+                                "clipping_bounds": [0.0, None],
+                            },
+                            "failure_probability_multiplier": {
+                                "prob_dist": {"type": "constant", "value": 1.0, "mu": None, "sigma": None},
+                                "obs_bias_multiplier": 1.0,
+                                "obs_noise_one_std_dev": 0.0,
+                                "obs_noise_std_dev_fraction": 0.0,
+                                "clipping_bounds": [0.0, None],
+                            },
+                            "recovery_without_treatment_prob": {
+                                "prob_dist": {"type": "constant", "value": 0.0, "mu": None, "sigma": None},
+                                "obs_bias_multiplier": 1.0,
+                                "obs_noise_one_std_dev": 0.0,
+                                "obs_noise_std_dev_fraction": 0.0,
+                                "clipping_bounds": [0.0, 1.0],
+                            },
+                            "visible_patient_attributes": ["prob_infected"],
+                        },
+                        "reward_calculator": {
+                            "abx_clinical_reward_penalties_info_dict": {
+                                "clinical_benefit_reward": 10.0,
+                                "clinical_benefit_probability": 1.0,
+                                "clinical_failure_penalty": -10.0,
+                                "clinical_failure_probability": 1.0,
+                                "abx_adverse_effects_info": {
+                                    "A": {"adverse_effect_penalty": -2.0, "adverse_effect_probability": 0.1},
+                                    "B": {"adverse_effect_penalty": -3.0, "adverse_effect_probability": 0.15},
+                                },
+                            },
+                            "lambda_weight": 0.0,
+                            "seed": None,
+                        },
+                        "option_library": str(option_library_path),
+                    }
+                ],
+            },
+            "training": {
+                "n_steps": 8,
+                "batch_size": 4,
+                "n_epochs": 1,
+                "learning_rate": 3e-4,
+                "total_primitive_steps": 20,
+                "option_gamma": 0.99,
+                "seed": 0,
+            },
+        }
+
+        marl_config_path = tmp_path / "marl_inline_plugin.yaml"
+        marl_config_path.write_text(yaml.safe_dump(marl_config, sort_keys=False))
+
+        run_marl_training(
+            marl_config_path=marl_config_path,
+            results_dir=tmp_path,
+            run_name="inline_plugin_run",
+            seed=0,
+        )
+
+        saved = yaml.safe_load(
+            (tmp_path / "inline_plugin_run" / "marl_full_agents_env_config.yaml").read_text()
+        )
+        loader_module = saved["environment"]["agents"][0]["patient_generator"]["plugin"]["loader_module"]
+        assert Path(loader_module).is_absolute()
+        assert Path(loader_module).resolve() == plugin_path.resolve()
+
+    def test_inline_reward_plugin_loader_module_saved_as_absolute(self, tmp_path):
+        """Inline reward plugin loader path is absolutized before replay."""
+        from abx_amr_simulator.training.train_marl import run_marl_training
+
+        plugin_dir = tmp_path / "plugins"
+        plugin_dir.mkdir(parents=True)
+        plugin_path = plugin_dir / "custom_rc_plugin.py"
+        plugin_path.write_text(
+            "from abx_amr_simulator.core.reward_calculator import RewardCalculator\n"
+            "def load_reward_calculator_component(config):\n"
+            "    cfg = dict(config)\n"
+            "    cfg.pop('plugin', None)\n"
+            "    return RewardCalculator(config=cfg)\n"
+        )
+
+        config = yaml.safe_load(_FIXTURE_CONFIG.read_text())
+        option_library_path = (
+            Path(__file__).resolve().parents[2]
+            / ".."
+            / "src"
+            / "abx_amr_simulator"
+            / "options"
+            / "defaults"
+            / "option_libraries"
+            / "default_deterministic.yaml"
+        ).resolve()
+        for agent_entry in config["environment"]["agents"]:
+            agent_entry["option_library"] = str(option_library_path)
+
+        config["environment"]["agents"][0]["reward_calculator"]["plugin"] = {
+            "loader_module": "./plugins/custom_rc_plugin.py",
+            "loader_function": "load_reward_calculator_component",
+        }
+        config_path = tmp_path / "marl_inline_reward_plugin.yaml"
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        run_marl_training(
+            marl_config_path=config_path,
+            results_dir=tmp_path,
+            run_name="inline_reward_plugin_run",
+            seed=0,
+        )
+
+        saved = yaml.safe_load(
+            (tmp_path / "inline_reward_plugin_run" / "marl_full_agents_env_config.yaml").read_text()
+        )
+        loader_module = saved["environment"]["agents"][0]["reward_calculator"]["plugin"]["loader_module"]
+        assert Path(loader_module).is_absolute()
+        assert Path(loader_module).resolve() == plugin_path.resolve()
+
 
 # --------------------------------------------------------------------------- #
 # _main() CLI integration
