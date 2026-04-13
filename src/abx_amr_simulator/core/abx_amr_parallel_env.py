@@ -424,6 +424,7 @@ class ABXAMRParallelEnv(ParallelEnv):
             terminations[aid] = terminated_flag
             truncations[aid] = truncated_flag
             infos[aid] = {
+                "actual_amr_levels": dict(true_amr),
                 "visible_amr_levels": dict(self.visible_amr_levels),
                 "effective_doses": dict(effective_doses),
                 **reward_info,

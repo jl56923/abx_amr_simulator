@@ -1778,6 +1778,64 @@ def aggregate_trajectories(trajectories_list, apply_cumsum=False):
     }
 
 
+def plot_with_bands(
+    ax,
+    data_dict,
+    label,
+    color=None,
+    linestyle='-',
+    linewidth=1.5,
+    add_iqr_legend=True,
+):
+    """Plot median with percentile bands for one aggregated trajectory metric.
+
+    Args:
+        ax: Matplotlib axis to draw on.
+        data_dict: Aggregated trajectory dictionary from aggregate_trajectories().
+        label: Label for the median series.
+        color: Optional explicit color; if None matplotlib chooses automatically.
+        linestyle: Line style for median series.
+        linewidth: Line width for median series.
+        add_iqr_legend: If True, add a legend label for the p25-p75 guide line.
+    """
+    timesteps = data_dict['timesteps']
+    median = data_dict['median']
+    p10 = data_dict['p10']
+    p90 = data_dict['p90']
+    p25 = data_dict['p25']
+    p75 = data_dict['p75']
+
+    line = ax.plot(
+        timesteps,
+        median,
+        label=label,
+        color=color,
+        linestyle=linestyle,
+        linewidth=linewidth,
+    )
+    line_color = line[0].get_color()
+    ax.fill_between(timesteps, p10, p90, color=line_color, alpha=0.2)
+
+    iqr_label = f'{label} (IQR: p25-p75)' if add_iqr_legend else None
+    ax.plot(
+        timesteps,
+        p25,
+        color=line_color,
+        linestyle=':',
+        linewidth=1.5,
+        alpha=0.7,
+        label=iqr_label,
+    )
+    ax.plot(
+        timesteps,
+        p75,
+        color=line_color,
+        linestyle='--',
+        linewidth=1.0,
+        alpha=0.7,
+    )
+
+
 def plot_metrics_ensemble_agents(
     models,
     env,
@@ -2057,20 +2115,6 @@ def plot_metrics_from_collected_trajectories_ensemble(
 
     print("Aggregation complete!")
     print("Generating ensemble plots...")
-
-    def plot_with_bands(ax, data_dict, label, color, linestyle='-', linewidth=1.5):
-        timesteps = data_dict['timesteps']
-        median = data_dict['median']
-        p10 = data_dict['p10']
-        p90 = data_dict['p90']
-        p25 = data_dict['p25']
-        p75 = data_dict['p75']
-
-        line = ax.plot(timesteps, median, label=label, color=color, linestyle=linestyle, linewidth=linewidth)
-        line_color = line[0].get_color()
-        ax.fill_between(timesteps, p10, p90, color=line_color, alpha=0.2)
-        ax.plot(timesteps, p25, color=line_color, linestyle=':', linewidth=1.5, alpha=0.7, label=f'{label} (IQR: p25-p75)')
-        ax.plot(timesteps, p75, color=line_color, linestyle='--', linewidth=1.0, alpha=0.7)
 
     plt.figure(figsize=(14, 6))
     plt.subplot(1, 2, 1)

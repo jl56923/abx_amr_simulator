@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- MARL evaluative plotting analysis module and tests:
+  - Added `src/abx_amr_simulator/analysis/evaluative_plots_marl.py` to generate per-agent evaluative plots and one shared AMR plot from per-agent granular MARL NPZ artifacts.
+  - Added `tests/unit/analysis/test_evaluative_plots_marl.py` with sociable coverage for per-agent artifact generation, singleton shared-AMR plotting per prefix, and fail-loud validation of required NPZ fields.
+- Shared plotting helper for percentile-band trajectory plots:
+  - Added reusable `plot_with_bands(...)` in `src/abx_amr_simulator/utils/metrics.py` for consistent median+band plotting across analysis paths.
+
 - Standardized plugin seam for core simulator subcomponents using config-driven loader modules:
   - New `utils/plugin_loader.py` with shared `load_plugin_component()` utility for module resolution (import path or filesystem path), loader function lookup, invocation, and fail-loud type validation.
   - Plugin branches added to `create_patient_generator()` and `create_reward_calculator()`.
@@ -28,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Unit tests covering DynamicsModel, TrajectoryReplayEnv, and MBPOAgent core behaviors
 
 ### Changed
+- MARL parallel environment info payloads now include true AMR levels during stepping:
+  - Updated `src/abx_amr_simulator/core/abx_amr_parallel_env.py` so per-agent `info` includes `actual_amr_levels` alongside `visible_amr_levels`, enabling downstream shared-AMR evaluative plotting from granular trajectories.
+- Refactored ensemble plotting internals in `src/abx_amr_simulator/utils/metrics.py` to use the new shared `plot_with_bands(...)` helper instead of duplicated local plotting logic.
+
 - **BREAKING**: HRL options now use the standardized canonical/custom loading contract from JIRA-7
   - Valid `option_type` values are now exactly `block`, `alternation`, `heuristic`, and `custom`.
   - Canonical options (`block`, `alternation`, `heuristic`) now use package-owned loading only and must not include plugin loader fields.
