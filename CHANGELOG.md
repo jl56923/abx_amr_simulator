@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Canonical package-level MARL granular re-evaluation utility and tests:
+  - Added `src/abx_amr_simulator/analysis/run_granular_eval_best_models_marl.py` for deterministic post-hoc per-seed MARL granular trajectory regeneration (`eval_granular_best_model_{aid}.npz` per agent).
+  - Added `tests/unit/analysis/test_run_granular_eval_best_models_marl.py` for focused AMR array emission and fail-loud validation behavior.
+
 - MARL evaluative plotting analysis module and tests:
   - Added `src/abx_amr_simulator/analysis/evaluative_plots_marl.py` to generate per-agent evaluative plots and one shared AMR plot from per-agent granular MARL NPZ artifacts.
   - Added `tests/unit/analysis/test_evaluative_plots_marl.py` with sociable coverage for per-agent artifact generation, singleton shared-AMR plotting per prefix, and fail-loud validation of required NPZ fields.
