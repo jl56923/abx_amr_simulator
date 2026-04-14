@@ -490,6 +490,8 @@ The MARL override system only updates existing keys. If you need a new key such 
 
 ## Next Tutorials
 
+- [14_marl_isolation_tuning.md](14_marl_isolation_tuning.md) — how to tune PPO
+  hyperparameters for MARL experiments using per-agent isolation tuning
 - [05_hrl_quickstart.md](05_hrl_quickstart.md)
 - [09_options_library_setup.md](09_options_library_setup.md)
 - [12_callbacks_and_logging.md](12_callbacks_and_logging.md)

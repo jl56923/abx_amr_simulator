@@ -37,6 +37,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regenerated.
 
 ### Added
+- Canonical package-level MARL isolation tuning orchestrator:
+  - Added `src/abx_amr_simulator/training/tune_marl_agents.py` with
+    `tune_marl_agents_sequentially`, a high-level entry point that tunes each
+    agent in a MARL config independently in its own single-agent
+    `ABXAMREnv + OptionsWrapper`. Agents are processed sequentially in config
+    order (or a caller-supplied subset via `agent_ids`).
+  - Supports `skip_if_exists`, base `seed`, and `n_workers` for distributed
+    SQLite-backed Optuna studies (staggered-start subprocess pattern).
+  - Artefacts land in the unified layout:
+    `optimization_dir / experiment_folder / {agent_id} / best_params.json`.
+  - `tune_marl_agents_sequentially` exported from `abx_amr_simulator.training`.
+  - Added `tests/unit/training/test_tune_marl_agents.py` with 8 tests covering
+    all-agent tuning, subset via `agent_ids`, `skip_if_exists`, missing config
+    error, and 2-worker distributed mode (real `ABXAMREnv`, no mocks).
+  - Added `docs/tutorials/14_marl_isolation_tuning.md` covering the isolation
+    tuning rationale, config format, Python API, artifact layout, multi-worker
+    mode, CLI-level tuning for SLURM, and connecting tuning results to training.
+
 - Canonical package-level MARL granular re-evaluation utility and tests:
   - Added `src/abx_amr_simulator/analysis/run_granular_eval_best_models_marl.py` for deterministic post-hoc per-seed MARL granular trajectory regeneration (`eval_granular_best_model_{aid}.npz` per agent).
   - Added `tests/unit/analysis/test_run_granular_eval_best_models_marl.py` for focused AMR array emission and fail-loud validation behavior.
