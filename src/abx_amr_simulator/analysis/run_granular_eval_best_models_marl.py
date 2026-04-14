@@ -23,6 +23,28 @@ NPZ schema (per agent):
     episode_{N}/primitive_actual_amr_levels : (macro_steps, max_substeps, num_abx)
     episode_{N}/primitive_visible_amr_levels: (macro_steps, max_substeps, num_abx)
 
+    Per-substep reward-calculator scalar fields (sourced from
+    ABXAMRParallelEnv step info via **reward_info); all shape
+    (macro_steps, max_substeps), NaN for padding substeps:
+    episode_{N}/primitive_total_reward                        : scalar reward per substep
+    episode_{N}/primitive_overall_individual_reward_component : sum of per-patient rewards
+    episode_{N}/primitive_normalized_individual_reward        : mean per-patient reward
+    episode_{N}/primitive_overall_community_reward_component  : community reward component
+    episode_{N}/primitive_normalized_community_reward         : community reward / n_abx
+    episode_{N}/primitive_count_clinical_benefits             : int counts per substep
+    episode_{N}/primitive_count_clinical_failures             : int counts per substep
+    episode_{N}/primitive_count_adverse_events                : int counts per substep
+
+    Per-substep outcome breakdown (shape (macro_steps, max_substeps)):
+    episode_{N}/primitive_not_infected_no_treatment
+    episode_{N}/primitive_not_infected_treated
+    episode_{N}/primitive_infected_no_treatment
+
+    Per-substep per-antibiotic outcome breakdown
+    (shape (macro_steps, max_substeps) each):
+    episode_{N}/primitive_sensitive_infection_treated/{abx}
+    episode_{N}/primitive_resistant_infection_treated/{abx}
+
 The schema mirrors the single-agent DetailedEvalCallback granular format so that
 Phase 7's granular_metrics_core.py extension can build on familiar structure.
 
@@ -231,6 +253,20 @@ def _add_episode_arrays(
                 return info[candidate]
         return None
 
+    # Scalar reward/outcome fields to extract from each primitive info dict.
+    # Missing keys on any primitive substep fail loud downstream (see saw_*
+    # guards) so schema drift is surfaced instead of silently emitting zeros.
+    _SCALAR_INFO_KEYS = (
+        "total_reward",
+        "overall_individual_reward_component",
+        "normalized_individual_reward",
+        "overall_community_reward_component",
+        "normalized_community_reward",
+        "count_clinical_benefits",
+        "count_clinical_failures",
+        "count_adverse_events",
+    )
+
     # Unpack per-macro-step lists.
     prim_patient_full: List[List] = []
     prim_rewards: List[List] = []
@@ -238,6 +274,8 @@ def _add_episode_arrays(
     prim_actions: List[List] = []
     prim_actual_amr: List[List] = []
     prim_visible_amr: List[List] = []
+    prim_scalars: Dict[str, List[List]] = {key: [] for key in _SCALAR_INFO_KEYS}
+    prim_outcomes: List[List] = []  # per-substep outcomes_breakdown dicts
 
     for ms in macro_steps:
         infos = ms["primitive_infos"]
@@ -252,6 +290,9 @@ def _add_episode_arrays(
         prim_visible_amr.append(
             [_extract_amr_from_info(info=info, key_type="visible") for info in infos]
         )
+        for key in _SCALAR_INFO_KEYS:
+            prim_scalars[key].append([info.get(key) for info in infos])
+        prim_outcomes.append([info.get("outcomes_breakdown") for info in infos])
 
     num_macro_steps = len(prim_patient_full)
 
@@ -358,6 +399,86 @@ def _add_episode_arrays(
             f"{ep_prefix}: no primitive visible AMR levels were logged; cannot write shared AMR series"
         )
 
+    # ------------------------------------------------------------------ #
+    # Per-substep scalar reward/outcome arrays (from reward_calculator).
+    # Use NaN padding so downstream analysis can mask-out pad substeps via
+    # `primitive_substep_counts`.
+    # ------------------------------------------------------------------ #
+    scalar_arrs: Dict[str, np.ndarray] = {
+        key: np.full((num_macro_steps, max_substeps), np.nan, dtype=np.float64)
+        for key in _SCALAR_INFO_KEYS
+    }
+    saw_scalar: Dict[str, bool] = {key: False for key in _SCALAR_INFO_KEYS}
+    for key in _SCALAR_INFO_KEYS:
+        for macro_idx, substep_values in enumerate(prim_scalars[key]):
+            for substep_idx, value in enumerate(substep_values):
+                if value is None:
+                    continue
+                scalar_arrs[key][macro_idx, substep_idx] = float(value)
+                saw_scalar[key] = True
+
+    missing_scalar_keys = [key for key, seen in saw_scalar.items() if not seen]
+    if missing_scalar_keys:
+        raise ValueError(
+            f"{ep_prefix}: no primitive info substep carried reward-calculator "
+            f"fields {missing_scalar_keys}; schema drift in ABXAMRParallelEnv "
+            f"or MARLOptionsWrapper."
+        )
+
+    # Per-substep outcome breakdown (scalar and per-antibiotic).
+    outcome_scalar_keys = (
+        "not_infected_no_treatment",
+        "not_infected_treated",
+        "infected_no_treatment",
+    )
+    outcome_scalar_arrs: Dict[str, np.ndarray] = {
+        key: np.full((num_macro_steps, max_substeps), np.nan, dtype=np.float64)
+        for key in outcome_scalar_keys
+    }
+    sensitive_arrs: Dict[str, np.ndarray] = {
+        abx: np.full((num_macro_steps, max_substeps), np.nan, dtype=np.float64)
+        for abx in antibiotic_names
+    }
+    resistant_arrs: Dict[str, np.ndarray] = {
+        abx: np.full((num_macro_steps, max_substeps), np.nan, dtype=np.float64)
+        for abx in antibiotic_names
+    }
+    saw_outcomes = False
+    for macro_idx, substep_outcomes in enumerate(prim_outcomes):
+        for substep_idx, outcomes in enumerate(substep_outcomes):
+            if outcomes is None:
+                continue
+            saw_outcomes = True
+            for key in outcome_scalar_keys:
+                if key not in outcomes:
+                    raise ValueError(
+                        f"{ep_prefix}: outcomes_breakdown missing key '{key}' at "
+                        f"macro_idx={macro_idx} substep={substep_idx}"
+                    )
+                outcome_scalar_arrs[key][macro_idx, substep_idx] = float(outcomes[key])
+
+            infected_treated = outcomes.get("infected_treated", {})
+            missing_abx = [abx for abx in antibiotic_names if abx not in infected_treated]
+            if missing_abx:
+                raise ValueError(
+                    f"{ep_prefix}: outcomes_breakdown['infected_treated'] missing "
+                    f"antibiotic keys {missing_abx}"
+                )
+            for abx in antibiotic_names:
+                abx_entry = infected_treated[abx]
+                sensitive_arrs[abx][macro_idx, substep_idx] = float(
+                    abx_entry["sensitive_infection_treated"]
+                )
+                resistant_arrs[abx][macro_idx, substep_idx] = float(
+                    abx_entry["resistant_infection_treated"]
+                )
+
+    if not saw_outcomes:
+        raise ValueError(
+            f"{ep_prefix}: no primitive info substep carried "
+            f"'outcomes_breakdown'; schema drift in ABXAMRParallelEnv."
+        )
+
     # primitive_actions: object array, each element is (actual_substeps, n_patients).
     actions_obj = np.empty(num_macro_steps, dtype=object)
     for macro_idx, macro_acts in enumerate(prim_actions):
@@ -377,6 +498,20 @@ def _add_episode_arrays(
     save_dict[f"{ep_prefix}/primitive_actions"] = actions_obj
     save_dict[f"{ep_prefix}/primitive_actual_amr_levels"] = actual_amr_arr
     save_dict[f"{ep_prefix}/primitive_visible_amr_levels"] = visible_amr_arr
+
+    for key in _SCALAR_INFO_KEYS:
+        save_dict[f"{ep_prefix}/primitive_{key}"] = scalar_arrs[key]
+
+    for key in outcome_scalar_keys:
+        save_dict[f"{ep_prefix}/primitive_{key}"] = outcome_scalar_arrs[key]
+
+    for abx in antibiotic_names:
+        save_dict[
+            f"{ep_prefix}/primitive_sensitive_infection_treated/{abx}"
+        ] = sensitive_arrs[abx]
+        save_dict[
+            f"{ep_prefix}/primitive_resistant_infection_treated/{abx}"
+        ] = resistant_arrs[abx]
 
 
 def _save_agent_npz(

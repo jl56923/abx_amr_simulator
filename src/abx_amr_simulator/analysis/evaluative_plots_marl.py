@@ -167,6 +167,17 @@ def _build_agent_trajectory_payload(*, npz_path: Path) -> Tuple[List[str], Dict[
             "primitive_actions",
             "primitive_actual_amr_levels",
             "primitive_visible_amr_levels",
+            "primitive_total_reward",
+            "primitive_overall_individual_reward_component",
+            "primitive_normalized_individual_reward",
+            "primitive_overall_community_reward_component",
+            "primitive_normalized_community_reward",
+            "primitive_count_clinical_benefits",
+            "primitive_count_clinical_failures",
+            "primitive_count_adverse_events",
+            "primitive_not_infected_no_treatment",
+            "primitive_not_infected_treated",
+            "primitive_infected_no_treatment",
         ]
 
         for episode_idx in episode_indices:
@@ -177,6 +188,16 @@ def _build_agent_trajectory_payload(*, npz_path: Path) -> Tuple[List[str], Dict[
                     raise ValueError(
                         f"Missing required field '{full_key}' in artifact {npz_path}"
                     )
+            for abx_name in antibiotic_names:
+                for outcome_family in (
+                    "primitive_sensitive_infection_treated",
+                    "primitive_resistant_infection_treated",
+                ):
+                    full_key = f"{ep_prefix}/{outcome_family}/{abx_name}"
+                    if full_key not in data:
+                        raise ValueError(
+                            f"Missing required field '{full_key}' in artifact {npz_path}"
+                        )
 
             primitive_rewards = np.asarray(data[f"{ep_prefix}/primitive_individual_rewards"], dtype=float)
             primitive_infected = np.asarray(
@@ -193,10 +214,26 @@ def _build_agent_trajectory_payload(*, npz_path: Path) -> Tuple[List[str], Dict[
                 data[f"{ep_prefix}/primitive_visible_amr_levels"], dtype=float
             )
 
-            rewards = _flatten_substeps(
-                primitive_values=primitive_rewards,
-                primitive_substep_counts=primitive_substep_counts,
-            )
+            # Scalar per-substep fields from the reward calculator.
+            def _flat_scalar(key_suffix: str) -> np.ndarray:
+                arr = np.asarray(data[f"{ep_prefix}/{key_suffix}"], dtype=float)
+                return _flatten_substeps(
+                    primitive_values=arr,
+                    primitive_substep_counts=primitive_substep_counts,
+                )
+
+            total_reward_step = _flat_scalar("primitive_total_reward")
+            overall_individual = _flat_scalar("primitive_overall_individual_reward_component")
+            normalized_individual = _flat_scalar("primitive_normalized_individual_reward")
+            overall_community = _flat_scalar("primitive_overall_community_reward_component")
+            normalized_community = _flat_scalar("primitive_normalized_community_reward")
+            count_clinical_benefits = _flat_scalar("primitive_count_clinical_benefits")
+            count_clinical_failures = _flat_scalar("primitive_count_clinical_failures")
+            count_adverse_events = _flat_scalar("primitive_count_adverse_events")
+            not_infected_no_treatment = _flat_scalar("primitive_not_infected_no_treatment")
+            not_infected_treated = _flat_scalar("primitive_not_infected_treated")
+            infected_no_treatment = _flat_scalar("primitive_infected_no_treatment")
+
             infected = _flatten_substeps(
                 primitive_values=primitive_infected,
                 primitive_substep_counts=primitive_substep_counts,
@@ -226,42 +263,33 @@ def _build_agent_trajectory_payload(*, npz_path: Path) -> Tuple[List[str], Dict[
                     f"{actions_per_patient.shape} vs {infected.shape}"
                 )
 
-            total_reward_step = np.sum(rewards, axis=1)
-            mean_reward_step = np.mean(rewards, axis=1)
             payload["total_reward"].append(total_reward_step.tolist())
-            payload["individual_reward"].append(total_reward_step.tolist())
-            payload["normalized_individual_reward"].append(mean_reward_step.tolist())
-            payload["community_reward"].append(np.zeros_like(total_reward_step).tolist())
-            payload["normalized_community_reward"].append(np.zeros_like(total_reward_step).tolist())
+            payload["individual_reward"].append(overall_individual.tolist())
+            payload["normalized_individual_reward"].append(normalized_individual.tolist())
+            payload["community_reward"].append(overall_community.tolist())
+            payload["normalized_community_reward"].append(normalized_community.tolist())
 
-            payload["count_clinical_benefits"].append(np.zeros_like(total_reward_step).tolist())
-            payload["count_clinical_failures"].append(np.zeros_like(total_reward_step).tolist())
-            payload["count_adverse_events"].append(np.zeros_like(total_reward_step).tolist())
+            payload["count_clinical_benefits"].append(count_clinical_benefits.tolist())
+            payload["count_clinical_failures"].append(count_clinical_failures.tolist())
+            payload["count_adverse_events"].append(count_adverse_events.tolist())
 
-            not_infected = ~infected
-            no_treatment = actions_per_patient == no_treatment_index
-            payload["not_infected_no_treatment"].append(
-                np.sum(not_infected & no_treatment, axis=1).astype(float).tolist()
-            )
-            payload["not_infected_treated"].append(
-                np.sum(not_infected & ~no_treatment, axis=1).astype(float).tolist()
-            )
-            payload["infected_no_treatment"].append(
-                np.sum(infected & no_treatment, axis=1).astype(float).tolist()
-            )
+            payload["not_infected_no_treatment"].append(not_infected_no_treatment.tolist())
+            payload["not_infected_treated"].append(not_infected_treated.tolist())
+            payload["infected_no_treatment"].append(infected_no_treatment.tolist())
 
             for abx_idx, abx_name in enumerate(antibiotic_names):
                 prescribed = actions_per_patient == abx_idx
-                infected_and_treated = infected & prescribed
+                sensitive = _flat_scalar(
+                    f"primitive_sensitive_infection_treated/{abx_name}"
+                )
+                resistant = _flat_scalar(
+                    f"primitive_resistant_infection_treated/{abx_name}"
+                )
                 payload["count_prescriptions"][abx_name].append(
                     np.sum(prescribed, axis=1).astype(float).tolist()
                 )
-                payload["infected_treated_sensitive"][abx_name].append(
-                    np.sum(infected_and_treated, axis=1).astype(float).tolist()
-                )
-                payload["infected_treated_resistant"][abx_name].append(
-                    np.zeros(infected_and_treated.shape[0], dtype=float).tolist()
-                )
+                payload["infected_treated_sensitive"][abx_name].append(sensitive.tolist())
+                payload["infected_treated_resistant"][abx_name].append(resistant.tolist())
                 payload["actual_AMR_levels"][abx_name].append(actual_amr[:, abx_idx].tolist())
                 payload["visible_AMR_levels"][abx_name].append(visible_amr[:, abx_idx].tolist())
 

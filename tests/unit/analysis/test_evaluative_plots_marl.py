@@ -56,21 +56,71 @@ def _build_minimal_marl_npz(*, output_path: Path, antibiotic_names: list[str], n
                 a_max=1.0,
             )
 
+    # Scalar per-substep reward-calculator fields. Pad substeps (index 1 of
+    # macro_idx=1) are NaN to match the writer's pad-with-NaN semantics.
+    def _scalar_array(values_macro_0: list[float], value_macro_1_substep_0: float) -> np.ndarray:
+        arr = np.full((num_macro_steps, max_substeps), np.nan, dtype=float)
+        arr[0, :] = values_macro_0
+        arr[1, 0] = value_macro_1_substep_0
+        return arr
+
+    total_reward = _scalar_array([0.5, 0.25], 0.1)
+    overall_individual = _scalar_array([1.5, 0.15], 0.5)
+    normalized_individual = _scalar_array([0.75, 0.075], 0.25)
+    overall_community = _scalar_array([-0.1, -0.2], -0.05)
+    normalized_community = _scalar_array([-0.05, -0.1], -0.025)
+    count_clinical_benefits = _scalar_array([1.0, 0.0], 1.0)
+    count_clinical_failures = _scalar_array([0.0, 1.0], 0.0)
+    count_adverse_events = _scalar_array([0.0, 0.0], 1.0)
+    not_infected_no_treatment = _scalar_array([1.0, 0.0], 0.0)
+    not_infected_treated = _scalar_array([0.0, 0.0], 0.0)
+    infected_no_treatment = _scalar_array([0.0, 1.0], 0.0)
+
+    save_kwargs: dict = {
+        "episode_0/primitive_patient_true": primitive_patient_true,
+        "episode_0/primitive_patient_observed": primitive_patient_observed,
+        "episode_0/primitive_patient_attrs": np.array(["prob_infected"], dtype=object),
+        "episode_0/primitive_individual_rewards": primitive_individual_rewards,
+        "episode_0/primitive_patients_actually_infected": primitive_patients_infected,
+        "episode_0/primitive_substep_counts": primitive_substep_counts,
+        "episode_0/primitive_actions": primitive_actions,
+        "episode_0/primitive_actual_amr_levels": primitive_actual_amr,
+        "episode_0/primitive_visible_amr_levels": primitive_visible_amr,
+        "episode_0/primitive_total_reward": total_reward,
+        "episode_0/primitive_overall_individual_reward_component": overall_individual,
+        "episode_0/primitive_normalized_individual_reward": normalized_individual,
+        "episode_0/primitive_overall_community_reward_component": overall_community,
+        "episode_0/primitive_normalized_community_reward": normalized_community,
+        "episode_0/primitive_count_clinical_benefits": count_clinical_benefits,
+        "episode_0/primitive_count_clinical_failures": count_clinical_failures,
+        "episode_0/primitive_count_adverse_events": count_adverse_events,
+        "episode_0/primitive_not_infected_no_treatment": not_infected_no_treatment,
+        "episode_0/primitive_not_infected_treated": not_infected_treated,
+        "episode_0/primitive_infected_no_treatment": infected_no_treatment,
+    }
+
+    # Per-antibiotic sensitive / resistant treated counts. Distribute
+    # nonzero values across antibiotics so downstream aggregations are
+    # non-degenerate.
+    for abx_idx, abx_name in enumerate(antibiotic_names):
+        sensitive = _scalar_array(
+            [1.0 if abx_idx == 0 else 0.0, 0.0], 0.0
+        )
+        resistant = _scalar_array(
+            [0.0, 1.0 if abx_idx == 1 else 0.0], 0.0
+        )
+        save_kwargs[
+            f"episode_0/primitive_sensitive_infection_treated/{abx_name}"
+        ] = sensitive
+        save_kwargs[
+            f"episode_0/primitive_resistant_infection_treated/{abx_name}"
+        ] = resistant
+
     np.savez_compressed(
         file=str(output_path),
         antibiotic_names=np.array(antibiotic_names, dtype=object),
         num_episodes=1,
-        **{
-            "episode_0/primitive_patient_true": primitive_patient_true,
-            "episode_0/primitive_patient_observed": primitive_patient_observed,
-            "episode_0/primitive_patient_attrs": np.array(["prob_infected"], dtype=object),
-            "episode_0/primitive_individual_rewards": primitive_individual_rewards,
-            "episode_0/primitive_patients_actually_infected": primitive_patients_infected,
-            "episode_0/primitive_substep_counts": primitive_substep_counts,
-            "episode_0/primitive_actions": primitive_actions,
-            "episode_0/primitive_actual_amr_levels": primitive_actual_amr,
-            "episode_0/primitive_visible_amr_levels": primitive_visible_amr,
-        },
+        **save_kwargs,
     )
 
 
@@ -112,6 +162,19 @@ def test_build_prefix_outputs_writes_per_agent_and_shared_artifacts(tmp_path: Pa
         summary_stats = json.load(handle)
     assert "overall_total_reward" in summary_stats
     assert set(summary_stats["overall_total_reward"].keys()) == {"p10", "p25", "p50", "p75", "p90"}
+
+    # Fixture seeds 2 clinical benefits / 1 failure / 1 adverse event across
+    # the episode — make sure these flow through rather than being the old
+    # hard-coded zeros.
+    assert summary_stats["overall_count_clinical_benefits"]["p50"] == pytest.approx(2.0)
+    assert summary_stats["overall_count_clinical_failures"]["p50"] == pytest.approx(1.0)
+    assert summary_stats["overall_count_adverse_events"]["p50"] == pytest.approx(1.0)
+    # Resistant infections are populated on antibiotic B (fixture: 1 per
+    # episode); they must no longer be hard-coded to zero.
+    assert (
+        summary_stats["overall_resistant_infection_treated_count_per_abx_dict_B"]["p50"]
+        == pytest.approx(1.0)
+    )
 
 
 def test_build_prefix_outputs_writes_single_shared_plot_for_multi_seed_prefix(tmp_path: Path) -> None:
