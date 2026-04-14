@@ -2053,6 +2053,7 @@ def plot_metrics_from_collected_trajectories_ensemble(
     experiment_figures_folder,
     per_seed_data=None,
     per_seed_figures=True,
+    include_amr_plot=True,
 ):
     """Generate ensemble plots + JSON summaries from pre-collected trajectory data.
 
@@ -2116,30 +2117,31 @@ def plot_metrics_from_collected_trajectories_ensemble(
     print("Aggregation complete!")
     print("Generating ensemble plots...")
 
-    plt.figure(figsize=(14, 6))
-    plt.subplot(1, 2, 1)
-    for abx_name in antibiotic_names:
-        plot_with_bands(plt.gca(), aggregated['actual_AMR_levels'][abx_name], f"{abx_name} Actual AMR", color=None)
-    plt.xlabel('Timestep')
-    plt.ylabel('Actual AMR Level')
-    plt.title('Actual AMR Levels Over Time (Median ± 10-90%)')
-    plt.grid(True)
-    plt.ylim(-0.05, 1.05)
-    plt.legend()
+    if include_amr_plot:
+        plt.figure(figsize=(14, 6))
+        plt.subplot(1, 2, 1)
+        for abx_name in antibiotic_names:
+            plot_with_bands(plt.gca(), aggregated['actual_AMR_levels'][abx_name], f"{abx_name} Actual AMR", color=None)
+        plt.xlabel('Timestep')
+        plt.ylabel('Actual AMR Level')
+        plt.title('Actual AMR Levels Over Time (Median ± 10-90%)')
+        plt.grid(True)
+        plt.ylim(-0.05, 1.05)
+        plt.legend()
 
-    plt.subplot(1, 2, 2)
-    for abx_name in antibiotic_names:
-        plot_with_bands(plt.gca(), aggregated['visible_AMR_levels'][abx_name], f"{abx_name} Visible AMR", color=None)
-    plt.xlabel('Timestep')
-    plt.ylabel('Visible AMR Level')
-    plt.title('Visible AMR Levels Over Time (Median ± 10-90%)')
-    plt.grid(True)
-    plt.ylim(-0.05, 1.05)
-    plt.legend()
+        plt.subplot(1, 2, 2)
+        for abx_name in antibiotic_names:
+            plot_with_bands(plt.gca(), aggregated['visible_AMR_levels'][abx_name], f"{abx_name} Visible AMR", color=None)
+        plt.xlabel('Timestep')
+        plt.ylabel('Visible AMR Level')
+        plt.title('Visible AMR Levels Over Time (Median ± 10-90%)')
+        plt.grid(True)
+        plt.ylim(-0.05, 1.05)
+        plt.legend()
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(experiment_figures_folder, "amr_levels_over_time.png"))
-    plt.close()
+        plt.tight_layout()
+        plt.savefig(os.path.join(experiment_figures_folder, "amr_levels_over_time.png"))
+        plt.close()
 
     ylim_min = min(
         aggregated['individual_reward']['p10'].min(),

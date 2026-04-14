@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import json
 
 import numpy as np
 import pytest
@@ -100,9 +101,17 @@ def test_build_prefix_outputs_writes_per_agent_and_shared_artifacts(tmp_path: Pa
 
     base_output = analysis_dir / prefix / "evaluation" / "evaluative_plots_marl"
 
-    assert (base_output / "agent_agent_n" / "outcome_counts_over_time.png").exists()
-    assert (base_output / "agent_agent_p" / "reward_components_over_time.png").exists()
+    assert (base_output / "agent_n" / "outcome_counts_over_time.png").exists()
+    assert (base_output / "agent_p" / "reward_components_over_time.png").exists()
+    assert (base_output / "agent_n" / "clinical_benefits_failures_adverse_events_over_time.png").exists()
+    assert (base_output / "agent_n" / "amr_levels_over_time.png").exists() is False
     assert (base_output / "shared" / "amr_levels_over_time.png").exists()
+
+    summary_stats_path = base_output / "agent_n" / "overall_outcomes_summary_summary_stats.json"
+    with open(summary_stats_path, "r", encoding="utf-8") as handle:
+        summary_stats = json.load(handle)
+    assert "overall_total_reward" in summary_stats
+    assert set(summary_stats["overall_total_reward"].keys()) == {"p10", "p25", "p50", "p75", "p90"}
 
 
 def test_build_prefix_outputs_writes_single_shared_plot_for_multi_seed_prefix(tmp_path: Path) -> None:

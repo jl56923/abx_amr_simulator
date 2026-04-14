@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -14,6 +13,7 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("matplotlib is required for evaluative plotting") from exc
 
 from abx_amr_simulator.utils.metrics import aggregate_trajectories, plot_with_bands
+from abx_amr_simulator.utils.metrics import plot_metrics_from_collected_trajectories_ensemble
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,12 +125,6 @@ def _aggregate_lines(*, trajectories: List[List[float]], apply_cumsum: bool) -> 
     if len(trajectories) == 0:
         raise ValueError("Cannot aggregate empty trajectory list")
     return aggregate_trajectories(trajectories_list=trajectories, apply_cumsum=apply_cumsum)
-
-
-def _save_json(*, output_path: Path, payload: Dict[str, Any]) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, mode="w", encoding="utf-8") as handle:
-        json.dump(obj=payload, fp=handle, indent=2)
 
 
 def _build_agent_trajectory_payload(*, npz_path: Path) -> Tuple[List[str], Dict[str, Any]]:
@@ -274,180 +268,10 @@ def _build_agent_trajectory_payload(*, npz_path: Path) -> Tuple[List[str], Dict[
         return antibiotic_names, payload
 
 
-def _write_agent_plots(
-    *,
-    output_dir: Path,
-    antibiotic_names: List[str],
-    payload: Dict[str, Any],
-) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    agg_individual = _aggregate_lines(trajectories=payload["individual_reward"], apply_cumsum=True)
-    agg_total = _aggregate_lines(trajectories=payload["total_reward"], apply_cumsum=True)
-
-    plt.figure(figsize=(12, 5))
-    plot_with_bands(
-        ax=plt.gca(),
-        data_dict=agg_individual,
-        label="Individual reward (cumulative)",
-        add_iqr_legend=False,
-    )
-    plot_with_bands(
-        ax=plt.gca(),
-        data_dict=agg_total,
-        label="Total reward (cumulative)",
-        add_iqr_legend=False,
-    )
-    plt.xlabel("Timestep")
-    plt.ylabel("Cumulative reward")
-    plt.title("Reward Components Over Time")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(output_dir / "reward_components_over_time.png")
-    plt.close()
-
-    agg_not_infected_no_treatment = _aggregate_lines(
-        trajectories=payload["not_infected_no_treatment"], apply_cumsum=True
-    )
-    agg_not_infected_treated = _aggregate_lines(
-        trajectories=payload["not_infected_treated"], apply_cumsum=True
-    )
-    agg_infected_no_treatment = _aggregate_lines(
-        trajectories=payload["infected_no_treatment"], apply_cumsum=True
-    )
-
-    infected_treated_overall: List[List[float]] = []
-    n_traj = len(payload["not_infected_no_treatment"])
-    for traj_idx in range(n_traj):
-        first_abx = antibiotic_names[0]
-        total = np.zeros(
-            shape=len(payload["infected_treated_sensitive"][first_abx][traj_idx]),
-            dtype=float,
-        )
-        for abx_name in antibiotic_names:
-            total += np.asarray(payload["infected_treated_sensitive"][abx_name][traj_idx], dtype=float)
-            total += np.asarray(payload["infected_treated_resistant"][abx_name][traj_idx], dtype=float)
-        infected_treated_overall.append(total.tolist())
-    agg_infected_treated_overall = _aggregate_lines(
-        trajectories=infected_treated_overall,
-        apply_cumsum=True,
-    )
-
-    plt.figure(figsize=(12, 5))
-    plot_with_bands(
-        ax=plt.gca(),
-        data_dict=agg_not_infected_no_treatment,
-        label="Not infected, no treatment",
-        add_iqr_legend=False,
-    )
-    plot_with_bands(
-        ax=plt.gca(),
-        data_dict=agg_not_infected_treated,
-        label="Not infected, treated",
-        add_iqr_legend=False,
-    )
-    plot_with_bands(
-        ax=plt.gca(),
-        data_dict=agg_infected_no_treatment,
-        label="Infected, no treatment",
-        add_iqr_legend=False,
-    )
-    plot_with_bands(
-        ax=plt.gca(),
-        data_dict=agg_infected_treated_overall,
-        label="Infected, treated",
-        add_iqr_legend=False,
-    )
-    plt.xlabel("Timestep")
-    plt.ylabel("Cumulative count")
-    plt.title("Outcome Counts Over Time")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(output_dir / "outcome_counts_over_time.png")
-    plt.close()
-
-    plt.figure(figsize=(12, 5))
-    for abx_name in antibiotic_names:
-        agg = _aggregate_lines(
-            trajectories=payload["count_prescriptions"][abx_name],
-            apply_cumsum=True,
-        )
-        plot_with_bands(
-            ax=plt.gca(),
-            data_dict=agg,
-            label=f"{abx_name} prescriptions",
-            add_iqr_legend=False,
-        )
-    plt.xlabel("Timestep")
-    plt.ylabel("Cumulative prescriptions")
-    plt.title("Antibiotic Prescriptions Over Time")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(output_dir / "abx_prescriptions_over_time.png")
-    plt.close()
-
-    for abx_name in antibiotic_names:
-        agg_sensitive = _aggregate_lines(
-            trajectories=payload["infected_treated_sensitive"][abx_name],
-            apply_cumsum=True,
-        )
-        agg_resistant = _aggregate_lines(
-            trajectories=payload["infected_treated_resistant"][abx_name],
-            apply_cumsum=True,
-        )
-
-        plt.figure(figsize=(10, 5))
-        plot_with_bands(
-            ax=plt.gca(),
-            data_dict=agg_sensitive,
-            label=f"{abx_name} treated infected",
-            add_iqr_legend=False,
-        )
-        plot_with_bands(
-            ax=plt.gca(),
-            data_dict=agg_resistant,
-            label=f"{abx_name} treated resistant (unavailable -> 0)",
-            add_iqr_legend=False,
-        )
-        plt.xlabel("Timestep")
-        plt.ylabel("Cumulative count")
-        plt.title(f"Infected Treated Counts: {abx_name}")
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(output_dir / f"infected_treated_counts_{abx_name}_over_time.png")
-        plt.close()
-
-    summary_raw = {
-        "num_trajectories": len(payload["individual_reward"]),
-        "antibiotic_names": antibiotic_names,
-        "limitations": [
-            "community and normalized community reward are not emitted in current MARL granular NPZs; plotted as zeros",
-            "clinical benefit/failure/adverse-event counts are not emitted in current MARL granular NPZs; omitted from dedicated plot",
-            "treated-resistant counts are not emitted in current MARL granular NPZs; plotted as zeros",
-        ],
-    }
-    _save_json(output_path=output_dir / "overall_outcomes_summary_raw_vals.json", payload=summary_raw)
-
-    summary_stats: Dict[str, Any] = {
-        "final_individual_reward_median": float(agg_individual["median"][-1]),
-        "final_total_reward_median": float(agg_total["median"][-1]),
-    }
-    for abx_name in antibiotic_names:
-        agg_prescriptions = _aggregate_lines(
-            trajectories=payload["count_prescriptions"][abx_name],
-            apply_cumsum=True,
-        )
-        summary_stats[f"final_prescriptions_{abx_name}_median"] = float(
-            agg_prescriptions["median"][-1]
-        )
-    _save_json(
-        output_path=output_dir / "overall_outcomes_summary_summary_stats.json",
-        payload=summary_stats,
-    )
+def _normalize_agent_output_name(*, agent_id: str) -> str:
+    if agent_id.startswith("agent_"):
+        return agent_id
+    return f"agent_{agent_id}"
 
 
 def _collect_shared_amr_payload(*, agent_npz_paths: List[Path]) -> Tuple[List[str], Dict[str, List[List[float]]]]:
@@ -587,10 +411,11 @@ def _build_prefix_outputs(
     base_output_dir.mkdir(parents=True, exist_ok=True)
 
     for agent_id in sorted(all_agents):
-        agent_output_dir = base_output_dir / f"agent_{agent_id}"
+        normalized_agent_name = _normalize_agent_output_name(agent_id=agent_id)
+        agent_output_dir = base_output_dir / normalized_agent_name
         summary_path = agent_output_dir / "overall_outcomes_summary_summary_stats.json"
         if summary_path.exists() and not force:
-            print(f"[SKIP] {prefix} / agent_{agent_id}: outputs exist (use --force)")
+            print(f"[SKIP] {prefix} / {normalized_agent_name}: outputs exist (use --force)")
             continue
 
         agent_npzs: List[Path] = []
@@ -600,7 +425,7 @@ def _build_prefix_outputs(
                 agent_npzs.append(maybe_path)
 
         if len(agent_npzs) == 0:
-            print(f"[SKIP] {prefix} / agent_{agent_id}: no matching NPZs across seeds")
+            print(f"[SKIP] {prefix} / {normalized_agent_name}: no matching NPZs across seeds")
             continue
 
         merged_antibiotic_names: Optional[List[str]] = None
@@ -656,12 +481,15 @@ def _build_prefix_outputs(
                 f"Failed to build merged payload for prefix={prefix}, agent={agent_id}"
             )
 
-        _write_agent_plots(
-            output_dir=agent_output_dir,
+        plot_metrics_from_collected_trajectories_ensemble(
+            all_trajectories_data=merged_payload,
             antibiotic_names=merged_antibiotic_names,
-            payload=merged_payload,
+            experiment_figures_folder=str(agent_output_dir),
+            per_seed_data=None,
+            per_seed_figures=False,
+            include_amr_plot=False,
         )
-        print(f"[DONE] {prefix} / agent_{agent_id}: wrote evaluative plots")
+        print(f"[DONE] {prefix} / {normalized_agent_name}: wrote evaluative plots")
 
     shared_output_dir = base_output_dir / "shared"
     shared_plot_path = shared_output_dir / "amr_levels_over_time.png"
