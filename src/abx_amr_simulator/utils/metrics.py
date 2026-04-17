@@ -1778,6 +1778,47 @@ def aggregate_trajectories(trajectories_list, apply_cumsum=False):
     }
 
 
+def write_aggregated_timeseries_csv(aggregated_dict, csv_path):
+    """Write the output of aggregate_trajectories() as a CSV file.
+
+    Columns: timestep, mean, median, p10, p25, p75, p90, iqm, n_active.
+    One row per timestep.
+
+    Args:
+        aggregated_dict: Dict returned by aggregate_trajectories(), containing
+            numpy arrays keyed by 'mean', 'median', 'p10', 'p25', 'p75',
+            'p90', 'iqm', 'timesteps', 'n_active_trajectories'.
+        csv_path: Output file path (str or Path).
+    """
+    csv_path = str(csv_path)
+    parent = os.path.dirname(csv_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    timesteps = aggregated_dict['timesteps']
+    n = len(timesteps)
+
+    headers = ['timestep', 'mean', 'median', 'p10', 'p25', 'p75', 'p90', 'iqm', 'n_active']
+    lines = [','.join(headers)]
+    for i in range(n):
+        row = [
+            str(int(timesteps[i])),
+            str(float(aggregated_dict['mean'][i])),
+            str(float(aggregated_dict['median'][i])),
+            str(float(aggregated_dict['p10'][i])),
+            str(float(aggregated_dict['p25'][i])),
+            str(float(aggregated_dict['p75'][i])),
+            str(float(aggregated_dict['p90'][i])),
+            str(float(aggregated_dict['iqm'][i])),
+            str(int(aggregated_dict['n_active_trajectories'][i])),
+        ]
+        lines.append(','.join(row))
+
+    with open(csv_path, 'w') as f:
+        f.write('\n'.join(lines))
+        f.write('\n')
+
+
 def plot_with_bands(
     ax,
     data_dict,
@@ -2115,6 +2156,52 @@ def plot_metrics_from_collected_trajectories_ensemble(
     aggregated['infected_treated_overall'] = aggregate_trajectories(infected_treated_overall_trajs, apply_cumsum=True)
 
     print("Aggregation complete!")
+
+    # --- Write aggregated time series CSVs alongside the PNGs ---
+    csv_dir = experiment_figures_folder
+
+    for abx_name in antibiotic_names:
+        write_aggregated_timeseries_csv(
+            aggregated['actual_AMR_levels'][abx_name],
+            os.path.join(csv_dir, f"amr_actual_{abx_name}_over_time.csv"),
+        )
+        write_aggregated_timeseries_csv(
+            aggregated['visible_AMR_levels'][abx_name],
+            os.path.join(csv_dir, f"amr_visible_{abx_name}_over_time.csv"),
+        )
+        write_aggregated_timeseries_csv(
+            aggregated['count_prescriptions'][abx_name],
+            os.path.join(csv_dir, f"prescriptions_{abx_name}_over_time.csv"),
+        )
+        write_aggregated_timeseries_csv(
+            aggregated['infected_treated_sensitive'][abx_name],
+            os.path.join(csv_dir, f"infected_treated_sensitive_{abx_name}_over_time.csv"),
+        )
+        write_aggregated_timeseries_csv(
+            aggregated['infected_treated_resistant'][abx_name],
+            os.path.join(csv_dir, f"infected_treated_resistant_{abx_name}_over_time.csv"),
+        )
+
+    for key, csv_name in [
+        ('total_reward', 'reward_total_over_time.csv'),
+        ('individual_reward', 'reward_individual_over_time.csv'),
+        ('community_reward', 'reward_community_over_time.csv'),
+        ('normalized_individual_reward', 'reward_normalized_individual_over_time.csv'),
+        ('normalized_community_reward', 'reward_normalized_community_over_time.csv'),
+        ('count_clinical_benefits', 'clinical_benefits_over_time.csv'),
+        ('count_clinical_failures', 'clinical_failures_over_time.csv'),
+        ('count_adverse_events', 'adverse_events_over_time.csv'),
+        ('not_infected_no_treatment', 'outcome_not_infected_no_treatment_over_time.csv'),
+        ('not_infected_treated', 'outcome_not_infected_treated_over_time.csv'),
+        ('infected_no_treatment', 'outcome_infected_no_treatment_over_time.csv'),
+        ('infected_treated_overall', 'outcome_infected_treated_overall_over_time.csv'),
+    ]:
+        write_aggregated_timeseries_csv(
+            aggregated[key],
+            os.path.join(csv_dir, csv_name),
+        )
+
+    print(f"    Saved time series CSVs to {csv_dir}")
     print("Generating ensemble plots...")
 
     if include_amr_plot:

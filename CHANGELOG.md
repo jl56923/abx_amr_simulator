@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `write_aggregated_timeseries_csv()` helper in `metrics.py` — writes the
+  output of `aggregate_trajectories()` as a CSV (columns: timestep, mean,
+  median, p10, p25, p75, p90, iqm, n_active).
+- `plot_metrics_from_collected_trajectories_ensemble()` in `metrics.py` now
+  writes CSV files alongside each PNG plot for all per-antibiotic and scalar
+  metrics.
+- `_write_shared_amr_plot()` in `evaluative_plots_marl.py` now writes CSV
+  files for shared actual and visible AMR levels per antibiotic.
+
 ### Changed
 - **BREAKING**: Extended the MARL granular-eval NPZ schema in
   `src/abx_amr_simulator/analysis/run_granular_eval_best_models_marl.py` to

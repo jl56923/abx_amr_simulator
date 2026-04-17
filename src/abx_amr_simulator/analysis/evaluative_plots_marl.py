@@ -14,6 +14,7 @@ except ImportError as exc:  # pragma: no cover
 
 from abx_amr_simulator.utils.metrics import aggregate_trajectories, plot_with_bands
 from abx_amr_simulator.utils.metrics import plot_metrics_from_collected_trajectories_ensemble
+from abx_amr_simulator.utils.metrics import write_aggregated_timeseries_csv
 
 
 def parse_args() -> argparse.Namespace:
@@ -412,6 +413,26 @@ def _write_shared_amr_plot(
     plt.tight_layout()
     plt.savefig(output_dir / "amr_levels_over_time.png")
     plt.close()
+
+    # Write CSV time series for shared AMR data.
+    for abx_name in antibiotic_names:
+        agg_actual = _aggregate_lines(
+            trajectories=shared_payload[f"actual::{abx_name}"],
+            apply_cumsum=False,
+        )
+        write_aggregated_timeseries_csv(
+            agg_actual,
+            output_dir / f"amr_actual_{abx_name}.csv",
+        )
+
+        agg_visible = _aggregate_lines(
+            trajectories=shared_payload[f"visible::{abx_name}"],
+            apply_cumsum=False,
+        )
+        write_aggregated_timeseries_csv(
+            agg_visible,
+            output_dir / f"amr_visible_{abx_name}.csv",
+        )
 
 
 def _build_prefix_outputs(
