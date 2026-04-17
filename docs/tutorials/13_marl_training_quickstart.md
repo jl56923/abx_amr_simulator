@@ -202,8 +202,6 @@ The important design point is that MARL lets each agent have its own:
 - reward function,
 - option menu.
 
-That flexibility is what makes LPP-style experiments possible.
-
 ## `training`
 
 The canonical MARL training fields are:
