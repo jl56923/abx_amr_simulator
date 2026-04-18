@@ -188,15 +188,13 @@ def test_extract_patients_fallback_when_missing_current_patients() -> None:
     assert "prob_infected" in patients[0]
 
 
-def test_get_current_amr_levels_fallback_when_missing_amr() -> None:
+def test_get_current_visible_amr_levels_reads_visible_amr() -> None:
     env = create_mock_environment(antibiotic_names=["A", "B"])
     library = _build_library(env=env)
     wrapper = OptionsWrapper(env=env, option_library=library, gamma=0.99)
 
-    if hasattr(env.unwrapped, "amr_balloon_models"):
-        delattr(env.unwrapped, "amr_balloon_models")
-
-    current_amr = wrapper._get_current_amr_levels()
+    # visible_amr_levels is initialized to 0.0 for all antibiotics
+    current_amr = wrapper._get_current_visible_amr_levels()
 
     assert current_amr["A"] == 0.0
     assert current_amr["B"] == 0.0

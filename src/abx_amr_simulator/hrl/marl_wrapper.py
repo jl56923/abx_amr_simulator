@@ -176,7 +176,7 @@ class MARLOptionsWrapper:
         """
         obs_dict, info_dict = self.base_env.reset(seed=seed, options=options)
 
-        current_amr = self._get_current_amr_levels()
+        current_amr = self._get_current_visible_amr_levels()
         for aid in self.base_env.possible_agents:
             self._current_obs[aid] = obs_dict[aid]
             self._current_option_id[aid] = -1
@@ -283,7 +283,7 @@ class MARLOptionsWrapper:
             aid: 1.0 for aid in self.base_env.possible_agents
         }
         amr_starts: Dict[str, Dict[str, float]] = {
-            aid: self._get_current_amr_levels() for aid in self.base_env.possible_agents
+            aid: self._get_current_visible_amr_levels() for aid in self.base_env.possible_agents
         }
         primitive_actions_log: Dict[str, List[np.ndarray]] = {
             aid: [] for aid in self.base_env.possible_agents
@@ -350,7 +350,7 @@ class MARLOptionsWrapper:
                 aid, tracked_patients[aid]
             )
             self._last_amr_start[aid] = amr_starts[aid]
-            self._last_amr_end[aid] = self._get_current_amr_levels()
+            self._last_amr_end[aid] = self._get_current_visible_amr_levels()
             self._update_option_history(aid, self._current_option_id[aid])
 
             # An agent is clipped if:
@@ -402,7 +402,7 @@ class MARLOptionsWrapper:
         num_patients = self.base_env._agent_n_patients[agent_id]
 
         patients = self._extract_patients(agent_id)
-        current_amr_levels = self._get_current_amr_levels()
+        current_amr_levels = self._get_current_visible_amr_levels()
         use_relative_uncertainty = getattr(lib, "use_relative_uncertainty", True)
 
         return {
@@ -501,11 +501,11 @@ class MARLOptionsWrapper:
 
         amr_start = self._last_amr_start[agent_id]
         if amr_start is None:
-            amr_start = self._get_current_amr_levels()
+            amr_start = self._get_current_visible_amr_levels()
 
         amr_end = self._last_amr_end[agent_id]
         if amr_end is None:
-            amr_end = self._get_current_amr_levels()
+            amr_end = self._get_current_visible_amr_levels()
 
         amr_obs = np.array(
             [amr_start.get(abx, 0.0) for abx in self.antibiotic_names]
@@ -627,8 +627,13 @@ class MARLOptionsWrapper:
     # Per-agent tracking helpers
     # ---------------------------------------------------------------------- #
 
-    def _get_current_amr_levels(self) -> Dict[str, float]:
-        """Return shared visible AMR levels from the base env.
+    def _get_current_visible_amr_levels(self) -> Dict[str, float]:
+        """Return the current visible (observed) AMR levels from the base env.
+
+        Visible AMR is the degraded signal that the agent is allowed to see:
+        it updates only every ``update_visible_AMR_levels_every_n_timesteps``
+        primitive steps, and includes noise and bias.  This is intentional —
+        the manager must never see true AMR from the balloon models.
 
         Returns:
             Dict mapping antibiotic name → visible resistance level.

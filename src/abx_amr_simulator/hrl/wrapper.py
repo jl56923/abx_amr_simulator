@@ -162,7 +162,7 @@ class OptionsWrapper(gym.Wrapper):
         self._consecutive_same_option_count = 0
         self._steps_since_prescribed = {abx: 0 for abx in self.antibiotic_names}
 
-        current_amr = self._get_current_amr_levels()
+        current_amr = self._get_current_visible_amr_levels()
         self._last_amr_start = current_amr
         self._last_amr_end = current_amr
         self._last_aggregate_stats = self._initialize_empty_aggregate_stats()
@@ -233,7 +233,7 @@ class OptionsWrapper(gym.Wrapper):
         episode_terminated = False
         episode_truncated = False
 
-        amr_start = self._get_current_amr_levels()
+        amr_start = self._get_current_visible_amr_levels()
         tracked_patients = []
         
         # NEW: Collect primitive-level information for trajectory flattening
@@ -292,7 +292,7 @@ class OptionsWrapper(gym.Wrapper):
         # Build manager observation
         self._last_aggregate_stats = self._compute_aggregate_stats(tracked_patients=tracked_patients)
         self._last_amr_start = amr_start
-        self._last_amr_end = self._get_current_amr_levels()
+        self._last_amr_end = self._get_current_visible_amr_levels()
         self._update_option_history(option_id=manager_action)
         manager_obs = self._build_manager_observation()
 
@@ -336,7 +336,7 @@ class OptionsWrapper(gym.Wrapper):
         patients = self._extract_patients_from_obs(observation, num_patients)
 
         # Extract AMR levels
-        current_amr_levels = self._get_current_amr_levels()
+        current_amr_levels = self._get_current_visible_amr_levels()
 
         # Get use_relative_uncertainty flag from option library config (defaults to True)
         use_relative_uncertainty = getattr(
@@ -395,23 +395,18 @@ class OptionsWrapper(gym.Wrapper):
 
         return patients
 
-    def _get_current_amr_levels(self) -> Dict[str, float]:
-        """Get current AMR levels for all antibiotics.
-        
-        Returns:
-            Dict mapping antibiotic name -> resistance level (float in [0, 1]).
-        """
-        try:
-            amr_balloons = self._base_env.amr_balloon_models
-            current_amr = {
-                abx_name: balloon.get_volume()
-                for abx_name, balloon in amr_balloons.items()
-            }
-        except (AttributeError, TypeError):
-            # Fallback: return zeros if not available
-            current_amr = {abx_name: 0.0 for abx_name in self.antibiotic_names}
+    def _get_current_visible_amr_levels(self) -> Dict[str, float]:
+        """Return the current visible (observed) AMR levels from the base env.
 
-        return current_amr
+        Visible AMR is the degraded signal that the agent is allowed to see:
+        it updates only every ``update_visible_AMR_levels_every_n_timesteps``
+        primitive steps, and includes noise and bias.  This is intentional —
+        the manager must never see true AMR from the balloon models.
+
+        Returns:
+            Dict mapping antibiotic name → visible resistance level.
+        """
+        return dict(self._base_env.visible_amr_levels)
 
     def _build_manager_observation(self) -> np.ndarray:
         """Build manager-level observation.
@@ -433,11 +428,11 @@ class OptionsWrapper(gym.Wrapper):
 
         amr_start = self._last_amr_start
         if amr_start is None:
-            amr_start = self._get_current_amr_levels()
+            amr_start = self._get_current_visible_amr_levels()
 
         amr_end = self._last_amr_end
         if amr_end is None:
-            amr_end = self._get_current_amr_levels()
+            amr_end = self._get_current_visible_amr_levels()
 
         amr_obs = np.array(
             [amr_start.get(abx, 0.0) for abx in self.antibiotic_names]

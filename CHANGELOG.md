@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Critical**: `OptionsWrapper._get_current_amr_levels()` was reading **true**
+  AMR from balloon models, leaking privileged information into the HRL manager
+  observation. The manager should only see **visible** (degraded) AMR, matching
+  the information-degradation scenario configured by the experiment. Both
+  `OptionsWrapper` and `MARLOptionsWrapper` now read `visible_amr_levels` from
+  the base env, and the method has been renamed to
+  `_get_current_visible_amr_levels()` to make the contract explicit.
+
 ### Added
 - `write_aggregated_timeseries_csv()` helper in `metrics.py` — writes the
   output of `aggregate_trajectories()` as a CSV (columns: timestep, mean,
