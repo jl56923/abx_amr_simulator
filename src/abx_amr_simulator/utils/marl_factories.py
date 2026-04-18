@@ -62,7 +62,6 @@ from abx_amr_simulator.core.base_patient_generator import PatientGeneratorBase
 from abx_amr_simulator.core.base_reward_calculator import RewardCalculatorBase
 from abx_amr_simulator.hrl import MARLOptionsWrapper
 from abx_amr_simulator.hrl.option_loaders import OptionLibraryLoader
-from abx_amr_simulator.training.train_marl import make_ppo_for_agent
 from abx_amr_simulator.utils.plugin_loader import load_plugin_component
 
 
@@ -416,6 +415,10 @@ def build_marl_managers_from_config(
             for k, v in agent_hyperparams[aid].items():
                 if k != "batch_size":
                     ppo_kwargs[k] = v
+
+        # Lazy import to avoid circular dependency:
+        # marl_factories -> training.train_marl -> training/__init__ -> tune_marl_agent -> marl_factories
+        from abx_amr_simulator.training.train_marl import make_ppo_for_agent
 
         agents[aid] = make_ppo_for_agent(
             wrapper=wrapper,
