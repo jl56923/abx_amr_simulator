@@ -33,7 +33,6 @@ class CustomRewardCalculatorPlugin(RewardCalculatorBase):
         actions: np.ndarray,
         antibiotic_names: List[str],
         visible_amr_levels: Dict[str, float],
-        delta_visible_amr_per_antibiotic: Dict[str, float],
         **kwargs: Any,
     ) -> Any:
         return self._delegate.calculate_reward(
@@ -41,7 +40,6 @@ class CustomRewardCalculatorPlugin(RewardCalculatorBase):
             actions=actions,
             antibiotic_names=antibiotic_names,
             visible_amr_levels=visible_amr_levels,
-            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
             **kwargs,
         )
 

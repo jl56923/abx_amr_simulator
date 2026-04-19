@@ -1042,6 +1042,35 @@ class TestPatientGeneratorMixer:
         assert mixer._uses_heterogeneous_visibility
         assert set(mixer.visible_patient_attributes) == {'prob_infected', 'benefit_value_multiplier'}
         assert len(mixer.generators) == 2
+
+    def test_mixer_exposes_logging_attributes_for_export(self):
+        """Mixer should define logging_patient_attributes for callback export path."""
+        from abx_amr_simulator.core import PatientGeneratorMixer
+
+        gen_a = self.create_simple_generator(visibility_attrs=['prob_infected', 'benefit_value_multiplier'])
+        gen_b = self.create_simple_generator(visibility_attrs=['prob_infected'])
+
+        # Use different logging attribute sets to verify deterministic union behavior.
+        gen_a.logging_patient_attributes = ['prob_infected', 'benefit_value_multiplier']
+        gen_b.logging_patient_attributes = ['prob_infected']
+
+        mixer = PatientGeneratorMixer(
+            config={
+                'generators': [gen_a, gen_b],
+                'proportions': [0.5, 0.5],
+                'seed': 42,
+            }
+        )
+
+        assert hasattr(mixer, 'logging_patient_attributes')
+        assert set(mixer.logging_patient_attributes) == {'prob_infected', 'benefit_value_multiplier'}
+
+        rng = np.random.default_rng(123)
+        patients = mixer.sample(n_patients=4, true_amr_levels=TRUE_AMR_LEVELS, rng=rng)
+        exported = mixer.export_patient_attributes_for_logging(patients=patients)
+
+        assert 'true' in exported and 'observed' in exported
+        assert len(exported['true']['prob_infected']) == 4
     
     def test_mixer_init_proportions_sum_validation(self):
         """Test that proportions must sum to 1.0."""

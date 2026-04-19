@@ -30,7 +30,6 @@ def _create_reward_calculator_for_expected_reward_tests() -> RewardCalculator:
             },
         },
         'lambda_weight': 0.0,
-        'epsilon': 0.05,
         'seed': 123,
     }
     return RewardCalculator(config=config)
@@ -281,7 +280,6 @@ class TestActionSelection:
         rc_config = {
             'abx_clinical_reward_penalties_info_dict': abx_info,
             'lambda_weight': 0.0,
-            'epsilon': 0.05,
             'seed': 123,
         }
         reward_calculator = RewardCalculator(config=rc_config)
@@ -501,6 +499,7 @@ class TestHeuristicOptionLoader:
     def test_load_basic_config(self):
         """Test loading heuristic option from config dict."""
         config = {
+            'option_name': 'test_heuristic',
             'duration': 10,
             'action_thresholds': {
                 'prescribe_A': 0.7,
@@ -510,7 +509,7 @@ class TestHeuristicOptionLoader:
             'uncertainty_threshold': 2.0,
         }
         
-        option = load_heuristic_option(name='test_heuristic', config=config)
+        option = load_heuristic_option(config=config)
         
         assert isinstance(option, HeuristicWorker)
         assert option.name == 'test_heuristic'
@@ -521,49 +520,54 @@ class TestHeuristicOptionLoader:
     def test_load_missing_duration(self):
         """Test that loader raises ValueError if duration missing."""
         config = {
+            'option_name': 'test',
             'action_thresholds': {'prescribe_A': 0.5, 'no_treatment': 0.0},
         }
         
         with pytest.raises(ValueError, match="missing required key 'duration'"):
-            load_heuristic_option(name='test', config=config)
+            load_heuristic_option(config=config)
     
     def test_load_missing_action_thresholds(self):
         """Test that loader raises ValueError if action_thresholds missing."""
         config = {
+            'option_name': 'test',
             'duration': 10,
         }
         
         with pytest.raises(ValueError, match="missing required key 'action_thresholds'"):
-            load_heuristic_option(name='test', config=config)
+            load_heuristic_option(config=config)
     
     def test_load_invalid_duration_type(self):
         """Test that loader raises ValueError for invalid duration type."""
         config = {
+            'option_name': 'test',
             'duration': 'ten',  # Should be int
             'action_thresholds': {'prescribe_A': 0.5, 'no_treatment': 0.0},
         }
         
         with pytest.raises(ValueError, match="'duration' must be an int"):
-            load_heuristic_option(name='test', config=config)
+            load_heuristic_option(config=config)
     
     def test_load_invalid_action_thresholds_type(self):
         """Test that loader raises ValueError for invalid action_thresholds type."""
         config = {
+            'option_name': 'test',
             'duration': 10,
             'action_thresholds': 'invalid',  # Should be dict
         }
         
         with pytest.raises(ValueError, match="'action_thresholds' must be a dict"):
-            load_heuristic_option(name='test', config=config)
+            load_heuristic_option(config=config)
     
     def test_load_default_uncertainty_threshold(self):
         """Test that loader uses default uncertainty_threshold if not provided."""
         config = {
+            'option_name': 'test',
             'duration': 10,
             'action_thresholds': {'prescribe_A': 0.5, 'no_treatment': 0.0},
             # uncertainty_threshold omitted
         }
         
-        option = load_heuristic_option(name='test', config=config)
+        option = load_heuristic_option(config=config)
         
         assert option.uncertainty_threshold == 2.0  # Default value

@@ -1,4 +1,4 @@
-# Tutorial 13: Callbacks and Logging
+# Tutorial 12: Callbacks and Logging
 
 Goal: Learn how callback orchestration works in training, how to configure logging behavior from YAML, and how to use built-in callbacks for evaluation, trajectories, early stopping, and recurrent belief analysis.
 

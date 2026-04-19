@@ -24,7 +24,6 @@ def create_test_reward_calculator(
     adverse_effect_penalty=-2.0,
     adverse_effect_probability=0.0,
     lambda_weight=0.5,
-    epsilon=0.05,
     clinical_failure_penalty=-1.0,
     clinical_failure_probability=0.0,
 ):
@@ -32,6 +31,7 @@ def create_test_reward_calculator(
 
     Updated to match RewardCalculator API which expects top-level clinical benefit/failure
     parameters and per-antibiotic adverse effects under 'abx_adverse_effects_info'.
+
     """
     if antibiotic_names is None:
         antibiotic_names = ["A"]
@@ -53,7 +53,6 @@ def create_test_reward_calculator(
     config = {
         'abx_clinical_reward_penalties_info_dict': abx_clinical_reward_penalties_info_dict,
         'lambda_weight': lambda_weight,
-        'epsilon': epsilon,
     }
     return RewardCalculator(config=config)
 
@@ -63,7 +62,7 @@ def test_calculate_individual_reward_penalizes_amr_and_counts_adverse():
     
     Purpose: Verifies that when an antibiotic is prescribed with a high delta_amr value
     and adverse effects are guaranteed to occur (probability=1.0), the reward includes
-    both the clinical benefit, the adverse effect penalty, and the epsilon-weighted AMR cost.
+    both the clinical benefit and adverse effect penalty.
     """
     model = create_test_reward_calculator(
         antibiotic_names=["A"],
@@ -71,7 +70,6 @@ def test_calculate_individual_reward_penalizes_amr_and_counts_adverse():
         clinical_benefit_probability=1.0,
         adverse_effect_penalty=-2.0,
         adverse_effect_probability=1.0,
-        epsilon=0.05,
     )
     model.rng = np.random.default_rng(seed=0)
 
@@ -79,7 +77,6 @@ def test_calculate_individual_reward_penalizes_amr_and_counts_adverse():
         patient_infected=True,
         antibiotic_name="A",
         infection_sensitive_to_prescribed_abx=True,
-        delta_visible_amr=1.0,
         return_clinical_benefit_adverse_event_occurrence=True,
     )
 
@@ -87,9 +84,8 @@ def test_calculate_individual_reward_penalizes_amr_and_counts_adverse():
     # Rewards are always normalized by max absolute value (10.0)
     # normalized_benefit = 10.0 / 10.0 = 1.0
     # normalized_adverse = -2.0 / 10.0 = -0.2
-    # epsilon_amr = 0.05 * 1.0 = 0.05
-    # Total: 1.0 - 0.2 - 0.05 = 0.75
-    assert pytest.approx(reward, rel=1e-6) == 0.75
+    # Total: 1.0 - 0.2 = 0.8
+    assert pytest.approx(reward, rel=1e-6) == 0.8
 
 
 def test_calculate_individual_reward_no_prescription_no_adverse():
@@ -105,7 +101,6 @@ def test_calculate_individual_reward_no_prescription_no_adverse():
         clinical_benefit_probability=1.0,
         adverse_effect_penalty=-2.0,
         adverse_effect_probability=1.0,
-        epsilon=0.05,
     )
     model.rng = np.random.default_rng(seed=1)
 
@@ -115,7 +110,6 @@ def test_calculate_individual_reward_no_prescription_no_adverse():
         patient_infected=True,
         antibiotic_name='no_treatment',
         infection_sensitive_to_prescribed_abx=None,
-        delta_visible_amr=None,
         return_clinical_benefit_adverse_event_occurrence=True,
     )
 
@@ -137,7 +131,6 @@ def test_calculate_reward_aggregation_and_counts():
         adverse_effect_penalty=-2.0,
         adverse_effect_probability=0.0,
         lambda_weight=0.5,
-        epsilon=0.1,
     )
     model.rng = np.random.default_rng(seed=123)
 
@@ -179,28 +172,26 @@ def test_calculate_reward_aggregation_and_counts():
     actions = np.array([0, 1], dtype=int)
     antibiotic_names = ["A"]
     amr_levels = {"A": 0.0}
-    delta_amr_per_antibiotic = {"A": 0.5}
 
     total_reward, info = model.calculate_reward(
         patients=patients,
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=amr_levels,
-        delta_visible_amr_per_antibiotic=delta_amr_per_antibiotic,
     )
 
     assert info["count_clinical_benefits"] == 1
     assert info["count_adverse_events"] == 0
     # With always-on normalization:
-    # Patient 1: benefit (1.0 normalized) - epsilon_amr (0.1 * 0.5 = 0.05) = 0.95
+    # Patient 1: benefit (1.0 normalized) = 1.0
     # Patient 2: 0.0 (not infected, no treatment)
-    # Total individual component: 0.95
-    # Normalized individual: 0.95 / 2 = 0.475
+    # Total individual component: 1.0
+    # Normalized individual: 1.0 / 2 = 0.5
     # Community reward: -0.0 (AMR level is 0), normalized: 0
-    # Total: 0.5 * 0 + 0.5 * 0.475 = 0.2375
-    assert pytest.approx(info["overall_individual_reward_component"], rel=1e-6) == 0.95
-    assert pytest.approx(info["normalized_individual_reward"], rel=1e-6) == 0.475
-    assert pytest.approx(total_reward, rel=1e-6) == 0.2375
+    # Total: 0.5 * 0 + 0.5 * 0.5 = 0.25
+    assert pytest.approx(info["overall_individual_reward_component"], rel=1e-6) == 1.0
+    assert pytest.approx(info["normalized_individual_reward"], rel=1e-6) == 0.5
+    assert pytest.approx(total_reward, rel=1e-6) == 0.25
 
 
 def test_clone_and_convenience_constructors_preserve_params():
@@ -218,7 +209,6 @@ def test_clone_and_convenience_constructors_preserve_params():
         adverse_effect_penalty=-1.5,
         adverse_effect_probability=0.25,
         lambda_weight=0.3,
-        epsilon=0.02,
     )
     model.rng = np.random.default_rng(seed=999)
 
@@ -227,7 +217,6 @@ def test_clone_and_convenience_constructors_preserve_params():
     val_model = model.rng.random()
 
     assert clone.lambda_weight == 0.8
-    assert clone.epsilon == model.epsilon
     assert val_clone == val_model
 
     indiv = IndividualOnlyReward.from_existing(model)
@@ -237,52 +226,8 @@ def test_clone_and_convenience_constructors_preserve_params():
     assert indiv.lambda_weight == 0.0
     assert comm.lambda_weight == 1.0
     assert bal.lambda_weight == 0.5
-    for derived in (indiv, comm, bal):
-        assert derived.epsilon == model.epsilon
 
 
-def test_missing_antibiotic_in_delta_raises():
-    """Test that missing an antibiotic in delta_amr_per_antibiotic raises KeyError.
-    
-    Purpose: Ensures that the reward calculation fails with a clear error if a prescribed 
-    antibiotic's marginal AMR contribution is not provided in delta_amr_per_antibiotic,
-    preventing incomplete reward calculations.
-    """
-    model = create_test_reward_calculator(antibiotic_names=["A"])
-    model.rng = np.random.default_rng(seed=0)
-    
-    # Create Patient object instead of raw array
-    patients = [
-        Patient(
-            prob_infected=0.5,
-            benefit_value_multiplier=1.0,
-            failure_value_multiplier=1.0,
-            benefit_probability_multiplier=1.0,
-            failure_probability_multiplier=1.0,
-            recovery_without_treatment_prob=0.0,
-            infection_status=True,
-            abx_sensitivity_dict={"A": True},
-            prob_infected_obs=0.5,
-            benefit_value_multiplier_obs=1.0,
-            failure_value_multiplier_obs=1.0,
-            benefit_probability_multiplier_obs=1.0,
-            failure_probability_multiplier_obs=1.0,
-            recovery_without_treatment_prob_obs=0.0,
-        )
-    ]
-    actions = np.array([0], dtype=int)
-    antibiotic_names = ["A"]
-    amr_levels = {"A": 0.1}
-    delta_amr_per_antibiotic = {"B": 0.0}  # incorrect key; should be "A"
-    
-    with pytest.raises(KeyError):
-        model.calculate_reward(
-            patients=patients,
-            actions=actions,
-            antibiotic_names=antibiotic_names,
-            visible_amr_levels=amr_levels,
-            delta_visible_amr_per_antibiotic=delta_amr_per_antibiotic,
-        )
 
 
 def test_patient_attributes_use_true_values():
@@ -305,7 +250,6 @@ def test_patient_attributes_use_true_values():
         adverse_effect_penalty=-2.0,
         adverse_effect_probability=0.0,
         lambda_weight=0.0,  # Only individual component
-        epsilon=0.05,
     )
     model.rng = np.random.default_rng(seed=42)
 
@@ -349,14 +293,12 @@ def test_patient_attributes_use_true_values():
     # Both should give same reward because true attributes are identical
     actions_prescribe = np.array([0, 0], dtype=int)  # Both get antibiotic A
     amr_levels = {"A": 0.0}
-    delta_amr = {"A": 0.5}
 
     reward1, info1 = model.calculate_reward(
         patients=[patient_infected_true_noisy_obs],
         actions=actions_prescribe[:1],
         antibiotic_names=["A"],
         visible_amr_levels=amr_levels,
-        delta_visible_amr_per_antibiotic=delta_amr,
     )
 
     reward2, info2 = model.calculate_reward(
@@ -364,7 +306,6 @@ def test_patient_attributes_use_true_values():
         actions=actions_prescribe[:1],
         antibiotic_names=["A"],
         visible_amr_levels=amr_levels,
-        delta_visible_amr_per_antibiotic=delta_amr,
     )
 
     # Rewards should match despite different observed attributes
@@ -392,7 +333,7 @@ def test_community_reward_uses_true_amr():
         clinical_benefit_reward=10.0,
         clinical_benefit_probability=1.0,
         lambda_weight=1.0,  # Pure community reward
-        epsilon=0.0,  # No individual component
+        # No individual component
     )
     model.rng = np.random.default_rng(seed=100)
 
@@ -424,7 +365,6 @@ def test_community_reward_uses_true_amr():
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=low_amr,
-        delta_visible_amr_per_antibiotic={"A": 0.0, "B": 0.0},
     )
 
     # Scenario 2: High visible AMR (same patients/actions, different visible_amr_levels)
@@ -434,7 +374,6 @@ def test_community_reward_uses_true_amr():
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=high_amr,
-        delta_visible_amr_per_antibiotic={"A": 0.0, "B": 0.0},
     )
 
     # Community penalty should be more negative when visible_amr is higher
@@ -463,7 +402,7 @@ def test_sensitivity_calculation_uses_patient_sensitivity_dict():
         adverse_effect_penalty=-1.0,  # Small penalty (must be negative)
         adverse_effect_probability=0.0,  # No adverse effects for clarity
         lambda_weight=0.0,  # Individual only
-        epsilon=0.0,  # No AMR penalty for clarity
+        # No AMR penalty shaping in current reward model
     )
     model.rng = np.random.default_rng(seed=200)
 
@@ -497,14 +436,12 @@ def test_sensitivity_calculation_uses_patient_sensitivity_dict():
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=high_visible_amr,
-        delta_visible_amr_per_antibiotic={"A": 0.0},
     )
     reward_resistant_low, _ = model.calculate_reward(
         patients=[patient],
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=low_visible_amr,
-        delta_visible_amr_per_antibiotic={"A": 0.0},
     )
 
     assert reward_resistant_high == reward_resistant_low
@@ -531,7 +468,6 @@ def test_sensitivity_calculation_uses_patient_sensitivity_dict():
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=high_visible_amr,
-        delta_visible_amr_per_antibiotic={"A": 0.0},
     )
 
     assert reward_resistant_high < reward_sensitive
@@ -540,13 +476,10 @@ def test_sensitivity_calculation_uses_patient_sensitivity_dict():
 def test_individual_reward_uses_true_delta_amr():
     """Test that AMR penalty component uses delta_visible_amr for clinical authenticity.
     
-    Purpose: Verifies that the epsilon-weighted AMR penalty in individual rewards is
-    calculated using the visible delta_visible_amr (change in observed AMR from prescribing),
-    maintaining POMDP consistency. Agents should receive reward feedback based on observable
-    AMR changes, not ground truth.
+    Purpose: Verifies that delta_visible_amr no longer affects individual reward.
     
     Test strategy: Create identical patient scenarios and vary delta_visible_amr_per_antibiotic
-    to show that epsilon penalties scale accordingly.
+    to show that reward is invariant to delta_visible_amr.
     """
     model = create_test_reward_calculator(
         antibiotic_names=["A"],
@@ -555,7 +488,6 @@ def test_individual_reward_uses_true_delta_amr():
         adverse_effect_penalty=-1.0,  # Must be negative (small value for clarity)
         adverse_effect_probability=0.0,  # No adverse for clarity
         lambda_weight=0.0,  # Individual only
-        epsilon=0.1,  # Significant epsilon for clear detection
     )
     model.rng = np.random.default_rng(seed=300)
 
@@ -587,7 +519,6 @@ def test_individual_reward_uses_true_delta_amr():
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=amr_levels,
-        delta_visible_amr_per_antibiotic=small_delta,
     )
 
     # Scenario 2: Large delta_visible_amr (antibiotic drives significant observed resistance)
@@ -597,13 +528,9 @@ def test_individual_reward_uses_true_delta_amr():
         actions=actions,
         antibiotic_names=antibiotic_names,
         visible_amr_levels=amr_levels,
-        delta_visible_amr_per_antibiotic=large_delta,
     )
 
-    # Larger delta should produce larger AMR penalty, hence lower reward
-    assert reward_large < reward_small, (
-        "Larger delta_visible_amr should yield lower reward due to higher AMR penalty"
-    )
+    assert pytest.approx(reward_large, rel=1e-6) == reward_small
 
 
 class TestExpectedRewardCalculation:
@@ -641,7 +568,6 @@ class TestExpectedRewardCalculation:
             patient=patient,
             antibiotic_name='no_treatment',
             visible_amr_level=0.0,
-            delta_visible_amr=0.0,
         )
         
         # Should incorporate recovery probability and failure probability
@@ -684,7 +610,6 @@ class TestExpectedRewardCalculation:
             patient=patient,
             antibiotic_name='A',
             visible_amr_level=0.2,  # Some resistance
-            delta_visible_amr=0.05,  # Some AMR increase
         )
         
         assert isinstance(reward, float)
@@ -698,7 +623,6 @@ class TestExpectedRewardCalculation:
             antibiotic_names=['A'],
             clinical_benefit_reward=10.0,
             clinical_failure_penalty=-5.0,
-            epsilon=0.1,  # Larger AMR penalty weight
         )
         
         patient = Patient(
@@ -723,14 +647,12 @@ class TestExpectedRewardCalculation:
             patient=patient,
             antibiotic_name='A',
             visible_amr_level=0.9,  # Very high resistance
-            delta_visible_amr=0.05,
         )
         
         reward_low_amr = rc.calculate_expected_individual_reward(
             patient=patient,
             antibiotic_name='A',
             visible_amr_level=0.1,  # Low resistance
-            delta_visible_amr=0.05,
         )
         
         # High AMR should produce lower reward (less sensitivity = less benefit)
@@ -766,7 +688,6 @@ class TestExpectedRewardCalculation:
             patient=patient,
             antibiotic_name='A',
             visible_amr_level=0.3,
-            delta_visible_amr=0.0,
         )
         
         assert isinstance(reward, float)
@@ -800,7 +721,6 @@ class TestExpectedRewardCalculation:
                 patient=patient,
                 antibiotic_name='InvalidDrug',
                 visible_amr_level=0.3,
-                delta_visible_amr=0.0,
             )
     
     def test_calculate_expected_reward_orchestration(self):
@@ -849,14 +769,12 @@ class TestExpectedRewardCalculation:
         actions = np.array([1, 2])  # Assuming index 1=A, 2=B
         
         visible_amr_levels = {'A': 0.3, 'B': 0.2}
-        delta_visible_amr_per_antibiotic = {'A': 0.05, 'B': 0.04}
         
         expected_reward = rc.calculate_expected_reward(
             patients=patients,
             actions=actions,
             antibiotic_names=rc.antibiotic_names,
             visible_amr_levels=visible_amr_levels,
-            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
         )
         
         assert isinstance(expected_reward, float)
@@ -891,14 +809,12 @@ class TestExpectedRewardCalculation:
         actions = np.array([0])
         
         visible_amr_levels = {'A': 0.3}
-        delta_visible_amr_per_antibiotic = {'A': 0.0}  # No AMR increase with no treatment
         
         expected_reward = rc.calculate_expected_reward(
             patients=patients,
             actions=actions,
             antibiotic_names=rc.antibiotic_names,
             visible_amr_levels=visible_amr_levels,
-            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
         )
         
         assert isinstance(expected_reward, float)
@@ -937,14 +853,12 @@ class TestExpectedRewardCalculation:
         
         actions = np.array([1])  # Treat with A
         visible_amr_levels = {'A': 0.3}
-        delta_visible_amr_per_antibiotic = {'A': 0.05}
         
         reward_community = rc_community.calculate_expected_reward(
             patients=patients,
             actions=actions,
             antibiotic_names=rc_community.antibiotic_names,
             visible_amr_levels=visible_amr_levels,
-            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
         )
         
         reward_individual = rc_individual.calculate_expected_reward(
@@ -952,7 +866,6 @@ class TestExpectedRewardCalculation:
             actions=actions,
             antibiotic_names=rc_individual.antibiotic_names,
             visible_amr_levels=visible_amr_levels,
-            delta_visible_amr_per_antibiotic=delta_visible_amr_per_antibiotic,
         )
         
         # Should be different due to different weighting

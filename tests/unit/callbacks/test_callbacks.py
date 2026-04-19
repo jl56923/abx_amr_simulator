@@ -83,7 +83,6 @@ def simple_env_config():
         },
         'reward_calculator_config': {
             'lambda_weight': 0.5,
-            'epsilon': 0.05,
             'abx_clinical_reward_penalties_info_dict': {
                 'clinical_benefit_reward': 10.0,
                 'clinical_benefit_probability': 0.9,
@@ -246,29 +245,6 @@ class TestDetailedEvalCallback:
         callback._set_eval_env_logging_flag(False)
         assert test_env.log_full_patient_attributes is False
 
-    def test_sets_personalized_logging_flag_on_eval_env(self, test_env, temp_log_dir):
-        """Test personalized toggle propagation to environment logging flags."""
-        vec_env = DummyVecEnv([lambda: test_env])
-
-        callback = DetailedEvalCallback(
-            eval_env=vec_env,
-            n_eval_episodes=1,
-            eval_freq=100,
-            log_path=temp_log_dir,
-            save_patient_trajectories=True,
-            log_personalized_patient_attributes=True,
-            personalized_sentinel_value=-1.0,
-        )
-
-        assert test_env.log_personalized_patient_attributes is False
-
-        callback._set_eval_env_logging_flag(value=True)
-        assert test_env.log_full_patient_attributes is True
-        assert test_env.log_personalized_patient_attributes is True
-
-        callback._set_eval_env_logging_flag(value=False)
-        assert test_env.log_full_patient_attributes is False
-        assert test_env.log_personalized_patient_attributes is False
     
     def test_saves_trajectory_files(self, test_env, temp_log_dir):
         """Test that callback saves trajectory files with correct structure."""
@@ -307,14 +283,19 @@ class TestDetailedEvalCallback:
             'rewards': [],
             'actual_amr_levels': [],
             'visible_amr_levels': [],
+            'manager_clipped': [],
+            'steps_clipped': [],
+            'manager_transition_trainable': [],
+            'option_id': [],
+            'primitive_actions': [],
         }
-        
+
         for _ in range(3):  # Short episode
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, info = vec_env.step(action)
-            
+
             info = info[0]  # Unwrap from list
-            
+
             if 'patient_full_data' in info:
                 episode_data['patient_full_data'].append(info['patient_full_data'])
                 episode_data['patient_stats'].append(info['patient_stats'])
@@ -322,9 +303,14 @@ class TestDetailedEvalCallback:
                 episode_data['rewards'].append(float(reward))
                 episode_data['actual_amr_levels'].append(info.get('actual_amr_levels', {}))
                 episode_data['visible_amr_levels'].append(info.get('visible_amr_levels', {}))
-            
+                episode_data['manager_clipped'].append(info.get('manager_clipped', False))
+                episode_data['steps_clipped'].append(info.get('steps_clipped', 0))
+                episode_data['manager_transition_trainable'].append(info.get('manager_transition_trainable', True))
+                episode_data['option_id'].append(info.get('option_id', None))
+                episode_data['primitive_actions'].append(info.get('primitive_actions', None))
+
             episode_reward += reward
-            
+
             if done[0]:
                 break
         
@@ -381,13 +367,18 @@ class TestDetailedEvalCallback:
             'rewards': [],
             'actual_amr_levels': [],
             'visible_amr_levels': [],
+            'manager_clipped': [],
+            'steps_clipped': [],
+            'manager_transition_trainable': [],
+            'option_id': [],
+            'primitive_actions': [],
         }
-        
+
         num_steps = 3
         for _ in range(num_steps):
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, info = vec_env.step(action)
-            
+
             info = info[0]
             episode_data['patient_full_data'].append(info['patient_full_data'])
             episode_data['patient_stats'].append(info['patient_stats'])
@@ -395,6 +386,11 @@ class TestDetailedEvalCallback:
             episode_data['rewards'].append(float(reward))
             episode_data['actual_amr_levels'].append(info.get('actual_amr_levels', {}))
             episode_data['visible_amr_levels'].append(info.get('visible_amr_levels', {}))
+            episode_data['manager_clipped'].append(info.get('manager_clipped', False))
+            episode_data['steps_clipped'].append(info.get('steps_clipped', 0))
+            episode_data['manager_transition_trainable'].append(info.get('manager_transition_trainable', True))
+            episode_data['option_id'].append(info.get('option_id', None))
+            episode_data['primitive_actions'].append(info.get('primitive_actions', None))
         
         trajectories.append(episode_data)
         callback._save_trajectories(trajectories, [0.0], [num_steps])
@@ -445,252 +441,156 @@ class TestDetailedEvalCallback:
         callback._set_eval_env_logging_flag(False)
         assert test_env.log_full_patient_attributes is False
 
-    def test_personalized_logging_toggle_defaults_off_and_does_not_persist_sentinel(self, test_env, temp_log_dir):
-        """Default toggle should be OFF and sentinel metadata should be absent in saved artifacts."""
-        vec_env = DummyVecEnv([lambda: test_env])
+class TestDetailedEvalCallbackHRLLogging:
+    """Tests for Phase B clipping metadata and HRL primitive-action logging."""
 
-        callback = DetailedEvalCallback(
-            eval_env=vec_env,
-            n_eval_episodes=1,
-            eval_freq=10,
-            log_path=temp_log_dir,
-            save_patient_trajectories=True,
-            verbose=0,
-        )
-
-        assert callback.log_personalized_patient_attributes is False
-        assert callback.personalized_sentinel_value is None
-
-        trajectories = [{
-            'patient_full_data': [],
+    def _make_traj(self, num_steps, option_ids=None, primitive_actions=None):
+        """Build a minimal trajectory dict that _save_trajectories accepts."""
+        return {
+            'patient_full_data': [],   # empty — skip patient array saving branch
             'patient_stats': [],
-            'actions': [np.array([0])],
-            'rewards': [0.0],
+            'actions': list(range(num_steps)),
+            'rewards': [0.0] * num_steps,
+            'patients_actually_infected': None,
+            'individual_rewards': None,
             'actual_amr_levels': [],
             'visible_amr_levels': [],
             'antibiotic_names': [],
-            'manager_clipped': [],
-            'steps_clipped': [],
-            'manager_transition_trainable': [],
-        }]
-        callback._save_trajectories(
-            trajectories=trajectories,
-            episode_rewards=[0.0],
-            episode_lengths=[1],
-        )
+            'manager_clipped': [False] * num_steps,
+            'steps_clipped': [0] * num_steps,
+            'manager_transition_trainable': [True] * num_steps,
+            'option_id': option_ids if option_ids is not None else [None] * num_steps,
+            'primitive_actions': primitive_actions if primitive_actions is not None else [None] * num_steps,
+        }
 
-        eval_logs_dir = Path(temp_log_dir) / 'eval_logs'
-        saved_file = list(eval_logs_dir.glob('*.npz'))[0]
-        data = np.load(file=saved_file, allow_pickle=True)
-        assert 'personalized_sentinel_value' not in data.files
-
-    def test_personalized_logging_toggle_on_persists_sentinel_metadata(self, test_env, temp_log_dir):
-        """When toggle is ON with sentinel configured, sentinel metadata should be persisted."""
+    def test_clipping_metadata_saved_for_non_hrl(self, test_env, temp_log_dir):
+        """Phase B clipping fields are always written, even for non-HRL runs."""
         vec_env = DummyVecEnv([lambda: test_env])
-        sentinel_value = -1.0
-
+        model = PPO('MlpPolicy', vec_env, verbose=0)
         callback = DetailedEvalCallback(
-            eval_env=vec_env,
-            n_eval_episodes=1,
-            eval_freq=10,
-            log_path=temp_log_dir,
-            save_patient_trajectories=True,
-            log_personalized_patient_attributes=True,
-            personalized_sentinel_value=sentinel_value,
-            verbose=0,
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
         )
+        callback.init_callback(model)
 
-        trajectories = [{
-            'patient_full_data': [{
-                'true': {
-                    'has_personalized_prediction': [1.0, 0.0],
-                    'personalized_predicted_resistance__Antibiotic_A': [0.2, 1.0],
-                },
-                'observed': {
-                    'has_personalized_prediction': [1.0, 0.0],
-                    'personalized_predicted_resistance__Antibiotic_A': [0.2, sentinel_value],
-                },
-            }],
-            'patient_stats': [],
-            'actions': [np.array([0, 0])],
-            'rewards': [0.0],
-            'patients_actually_infected': [[1.0, 0.0]],
-            'individual_rewards': [[1.0, -0.5]],
-            'actual_amr_levels': [],
-            'visible_amr_levels': [],
-            'antibiotic_names': ['Antibiotic_A'],
-            'manager_clipped': [],
-            'steps_clipped': [],
-            'manager_transition_trainable': [],
-        }]
-        callback._save_trajectories(
-            trajectories=trajectories,
-            episode_rewards=[0.0],
-            episode_lengths=[1],
-        )
+        num_steps = 4
+        traj = self._make_traj(num_steps)
+        callback._save_trajectories([traj], [1.0], [num_steps])
 
-        eval_logs_dir = Path(temp_log_dir) / 'eval_logs'
-        saved_file = list(eval_logs_dir.glob('*.npz'))[0]
-        data = np.load(file=saved_file, allow_pickle=True)
-        assert 'personalized_sentinel_value' in data.files
-        assert float(data['personalized_sentinel_value']) == pytest.approx(sentinel_value)
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
 
-    def test_personalized_logging_fails_loudly_when_personalized_slots_are_missing(self, test_env, temp_log_dir):
-        """Missing personalized block should fail loudly when personalized logging is enabled."""
+        assert 'episode_0/manager_clipped' in data
+        assert 'episode_0/steps_clipped' in data
+        assert 'episode_0/manager_transition_trainable' in data
+        assert len(data['episode_0/manager_clipped']) == num_steps
+        assert len(data['episode_0/steps_clipped']) == num_steps
+        assert len(data['episode_0/manager_transition_trainable']) == num_steps
+
+    def test_option_id_saved_when_present(self, test_env, temp_log_dir):
+        """option_id is written to npz when non-None values are present."""
         vec_env = DummyVecEnv([lambda: test_env])
-
+        model = PPO('MlpPolicy', vec_env, verbose=0)
         callback = DetailedEvalCallback(
-            eval_env=vec_env,
-            n_eval_episodes=1,
-            eval_freq=10,
-            log_path=temp_log_dir,
-            save_patient_trajectories=True,
-            log_personalized_patient_attributes=True,
-            personalized_sentinel_value=-1.0,
-            verbose=0,
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
         )
+        callback.init_callback(model)
 
-        trajectories = [{
-            'patient_full_data': [{
-                'true': {
-                    'prob_infected': [0.5],
-                },
-                'observed': {
-                    'prob_infected': [0.5],
-                },
-            }],
-            'patient_stats': [],
-            'actions': [np.array([0])],
-            'rewards': [0.0],
-            'patients_actually_infected': [[1.0]],
-            'individual_rewards': [[0.1]],
-            'actual_amr_levels': [],
-            'visible_amr_levels': [],
-            'antibiotic_names': ['Antibiotic_A'],
-            'manager_clipped': [],
-            'steps_clipped': [],
-            'manager_transition_trainable': [],
-        }]
+        option_ids = [3, 3, 5, 3]
+        traj = self._make_traj(len(option_ids), option_ids=option_ids)
+        callback._save_trajectories([traj], [1.0], [len(option_ids)])
 
-        with pytest.raises(expected_exception=ValueError, match='missing required personalized field'):
-            callback._save_trajectories(
-                trajectories=trajectories,
-                episode_rewards=[0.0],
-                episode_lengths=[1],
-            )
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
 
-    def test_personalized_logging_fails_loudly_when_uncovered_slots_are_clipped(self, test_env, temp_log_dir):
-        """Uncovered personalized values clipped into [0, 1] should fail sentinel validation."""
+        assert 'episode_0/option_id' in data
+        np.testing.assert_array_equal(data['episode_0/option_id'], option_ids)
+
+    def test_option_id_omitted_when_all_none(self, test_env, temp_log_dir):
+        """option_id key is absent from npz when all values are None (non-HRL run)."""
         vec_env = DummyVecEnv([lambda: test_env])
-        sentinel_value = -1.0
-
+        model = PPO('MlpPolicy', vec_env, verbose=0)
         callback = DetailedEvalCallback(
-            eval_env=vec_env,
-            n_eval_episodes=1,
-            eval_freq=10,
-            log_path=temp_log_dir,
-            save_patient_trajectories=True,
-            log_personalized_patient_attributes=True,
-            personalized_sentinel_value=sentinel_value,
-            verbose=0,
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
         )
+        callback.init_callback(model)
 
-        trajectories = [{
-            'patient_full_data': [{
-                'true': {
-                    'has_personalized_prediction': [0.0],
-                    'personalized_predicted_resistance__Antibiotic_A': [1.0],
-                },
-                'observed': {
-                    'has_personalized_prediction': [0.0],
-                    'personalized_predicted_resistance__Antibiotic_A': [0.0],
-                },
-            }],
-            'patient_stats': [],
-            'actions': [np.array([0])],
-            'rewards': [0.0],
-            'patients_actually_infected': [[1.0]],
-            'individual_rewards': [[0.1]],
-            'actual_amr_levels': [],
-            'visible_amr_levels': [],
-            'antibiotic_names': ['Antibiotic_A'],
-            'manager_clipped': [],
-            'steps_clipped': [],
-            'manager_transition_trainable': [],
-        }]
+        traj = self._make_traj(3)  # option_id all None
+        callback._save_trajectories([traj], [0.0], [3])
 
-        with pytest.raises(expected_exception=ValueError, match='must equal sentinel'):
-            callback._save_trajectories(
-                trajectories=trajectories,
-                episode_rewards=[0.0],
-                episode_lengths=[1],
-            )
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
 
-    def test_personalized_logging_fails_loudly_when_has_prediction_is_malformed(self, test_env, temp_log_dir):
-        """Non-binary has_personalized_prediction values should fail loudly."""
+        assert 'episode_0/option_id' not in data
+
+    def test_primitive_actions_saved_when_present(self, test_env, temp_log_dir):
+        """primitive_actions (list of lists) is written to npz correctly."""
         vec_env = DummyVecEnv([lambda: test_env])
-        sentinel_value = -1.0
-
+        model = PPO('MlpPolicy', vec_env, verbose=0)
         callback = DetailedEvalCallback(
-            eval_env=vec_env,
-            n_eval_episodes=1,
-            eval_freq=10,
-            log_path=temp_log_dir,
-            save_patient_trajectories=True,
-            log_personalized_patient_attributes=True,
-            personalized_sentinel_value=sentinel_value,
-            verbose=0,
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
         )
+        callback.init_callback(model)
 
-        trajectories = [{
-            'patient_full_data': [{
-                'true': {
-                    'has_personalized_prediction': [1.0],
-                    'personalized_predicted_resistance__Antibiotic_A': [0.4],
-                },
-                'observed': {
-                    'has_personalized_prediction': [0.25],
-                    'personalized_predicted_resistance__Antibiotic_A': [0.4],
-                },
-            }],
-            'patient_stats': [],
-            'actions': [np.array([0])],
-            'rewards': [0.0],
-            'patients_actually_infected': [[1.0]],
-            'individual_rewards': [[0.1]],
-            'actual_amr_levels': [],
-            'visible_amr_levels': [],
-            'antibiotic_names': ['Antibiotic_A'],
-            'manager_clipped': [],
-            'steps_clipped': [],
-            'manager_transition_trainable': [],
-        }]
+        # Simulate 3 macro-steps with k=2 primitive steps each
+        prim = [[0, 1], [0, 0], [1, 0]]
+        traj = self._make_traj(3, option_ids=[2, 2, 2], primitive_actions=prim)
+        callback._save_trajectories([traj], [1.0], [3])
 
-        with pytest.raises(expected_exception=ValueError, match='must be 0.0 or 1.0'):
-            callback._save_trajectories(
-                trajectories=trajectories,
-                episode_rewards=[0.0],
-                episode_lengths=[1],
-            )
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
 
-    def test_personalized_logging_toggle_on_without_sentinel_fails_loudly(self, test_env, temp_log_dir):
-        """Invalid toggle/config combination should fail loudly."""
+        assert 'episode_0/primitive_actions' in data
+        loaded = data['episode_0/primitive_actions']
+        assert len(loaded) == 3
+        assert list(loaded[0]) == [0, 1]
+        assert list(loaded[1]) == [0, 0]
+        assert list(loaded[2]) == [1, 0]
+
+    def test_primitive_actions_omitted_when_all_none(self, test_env, temp_log_dir):
+        """primitive_actions key is absent from npz when all values are None."""
         vec_env = DummyVecEnv([lambda: test_env])
+        model = PPO('MlpPolicy', vec_env, verbose=0)
+        callback = DetailedEvalCallback(
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
+        )
+        callback.init_callback(model)
 
-        with pytest.raises(
-            expected_exception=ValueError,
-            match='personalized_sentinel_value must be provided',
-        ):
-            DetailedEvalCallback(
-                eval_env=vec_env,
-                n_eval_episodes=1,
-                eval_freq=10,
-                log_path=temp_log_dir,
-                save_patient_trajectories=True,
-                log_personalized_patient_attributes=True,
-                personalized_sentinel_value=None,
-                verbose=0,
-            )
+        traj = self._make_traj(3)  # primitive_actions all None
+        callback._save_trajectories([traj], [0.0], [3])
+
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
+
+        assert 'episode_0/primitive_actions' not in data
+
+    def test_clipping_values_round_trip(self, test_env, temp_log_dir):
+        """Non-default clipping values are preserved exactly through save/load."""
+        vec_env = DummyVecEnv([lambda: test_env])
+        model = PPO('MlpPolicy', vec_env, verbose=0)
+        callback = DetailedEvalCallback(
+            eval_env=vec_env, n_eval_episodes=1, eval_freq=10,
+            log_path=temp_log_dir, save_patient_trajectories=True, verbose=0
+        )
+        callback.init_callback(model)
+
+        traj = self._make_traj(4)
+        traj['manager_clipped'] = [False, True, False, True]
+        traj['steps_clipped'] = [0, 3, 0, 7]
+        traj['manager_transition_trainable'] = [True, False, True, False]
+
+        callback._save_trajectories([traj], [2.0], [4])
+
+        npz_path = list((Path(temp_log_dir) / 'eval_logs').glob('*.npz'))[0]
+        data = np.load(npz_path, allow_pickle=True)
+
+        np.testing.assert_array_equal(data['episode_0/manager_clipped'], [False, True, False, True])
+        np.testing.assert_array_equal(data['episode_0/steps_clipped'], [0, 3, 0, 7])
+        np.testing.assert_array_equal(data['episode_0/manager_transition_trainable'], [True, False, True, False])
 
 
 if __name__ == '__main__':

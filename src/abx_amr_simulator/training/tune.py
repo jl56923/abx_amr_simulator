@@ -462,14 +462,10 @@ def run_training_trial(
         param_overrides['training.total_num_training_episodes'] = truncated_episodes
         param_overrides['training.run_name'] = f"{trial_run_prefix}_seed{seed}"
         
-        # Ensure at least one evaluation occurs during tuning even when episodes
-        # terminate early (e.g., HRL boundary clipping). The train.py callback
-        # converts eval_freq_every_n_episodes to timesteps using max_time_steps,
-        # so using truncated_episodes here can miss evaluation entirely when
-        # EpisodeCounterCallback stops training before that timestep threshold.
-        # Using 1 guarantees frequent evaluation and avoids non-finite rewards
-        # caused by never-running EvalCallback.
-        param_overrides['training.eval_freq_every_n_episodes'] = 1
+        # Keep periodic callback evaluation sparse for tuning speed.
+        # We rely on train.py --explicit-final-eval for one guaranteed,
+        # parseable terminal metric that drives the Optuna objective.
+        param_overrides['training.eval_freq_every_n_episodes'] = truncated_episodes
         param_overrides['training.save_freq_every_n_episodes'] = 999999  # Save only final model
         param_overrides['training.log_patient_trajectories'] = False  # Disable trajectory logging
         
@@ -477,7 +473,8 @@ def run_training_trial(
         cmd = [
             sys.executable, '-m', 'abx_amr_simulator.training.train',
             '--umbrella-config', umbrella_config_path,
-            '--results-dir', results_dir
+            '--results-dir', results_dir,
+            '--explicit-final-eval',
         ]
         
         # Add subconfig overrides
@@ -602,6 +599,7 @@ def parse_reward_from_output_detailed(output: str) -> Tuple[float, bool, Optiona
     ]
 
     prioritized_patterns = [
+        'explicit final mean reward',
         'final mean reward',
         'mean_reward',
         'mean reward',
@@ -858,6 +856,100 @@ def infer_tpe_config(
         'constant_liar': use_constant_liar,
         'num_workers': num_workers,
     }
+
+
+class EarlyStoppingStudyCallback:
+    """Optuna study-level early stopping callback.
+
+    Stops the study when the best value has not improved meaningfully for
+    `patience` consecutive trials after an initial warmup period.
+
+    Why: For hyperparameter studies where the reward landscape is flat, many
+    trials are wasted exploring after convergence. This callback terminates
+    the study once convergence is detected, saving compute without sacrificing
+    solution quality.
+
+    In distributed mode (multiple workers sharing a study), `study.stop()`
+    only halts the calling worker's `study.optimize` loop — other workers
+    continue until their own callbacks fire. Because each worker evaluates
+    the same global `study.best_value`, all workers will converge on stopping
+    within `patience` trials of each other.
+
+    Args:
+        warmup_trials: Number of globally completed trials to skip before
+            monitoring begins. Should be >= TPE n_startup_trials to avoid
+            penalizing the optimizer during its random exploration phase.
+        patience: Number of consecutive trials without meaningful improvement
+            before calling study.stop().
+        min_delta: Minimum improvement over the tracked best value needed to
+            reset the patience counter. Improvements <= this threshold are
+            treated as noise.
+    """
+
+    def __init__(self, warmup_trials: int, patience: int, min_delta: float) -> None:
+        self.warmup_trials = warmup_trials
+        self.patience = patience
+        self.min_delta = min_delta
+        self._best_value: float = float('-inf')
+        self._no_improve_count: int = 0
+
+    def __call__(self, study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
+        completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+        n_completed = len(completed)
+
+        if n_completed <= self.warmup_trials:
+            return
+
+        current_best = study.best_value
+        if current_best > self._best_value + self.min_delta:
+            self._best_value = current_best
+            self._no_improve_count = 0
+        else:
+            self._no_improve_count += 1
+
+        if self._no_improve_count >= self.patience:
+            print(
+                f"\n[Early Stopping] No improvement > {self.min_delta} for "
+                f"{self.patience} consecutive trials after warmup."
+            )
+            print(f"  Best value: {study.best_value:.4f} (trial {study.best_trial.number})")
+            print(f"  Stopping study after {n_completed} completed trials.")
+            study.stop()
+
+
+def build_early_stopping_callback(
+    optimization_config: Dict[str, Any]
+) -> Optional['EarlyStoppingStudyCallback']:
+    """Build an EarlyStoppingStudyCallback from the optimization config, or None if disabled.
+
+    Reads the optional `early_stopping` block inside `optimization_config`:
+        early_stopping:
+          enabled: true
+          warmup_trials: 8
+          patience: 8
+          min_delta: 2.0
+
+    If the block is absent or `enabled` is false, returns None (no early stopping).
+
+    Args:
+        optimization_config: The `optimization` section of a tuning config dict.
+
+    Returns:
+        An EarlyStoppingStudyCallback instance, or None if early stopping is disabled.
+    """
+    es_config = optimization_config.get('early_stopping', {})
+    if not es_config.get('enabled', False):
+        return None
+
+    warmup_trials = int(es_config.get('warmup_trials', 8))
+    patience = int(es_config.get('patience', 8))
+    min_delta = float(es_config.get('min_delta', 2.0))
+
+    return EarlyStoppingStudyCallback(
+        warmup_trials=warmup_trials,
+        patience=patience,
+        min_delta=min_delta,
+    )
 
 
 def main():
@@ -1518,14 +1610,28 @@ def main():
                 print(f"   (Worker {args.worker_id}/{args.total_workers}: Other workers have already completed all necessary trials)")
         sys.exit(0)
     
+    # Build optional early stopping callback
+    early_stopping_callback = build_early_stopping_callback(optimization_config)
+    callbacks = [early_stopping_callback] if early_stopping_callback is not None else []
+
     # Run optimization
     print(f"\nStarting optimization with {remaining_trials} trials...")
     print(f"Direction: {direction}")
     print(f"Sampler: {sampler_name}")
     print(f"Seeds per trial: {optimization_config.get('n_seeds_per_trial', 3)}")
-    print(f"Truncated episodes: {optimization_config.get('truncated_episodes', 50)}\n")
-    
-    study.optimize(objective, n_trials=remaining_trials)
+    print(f"Truncated episodes: {optimization_config.get('truncated_episodes', 50)}")
+    if early_stopping_callback is not None:
+        print(
+            f"Early stopping: enabled "
+            f"(warmup={early_stopping_callback.warmup_trials}, "
+            f"patience={early_stopping_callback.patience}, "
+            f"min_delta={early_stopping_callback.min_delta})"
+        )
+    else:
+        print("Early stopping: disabled")
+    print()
+
+    study.optimize(objective, n_trials=remaining_trials, callbacks=callbacks)
     
     # Print results (check if any trials completed)
     print(f"\n{'='*70}")

@@ -15,6 +15,4 @@ abx_clinical_reward_penalties_info_dict:
       adverse_effect_probability: 0.15
 
 lambda_weight: 0.0  # Balance between individual and community reward
-
-epsilon: 0.0  # Shaping parameter for delta AMR info
 seed: null  # Random seed for reward calculator (null = no seeding)

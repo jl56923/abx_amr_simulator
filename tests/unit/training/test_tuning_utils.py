@@ -10,7 +10,7 @@ import pytest
 import yaml
 import optuna
 
-from abx_amr_simulator.training.tune import suggest_hyperparameters
+from abx_amr_simulator.training.tune import parse_reward_from_output_detailed, suggest_hyperparameters
 from abx_amr_simulator.training.train import load_best_params_from_optimization
 from abx_amr_simulator.utils.registry import load_registry, update_registry
 
@@ -241,6 +241,32 @@ class TestLoadBestParamsFromOptimization:
             
             assert params is None
             assert opt_dir is None
+
+
+class TestParseRewardFromOutputDetailed:
+    """Tests for tuning reward extraction from train.py output."""
+
+    def test_prefers_explicit_final_mean_reward_over_callback_reward(self):
+        output = "\n".join([
+            "EVALUATION RESULTS (for hyperparameter tuning)",
+            "Final mean reward: -inf",
+            "Explicit final mean reward: 12.3456",
+        ])
+
+        reward, parsed_successfully, matched_line, _ = parse_reward_from_output_detailed(output=output)
+
+        assert parsed_successfully is True
+        assert reward == pytest.approx(12.3456)
+        assert matched_line == "Explicit final mean reward: 12.3456"
+
+    def test_falls_back_to_final_mean_reward_when_explicit_not_present(self):
+        output = "Final mean reward: 3.21\nBest mean reward: 4.56"
+
+        reward, parsed_successfully, matched_line, _ = parse_reward_from_output_detailed(output=output)
+
+        assert parsed_successfully is True
+        assert reward == pytest.approx(3.21)
+        assert matched_line == "Final mean reward: 3.21"
     
     def test_returns_none_if_best_params_json_missing(self):
         """Test that function returns None if best_params.json missing."""

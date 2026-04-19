@@ -8,6 +8,8 @@ from configuration dictionaries.
 import os
 import json
 import copy
+import importlib
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, TYPE_CHECKING
@@ -515,27 +517,24 @@ def wrap_environment_for_hrl(env: ABXAMREnv, config: Dict[str, Any]) -> "Options
 
 
 def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str] = None, verbose: int = 0) -> Any:
-    """Instantiate RL agent (PPO, A2C, RecurrentPPO, HRL_PPO, HRL_RPPO, or MBPO) from config.
+    """Instantiate RL agent (PPO, A2C, RecurrentPPO, HRL_PPO, or HRL_RPPO) from config.
     
     Extracts algorithm type and hyperparameters from config, then creates the
     appropriate agent class. For standard agents (PPO/A2C/RecurrentPPO), uses
-    'MlpPolicy' (or 'MlpLstmPolicy' for RecurrentPPO). For MBPO, returns an MBPOAgent
-    instance that orchestrates model-based policy optimization.
+    'MlpPolicy' (or 'MlpLstmPolicy' for RecurrentPPO).
     
     Args:
         config (Dict[str, Any]): Full experiment config dictionary. Must contain:
-            - 'algorithm': 'PPO' | 'A2C' | 'RecurrentPPO' | 'HRL_PPO' | 'HRL_RPPO' | 'MBPO'
+                        - 'algorithm': 'PPO' | 'A2C' | 'RecurrentPPO' | 'HRL_PPO' | 'HRL_RPPO'
             - '{algorithm_lowercase}': Dict with algorithm-specific hyperparameters
               (e.g., 'ppo': {'learning_rate': 3e-4, 'n_steps': 2048, ...})
-              (e.g., 'mbpo': {...}, 'dynamics_model': {...} for MBPO)
         env (gym.Env): Training environment instance (from create_environment).
         tb_log_path (str, optional): Path for tensorboard logs. If None, no logging.
         verbose (int): Verbosity level for stable-baselines3 output. Default: 0 (silent).
     
     Returns:
-        PPO | A2C | RecurrentPPO | MBPOAgent: Initialized agent ready for training.
+        PPO | A2C | RecurrentPPO: Initialized agent ready for training.
         For standard agents, use via .learn(total_timesteps).
-        For MBPO, use via .train(total_episodes).
     
     Raises:
         ValueError: If algorithm is unknown or config missing required hyperparameters.
@@ -546,9 +545,6 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
         >>> agent = create_agent(config, env, tb_log_path='results/run_1/logs')
         >>> agent.learn(total_timesteps=100000)  # For standard agents
         
-        >>> config = load_config('mbpo_baseline.yaml')
-        >>> agent = create_agent(config, env, tb_log_path='results/run_1/logs')
-        >>> agent.train(total_episodes=200)  # For MBPO
     """
     algorithm = config.get('algorithm', 'PPO')
     action_mode = config.get('action_mode', 'multidiscrete')
@@ -633,12 +629,6 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
             tensorboard_log=tb_log_path,
             seed=seed,
         )
-    elif algorithm == 'MBPO':
-        from abx_amr_simulator.mbpo.mbpo_agent import MBPOAgent
-        
-        # Instantiate MBPOAgent with full config dict
-        # MBPOAgent expects: env, config (containing 'ppo', 'mbpo', 'dynamics_model' sections)
-        agent = MBPOAgent(env=env, config=config)
     elif algorithm == 'HRL_PPO':
         # Hierarchical RL with options-based wrapper
         # Env is already wrapped with OptionsWrapper before reaching here
@@ -709,7 +699,10 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
             seed=seed,
         )
     else:
-        raise ValueError(f"Unknown algorithm: {algorithm}")
+        raise ValueError(
+            f"Unknown algorithm: {algorithm}. Supported algorithms are: "
+            "PPO, A2C, RecurrentPPO, HRL_PPO, HRL_RPPO"
+        )
     
     return agent
 
@@ -751,7 +744,95 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
         ...                             stop_after_n_episodes=total_episodes)
         >>> agent.learn(total_timesteps=total_episodes * max_time_steps, callback=callbacks)
     """
-    from abx_amr_simulator.callbacks import PatientStatsLoggingCallback, DetailedEvalCallback, EpisodeCounterCallback
+    from abx_amr_simulator.callbacks import (
+        PatientStatsLoggingCallback,
+        DetailedEvalCallback,
+        EpisodeCounterCallback,
+        EpisodeFrequencyTriggerCallback,
+        EpisodeProgressBarCallback,
+    )
+
+    def _resolve_detailed_eval_callback_class() -> type:
+        """Resolve optional callback-class override for trajectory evaluation.
+
+        Expected training config keys:
+        - training.detailed_eval_callback_module: import path or filesystem path
+        - training.detailed_eval_callback_class: class name in that module
+
+        If unset, returns canonical DetailedEvalCallback.
+        """
+        module_spec = training_config.get('detailed_eval_callback_module', None)
+        class_name = training_config.get('detailed_eval_callback_class', None)
+
+        if module_spec is None and class_name is None:
+            return DetailedEvalCallback
+
+        if not module_spec or not class_name:
+            raise ValueError(
+                "Both training.detailed_eval_callback_module and "
+                "training.detailed_eval_callback_class must be provided when "
+                "overriding the detailed evaluation callback."
+            )
+
+        resolved_module = None
+        import_error: Optional[Exception] = None
+
+        try:
+            resolved_module = importlib.import_module(module_spec)
+        except Exception as exc:
+            import_error = exc
+
+        if resolved_module is None:
+            module_path = Path(module_spec)
+            if not module_path.is_absolute():
+                umbrella_dir = config.get('_umbrella_config_dir')
+                if umbrella_dir is None:
+                    raise ValueError(
+                        "Callback override module path is relative but _umbrella_config_dir "
+                        "is missing from merged config. "
+                        f"module='{module_spec}', original_import_error={import_error}"
+                    )
+                module_path = (Path(umbrella_dir) / module_path).resolve()
+            else:
+                module_path = module_path.resolve()
+
+            if not module_path.exists():
+                raise ValueError(
+                    "Detailed eval callback override module is not importable and filesystem "
+                    f"path does not exist: '{module_spec}' -> '{module_path}'. "
+                    f"Original import error: {import_error}"
+                )
+
+            dynamic_module_name = f"abx_amr_simulator_eval_callback_plugin_{module_path.stem}"
+            module_loader_spec = importlib.util.spec_from_file_location(
+                name=dynamic_module_name,
+                location=str(module_path),
+            )
+            if module_loader_spec is None or module_loader_spec.loader is None:
+                raise ImportError(
+                    f"Failed to create import spec for callback module path '{module_path}'."
+                )
+            resolved_module = importlib.util.module_from_spec(module_loader_spec)
+            module_loader_spec.loader.exec_module(resolved_module)
+
+        if not hasattr(resolved_module, class_name):
+            raise AttributeError(
+                "Detailed eval callback class not found in override module: "
+                f"module='{module_spec}', class='{class_name}'."
+            )
+
+        resolved_class = getattr(resolved_module, class_name)
+        if not isinstance(resolved_class, type):
+            raise TypeError(
+                "Detailed eval callback override must reference a class type, got "
+                f"'{type(resolved_class).__name__}'."
+            )
+        if not issubclass(resolved_class, DetailedEvalCallback):
+            raise TypeError(
+                "Detailed eval callback override class must inherit from DetailedEvalCallback; "
+                f"got '{resolved_class.__name__}'."
+            )
+        return resolved_class
     
     callbacks = []
     
@@ -760,23 +841,31 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
     eval_freq = training_config.get('_converted_eval_freq', training_config.get('eval_freq', 5000))
     num_eval_episodes = training_config.get('num_eval_episodes', 10)
     save_freq = training_config.get('_converted_save_freq', training_config.get('save_freq', 10000))
+    eval_freq_episodes = training_config.get('eval_freq_every_n_episodes')
+    save_freq_episodes = training_config.get('save_freq_every_n_episodes')
     log_patient_trajectories = training_config.get('log_patient_trajectories', False)
-    log_personalized_patient_attributes = training_config.get('log_personalized_patient_attributes', False)
-
-    # Resolve sentinel value from patient generator config when personalized logging is enabled.
-    # Fail loudly if the toggle is on but the patient generator config does not supply the
-    # sentinel so that misconfigured runs are caught immediately rather than silently producing
-    # artifacts that cannot be used for downstream subgroup analysis.
-    patient_generator_config = config.get('patient_generator', {})
-    personalized_sentinel_value: Optional[float] = patient_generator_config.get(
-        'personalized_missing_prediction_fill_value', None
+    algorithm = config.get('algorithm', 'PPO')
+    show_episode_progress_bar = training_config.get(
+        'show_episode_progress_bar',
+        algorithm in ['HRL_PPO', 'HRL_RPPO'],
     )
-    if log_personalized_patient_attributes and personalized_sentinel_value is None:
+    use_episode_frequency_scheduler = (
+        algorithm in ['HRL_PPO', 'HRL_RPPO']
+        and (eval_freq_episodes is not None or save_freq_episodes is not None)
+    )
+
+    print(
+        "[callbacks] algorithm="
+        f"{algorithm}, use_episode_frequency_scheduler={use_episode_frequency_scheduler}, "
+        f"eval_freq_steps={eval_freq}, save_freq_steps={save_freq}, "
+        f"eval_freq_episodes={eval_freq_episodes}, save_freq_episodes={save_freq_episodes}, "
+        f"stop_after_n_episodes={stop_after_n_episodes}"
+    )
+    if training_config.get('log_personalized_patient_attributes', False):
         raise ValueError(
-            "training.log_personalized_patient_attributes is True, but "
-            "patient_generator.personalized_missing_prediction_fill_value is not set. "
-            "Provide this value in the patient generator config so the sentinel can be "
-            "persisted in evaluation trajectory artifacts for downstream subgroup inference."
+            "training.log_personalized_patient_attributes is no longer supported in canonical "
+            "abx_amr_simulator callbacks. Configure a custom detailed eval callback subclass via "
+            "training.detailed_eval_callback_module + training.detailed_eval_callback_class."
         )
     
     # Patient stats logging callback (always active during training)
@@ -792,47 +881,127 @@ def setup_callbacks(config: Dict[str, Any], run_dir: str, eval_env: Optional[gym
         verbose=1,
     )
     callbacks.append(episode_counter_callback)
+
+    if show_episode_progress_bar and stop_after_n_episodes is not None:
+        episode_progress_callback = EpisodeProgressBarCallback(
+            total_episodes=stop_after_n_episodes,
+            verbose=0,
+        )
+        callbacks.append(episode_progress_callback)
     
-    # Evaluation callback (only if an eval_env is provided)
-    if eval_env is not None:
-        # Wrap eval_env in DummyVecEnv if needed
-        vec_eval_env = DummyVecEnv([lambda env=eval_env: env])
-        
-        if log_patient_trajectories:
-            # Use DetailedEvalCallback when we want full patient trajectories
-            # DetailedEvalCallback will create run_dir/eval_logs/ automatically
-            eval_callback = DetailedEvalCallback(
-                eval_env=vec_eval_env,
-                n_eval_episodes=num_eval_episodes,
-                eval_freq=eval_freq,
-                log_path=run_dir,
-                best_model_save_path=os.path.join(run_dir, 'checkpoints'),
-                deterministic=True,
-                render=False,
-                log_personalized_patient_attributes=log_personalized_patient_attributes,
-                personalized_sentinel_value=personalized_sentinel_value,
+    if use_episode_frequency_scheduler:
+        if eval_freq_episodes is not None and eval_freq_episodes <= 0:
+            raise ValueError(
+                f"training.eval_freq_every_n_episodes must be > 0, got {eval_freq_episodes}"
             )
-        else:
-            # Use standard EvalCallback
-            eval_callback = EvalCallback(
-                eval_env=vec_eval_env,
-                n_eval_episodes=num_eval_episodes,
-                eval_freq=eval_freq,
-                log_path=os.path.join(run_dir, 'eval_logs'),
-                best_model_save_path=os.path.join(run_dir, 'checkpoints'),
-                deterministic=True,
-                render=False,
+        if save_freq_episodes is not None and save_freq_episodes <= 0:
+            raise ValueError(
+                f"training.save_freq_every_n_episodes must be > 0, got {save_freq_episodes}"
             )
-        callbacks.append(eval_callback)
-    
-    # Checkpoint callback
-    checkpoint_callback = CheckpointCallback(
-        save_freq=save_freq,
-        save_path=os.path.join(run_dir, 'checkpoints'),
-        name_prefix='model',
-        save_replay_buffer=False,
-    )
-    callbacks.append(checkpoint_callback)
+
+        eval_callback = None
+        if eval_env is not None and eval_freq_episodes is not None:
+            vec_eval_env = DummyVecEnv([lambda env=eval_env: env])
+
+            if log_patient_trajectories:
+                detailed_eval_callback_class = _resolve_detailed_eval_callback_class()
+                detailed_eval_callback_kwargs = training_config.get('detailed_eval_callback_kwargs', {})
+                if not isinstance(detailed_eval_callback_kwargs, dict):
+                    raise ValueError(
+                        "training.detailed_eval_callback_kwargs must be a dictionary when provided."
+                    )
+                eval_callback = detailed_eval_callback_class(
+                    eval_env=vec_eval_env,
+                    n_eval_episodes=num_eval_episodes,
+                    eval_freq=1,
+                    log_path=run_dir,
+                    best_model_save_path=os.path.join(run_dir, 'checkpoints'),
+                    deterministic=True,
+                    render=False,
+                    **detailed_eval_callback_kwargs,
+                )
+            else:
+                eval_callback = EvalCallback(
+                    eval_env=vec_eval_env,
+                    n_eval_episodes=num_eval_episodes,
+                    eval_freq=1,
+                    log_path=os.path.join(run_dir, 'eval_logs'),
+                    best_model_save_path=os.path.join(run_dir, 'checkpoints'),
+                    deterministic=True,
+                    render=False,
+                )
+
+        checkpoint_callback = None
+        if save_freq_episodes is not None:
+            checkpoint_callback = CheckpointCallback(
+                save_freq=1,
+                save_path=os.path.join(run_dir, 'checkpoints'),
+                name_prefix='model',
+                save_replay_buffer=False,
+            )
+
+        episode_frequency_callback = EpisodeFrequencyTriggerCallback(
+            eval_callback=eval_callback,
+            checkpoint_callback=checkpoint_callback,
+            eval_freq_episodes=eval_freq_episodes,
+            save_freq_episodes=save_freq_episodes,
+            verbose=1,
+        )
+        callbacks.append(episode_frequency_callback)
+        print(
+            "[callbacks] Using episode-frequency scheduler for periodic eval/checkpoint "
+            f"(eval every {eval_freq_episodes} episodes, save every {save_freq_episodes} episodes)."
+        )
+    else:
+        # Evaluation callback (only if an eval_env is provided)
+        if eval_env is not None:
+            # Wrap eval_env in DummyVecEnv if needed
+            vec_eval_env = DummyVecEnv([lambda env=eval_env: env])
+
+            if log_patient_trajectories:
+                detailed_eval_callback_class = _resolve_detailed_eval_callback_class()
+                detailed_eval_callback_kwargs = training_config.get('detailed_eval_callback_kwargs', {})
+                if not isinstance(detailed_eval_callback_kwargs, dict):
+                    raise ValueError(
+                        "training.detailed_eval_callback_kwargs must be a dictionary when provided."
+                    )
+                # Use DetailedEvalCallback when we want full patient trajectories
+                # DetailedEvalCallback will create run_dir/eval_logs/ automatically
+                eval_callback = detailed_eval_callback_class(
+                    eval_env=vec_eval_env,
+                    n_eval_episodes=num_eval_episodes,
+                    eval_freq=eval_freq,
+                    log_path=run_dir,
+                    best_model_save_path=os.path.join(run_dir, 'checkpoints'),
+                    deterministic=True,
+                    render=False,
+                    **detailed_eval_callback_kwargs,
+                )
+            else:
+                # Use standard EvalCallback
+                eval_callback = EvalCallback(
+                    eval_env=vec_eval_env,
+                    n_eval_episodes=num_eval_episodes,
+                    eval_freq=eval_freq,
+                    log_path=os.path.join(run_dir, 'eval_logs'),
+                    best_model_save_path=os.path.join(run_dir, 'checkpoints'),
+                    deterministic=True,
+                    render=False,
+                )
+            callbacks.append(eval_callback)
+
+        # Checkpoint callback
+        checkpoint_callback = CheckpointCallback(
+            save_freq=save_freq,
+            save_path=os.path.join(run_dir, 'checkpoints'),
+            name_prefix='model',
+            save_replay_buffer=False,
+        )
+        callbacks.append(checkpoint_callback)
+        print(
+            "[callbacks] Using timestep-frequency callbacks "
+            f"(eval every {eval_freq} steps, save every {save_freq} steps)."
+        )
     
     # Early stopping callback (optional)
     early_stopping_config = training_config.get('early_stopping', {})

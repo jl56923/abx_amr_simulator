@@ -18,7 +18,6 @@ def create_test_reward_calculator(
     adverse_effect_penalty=-2.0,
     adverse_effect_probability=0.0,
     lambda_weight=0.5,
-    epsilon=0.05,
     clinical_failure_penalty=-1.0,
     clinical_failure_probability=0.0,
 ):
@@ -43,7 +42,6 @@ def create_test_reward_calculator(
     config = {
         'abx_clinical_reward_penalties_info_dict': abx_clinical_reward_penalties_info_dict,
         'lambda_weight': lambda_weight,
-        'epsilon': epsilon,
     }
     return RewardCalculator(config=config)
 

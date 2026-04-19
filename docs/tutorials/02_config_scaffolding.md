@@ -68,7 +68,6 @@ experiments/
     │   ├── a2c.yaml
     │   ├── hrl_ppo.yaml
     │   ├── hrl_rppo.yaml
-    │   ├── mbpo.yaml
     │   └── recurrent_ppo.yaml
     ├── environment/
     │   └── default.yaml

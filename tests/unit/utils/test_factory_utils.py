@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 from datetime import datetime
 import pytest
+import gymnasium as gym
+from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 
 from abx_amr_simulator.utils import (
     create_run_directory,
@@ -21,6 +23,7 @@ from abx_amr_simulator.utils import (
     save_training_summary,
     setup_callbacks,
 )
+from abx_amr_simulator.callbacks import EpisodeFrequencyTriggerCallback, EpisodeProgressBarCallback
 
 
 class TestCreateRunDirectory:
@@ -319,7 +322,7 @@ class TestSaveTrainingSummary:
             assert loaded_summary["total_episodes"] == 50
 
 class TestSetupCallbacksPersonalizedLogging:
-    """Tests for personalized logging toggle and sentinel metadata validation."""
+    """Tests for personalized callback decoupling in canonical setup_callbacks."""
 
     def test_defaults_toggle_off_when_not_provided(self):
         """Omitted toggle should default to OFF and callback setup should succeed."""
@@ -339,8 +342,8 @@ class TestSetupCallbacksPersonalizedLogging:
             assert isinstance(callbacks, list)
             assert len(callbacks) >= 2
 
-    def test_toggle_on_with_sentinel_accepts_configuration(self):
-        """Toggle ON should be accepted when sentinel is provided in patient generator config."""
+    def test_toggle_on_with_sentinel_fails_loudly(self):
+        """Deprecated canonical personalized toggle should fail loudly even with sentinel config."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
                 'training': {
@@ -352,16 +355,81 @@ class TestSetupCallbacksPersonalizedLogging:
                 },
             }
 
+            with pytest.raises(
+                expected_exception=ValueError,
+                match='no longer supported in canonical abx_amr_simulator callbacks',
+            ):
+                setup_callbacks(
+                    config=config,
+                    run_dir=tmpdir,
+                    eval_env=None,
+                )
+
+
+class TestSetupCallbacksCustomDetailedEvalCallback:
+    """Tests for custom detailed eval callback override selection and kwargs wiring."""
+
+    def test_custom_detailed_eval_callback_override_from_filesystem_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_path = Path(tmpdir) / 'custom_eval_callback.py'
+            plugin_path.write_text(
+                (
+                    "from abx_amr_simulator.callbacks import DetailedEvalCallback\n"
+                    "\n"
+                    "class TestDetailedEvalCallback(DetailedEvalCallback):\n"
+                    "    def __init__(self, *args, custom_note='unset', **kwargs):\n"
+                    "        super().__init__(*args, **kwargs)\n"
+                    "        self.custom_note = custom_note\n"
+                ),
+                encoding='utf-8',
+            )
+
+            config = {
+                'training': {
+                    'log_patient_trajectories': True,
+                    'detailed_eval_callback_module': str(plugin_path),
+                    'detailed_eval_callback_class': 'TestDetailedEvalCallback',
+                    'detailed_eval_callback_kwargs': {
+                        'custom_note': 'from_test',
+                    },
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
             callbacks = setup_callbacks(
                 config=config,
                 run_dir=tmpdir,
-                eval_env=None,
+                eval_env=eval_env,
             )
-            assert isinstance(callbacks, list)
-            assert len(callbacks) >= 2
+            eval_env.close()
+
+            matched = [cb for cb in callbacks if cb.__class__.__name__ == 'TestDetailedEvalCallback']
+            assert len(matched) == 1
+            assert matched[0].custom_note == 'from_test'
+
+    def test_custom_detailed_eval_callback_requires_module_and_class_together(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'training': {
+                    'log_patient_trajectories': True,
+                    'detailed_eval_callback_module': 'some.module.path',
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
+            with pytest.raises(
+                expected_exception=ValueError,
+                match='Both training.detailed_eval_callback_module and training.detailed_eval_callback_class',
+            ):
+                setup_callbacks(
+                    config=config,
+                    run_dir=tmpdir,
+                    eval_env=eval_env,
+                )
+            eval_env.close()
 
     def test_toggle_on_without_sentinel_fails_loudly(self):
-        """Toggle ON without sentinel should raise a clear ValueError."""
+        """Deprecated canonical personalized toggle should fail loudly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
                 'training': {
@@ -373,13 +441,110 @@ class TestSetupCallbacksPersonalizedLogging:
 
             with pytest.raises(
                 expected_exception=ValueError,
-                match='patient_generator.personalized_missing_prediction_fill_value is not set',
+                match='no longer supported in canonical abx_amr_simulator callbacks',
             ):
                 setup_callbacks(
                     config=config,
                     run_dir=tmpdir,
                     eval_env=None,
                 )
+
+
+class TestSetupCallbacksHRLEpisodeFrequency:
+    """Tests for HRL episode-based eval/save callback scheduling."""
+
+    def test_hrl_uses_episode_frequency_scheduler(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'algorithm': 'HRL_PPO',
+                'training': {
+                    'log_patient_trajectories': False,
+                    'eval_freq_every_n_episodes': 3,
+                    'save_freq_every_n_episodes': 4,
+                    '_converted_eval_freq': 99999,
+                    '_converted_save_freq': 99999,
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
+            callbacks = setup_callbacks(
+                config=config,
+                run_dir=tmpdir,
+                eval_env=eval_env,
+                stop_after_n_episodes=12,
+            )
+            eval_env.close()
+
+            matched = [cb for cb in callbacks if isinstance(cb, EpisodeFrequencyTriggerCallback)]
+            assert len(matched) == 1
+
+            scheduler = matched[0]
+            assert scheduler.eval_freq_episodes == 3
+            assert scheduler.save_freq_episodes == 4
+            assert isinstance(scheduler.eval_callback, EvalCallback)
+            assert scheduler.eval_callback.eval_freq == 1
+            assert isinstance(scheduler.checkpoint_callback, CheckpointCallback)
+            assert scheduler.checkpoint_callback.save_freq == 1
+
+            episode_progress = [cb for cb in callbacks if isinstance(cb, EpisodeProgressBarCallback)]
+            assert len(episode_progress) == 1
+            assert episode_progress[0].total_episodes == 12
+
+    def test_non_hrl_keeps_timestep_callbacks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'algorithm': 'PPO',
+                'training': {
+                    'log_patient_trajectories': False,
+                    '_converted_eval_freq': 123,
+                    '_converted_save_freq': 456,
+                    'eval_freq_every_n_episodes': 3,
+                    'save_freq_every_n_episodes': 4,
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
+            callbacks = setup_callbacks(
+                config=config,
+                run_dir=tmpdir,
+                eval_env=eval_env,
+                stop_after_n_episodes=12,
+            )
+            eval_env.close()
+
+            scheduler = [cb for cb in callbacks if isinstance(cb, EpisodeFrequencyTriggerCallback)]
+            assert len(scheduler) == 0
+
+            eval_callbacks = [cb for cb in callbacks if isinstance(cb, EvalCallback)]
+            checkpoint_callbacks = [cb for cb in callbacks if isinstance(cb, CheckpointCallback)]
+            assert len(eval_callbacks) == 1
+            assert len(checkpoint_callbacks) == 1
+            assert eval_callbacks[0].eval_freq == 123
+            assert checkpoint_callbacks[0].save_freq == 456
+
+    def test_hrl_can_disable_episode_progress_bar(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                'algorithm': 'HRL_PPO',
+                'training': {
+                    'log_patient_trajectories': False,
+                    'show_episode_progress_bar': False,
+                    'eval_freq_every_n_episodes': 3,
+                    'save_freq_every_n_episodes': 4,
+                },
+            }
+
+            eval_env = gym.make(id='CartPole-v1')
+            callbacks = setup_callbacks(
+                config=config,
+                run_dir=tmpdir,
+                eval_env=eval_env,
+                stop_after_n_episodes=8,
+            )
+            eval_env.close()
+
+            episode_progress = [cb for cb in callbacks if isinstance(cb, EpisodeProgressBarCallback)]
+            assert len(episode_progress) == 0
 
 
 if __name__ == "__main__":

@@ -19,7 +19,6 @@ def create_test_reward_calculator(
     adverse_effect_penalty=-2.0,
     adverse_effect_probability=0.0,
     lambda_weight=0.5,
-    epsilon=0.05,
     clinical_failure_penalty=-1.0,
     clinical_failure_probability=0.0,
 ):
@@ -44,7 +43,6 @@ def create_test_reward_calculator(
     config = {
         'abx_clinical_reward_penalties_info_dict': abx_clinical_reward_penalties_info_dict,
         'lambda_weight': lambda_weight,
-        'epsilon': epsilon,
     }
     return RewardCalculator(config=config)
 
@@ -374,7 +372,6 @@ def test_reward_alignment_with_reward_calculator():
         adverse_effect_penalty=-2.0,
         adverse_effect_probability=0.0,
         lambda_weight=0.5,
-        epsilon=0.1,
     )
     env = create_ABXAMR_Env_instance(
         antibiotic_names=["A"],
@@ -452,7 +449,6 @@ def test_stochastic_reward_env_integration_is_reproducible():
             antibiotic_names=["A"],
             clinical_benefit_probability=0.6,
             adverse_effect_probability=0.4,
-            epsilon=0.05,
         )
         reward_calculator.rng = np.random.default_rng(seed)
         env = create_ABXAMR_Env_instance(antibiotic_names=["A"], reward_calculator=reward_calculator)

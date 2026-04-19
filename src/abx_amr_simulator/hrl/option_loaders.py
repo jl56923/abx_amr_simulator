@@ -255,9 +255,15 @@ class OptionLibraryLoader:
 
             return option, resolved_config
 
+        canonical_component_config = {
+            **merged_config,
+            'option_name': name,
+            'option_type': option_type,
+        }
+
         # Call loader function
         try:
-            option = loader_func(name=name, config=merged_config)
+            option = loader_func(config=canonical_component_config)
         except Exception as e:
             raise RuntimeError(
                 f"Loader function for option '{name}' (type '{option_type}') raised error: {e}"

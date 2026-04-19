@@ -7,19 +7,142 @@ Provides:
 - EarlyStoppingCallback: Stops training when performance metric plateaus
 - LSTMStateLogger: Logs LSTM hidden states for belief probing analysis
 - EpisodeCounterCallback: Counts completed episodes, logs to TensorBoard, and can stop training
-  after a target number of actual episodes (correct under variable-length / boundary-clipped episodes)
+    after a target number of actual episodes (correct under variable-length / boundary-clipped episodes)
+- EpisodeFrequencyTriggerCallback: Triggers eval/checkpoint callbacks based on completed
+    episodes instead of raw SB3 timesteps
 """
 
 import os
 import numpy as np
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.vec_env import VecEnv, sync_envs_normalization
 from .early_stopping import EarlyStoppingCallback
 from .lstm_state_logger import LSTMStateLogger
 
-__all__ = ['PatientStatsLoggingCallback', 'DetailedEvalCallback', 'EarlyStoppingCallback', 'LSTMStateLogger', 'EpisodeCounterCallback']
+__all__ = [
+    'PatientStatsLoggingCallback',
+    'DetailedEvalCallback',
+    'EarlyStoppingCallback',
+    'LSTMStateLogger',
+    'EpisodeCounterCallback',
+    'EpisodeFrequencyTriggerCallback',
+    'EpisodeProgressBarCallback',
+]
+
+
+class EpisodeFrequencyTriggerCallback(BaseCallback):
+    """Trigger child callbacks on episode cadence instead of timestep cadence.
+
+    This is used for HRL training where SB3 "timesteps" count manager decisions,
+    not primitive environment steps. In that regime, converting
+    ``*_freq_every_n_episodes`` to timesteps via ``max_time_steps`` can be wildly
+    inaccurate. This callback counts actual completed episodes from ``done`` flags
+    and invokes child eval/checkpoint callbacks exactly at episode boundaries.
+    """
+
+    def __init__(
+        self,
+        eval_callback: Optional[BaseCallback] = None,
+        checkpoint_callback: Optional[BaseCallback] = None,
+        eval_freq_episodes: Optional[int] = None,
+        save_freq_episodes: Optional[int] = None,
+        verbose: int = 0,
+    ):
+        """Initialize episode-cadence trigger callback.
+
+        Args:
+            eval_callback: Callback to run whenever eval episode cadence is reached.
+            checkpoint_callback: Callback to run whenever save episode cadence is reached.
+            eval_freq_episodes: Trigger evaluation every N completed episodes.
+            save_freq_episodes: Trigger checkpoint save every N completed episodes.
+            verbose: Verbosity level.
+        """
+        super().__init__(verbose=verbose)
+
+        if eval_callback is not None and eval_freq_episodes is None:
+            raise ValueError(
+                "eval_freq_episodes is required when eval_callback is provided."
+            )
+        if checkpoint_callback is not None and save_freq_episodes is None:
+            raise ValueError(
+                "save_freq_episodes is required when checkpoint_callback is provided."
+            )
+        if eval_freq_episodes is not None and eval_freq_episodes <= 0:
+            raise ValueError(
+                f"eval_freq_episodes must be a positive integer, got {eval_freq_episodes}"
+            )
+        if save_freq_episodes is not None and save_freq_episodes <= 0:
+            raise ValueError(
+                f"save_freq_episodes must be a positive integer, got {save_freq_episodes}"
+            )
+
+        self.eval_callback = eval_callback
+        self.checkpoint_callback = checkpoint_callback
+        self.eval_freq_episodes = eval_freq_episodes
+        self.save_freq_episodes = save_freq_episodes
+        self.n_episodes: int = 0
+
+    def _on_training_start(self) -> None:
+        """Initialize child callbacks with the same model/training context."""
+        child_callbacks = [
+            cb for cb in (self.eval_callback, self.checkpoint_callback) if cb is not None
+        ]
+
+        for child_callback in child_callbacks:
+            child_callback.parent = self
+            child_callback.init_callback(model=self.model)
+            child_callback.on_training_start(locals_=self.locals, globals_=self.globals)
+
+    def _run_child_callback(self, child_callback: BaseCallback) -> bool:
+        """Run a child callback once with current locals/globals context."""
+        child_callback.update_locals(locals_=self.locals)
+        return child_callback.on_step()
+
+    def _on_step(self) -> bool:
+        """Count completed episodes and trigger child callbacks on cadence."""
+        dones = self.locals.get('dones', self.locals.get('done', []))
+        if isinstance(dones, (bool, np.bool_)):
+            dones = [bool(dones)]
+
+        completed_episodes_this_step = sum(1 for done in dones if done)
+        if completed_episodes_this_step == 0:
+            return True
+
+        continue_training = True
+        for _ in range(completed_episodes_this_step):
+            self.n_episodes += 1
+
+            if (
+                self.eval_callback is not None
+                and self.eval_freq_episodes is not None
+                and self.n_episodes % self.eval_freq_episodes == 0
+            ):
+                continue_training = continue_training and self._run_child_callback(
+                    child_callback=self.eval_callback
+                )
+
+            if (
+                self.checkpoint_callback is not None
+                and self.save_freq_episodes is not None
+                and self.n_episodes % self.save_freq_episodes == 0
+            ):
+                continue_training = continue_training and self._run_child_callback(
+                    child_callback=self.checkpoint_callback
+                )
+
+            if not continue_training:
+                return False
+
+        return True
+
+    def _on_training_end(self) -> None:
+        """Forward training-end lifecycle to child callbacks."""
+        if self.eval_callback is not None:
+            self.eval_callback.on_training_end()
+        if self.checkpoint_callback is not None:
+            self.checkpoint_callback.on_training_end()
 
 
 class PatientStatsLoggingCallback(BaseCallback):
@@ -123,6 +246,87 @@ class PatientStatsLoggingCallback(BaseCallback):
         return aggregated
 
 
+def _save_primitive_patient_arrays(
+    *,
+    save_dict: dict,
+    ep_prefix: str,
+    primitive_patient_full_data: list,
+    primitive_individual_rewards: list,
+    primitive_patients_actually_infected: list,
+) -> None:
+    """Build and store padded primitive-step patient arrays into save_dict.
+
+    Each argument is a list (macro_steps) of lists (substeps) where substep lists
+    may have different lengths (shorter options have fewer substeps). We pad with
+    zeros to the maximum substep count so every macro step contributes the same
+    number of rows, and record the true count per macro step in primitive_substep_counts.
+
+    Keys written into save_dict:
+        {ep_prefix}/primitive_patient_true             : (macro_steps, max_substeps, patients, attrs)
+        {ep_prefix}/primitive_patient_observed         : (macro_steps, max_substeps, patients, attrs)
+        {ep_prefix}/primitive_patient_attrs            : (num_attrs,) str array
+        {ep_prefix}/primitive_individual_rewards       : (macro_steps, max_substeps, patients)
+        {ep_prefix}/primitive_patients_actually_infected : (macro_steps, max_substeps, patients)
+        {ep_prefix}/primitive_substep_counts           : (macro_steps,) int — real substeps per macro step
+    """
+    num_macro_steps = len(primitive_patient_full_data)
+    if num_macro_steps == 0:
+        return
+
+    # Determine dimensions from the first non-None substep entry.
+    attr_names = None
+    num_patients = None
+    num_attrs = None
+    for macro_substeps in primitive_patient_full_data:
+        for substep_data in macro_substeps:
+            if substep_data is not None:
+                attr_names = list(substep_data['true'].keys())
+                num_patients = len(substep_data['true'][attr_names[0]])
+                num_attrs = len(attr_names)
+                break
+        if attr_names is not None:
+            break
+
+    if attr_names is None:
+        # No valid substep data found; nothing to save.
+        return
+
+    # Compute actual substep counts and maximum substep count.
+    substep_counts = [len(macro_substeps) for macro_substeps in primitive_patient_full_data]
+    max_substeps = max(substep_counts) if substep_counts else 0
+    if max_substeps == 0:
+        return
+
+    true_arr  = np.zeros((num_macro_steps, max_substeps, num_patients, num_attrs), dtype=np.float64)
+    obs_arr   = np.zeros((num_macro_steps, max_substeps, num_patients, num_attrs), dtype=np.float64)
+    rewards_arr  = np.zeros((num_macro_steps, max_substeps, num_patients), dtype=np.float64)
+    infected_arr = np.zeros((num_macro_steps, max_substeps, num_patients), dtype=np.float64)
+
+    for macro_idx, macro_substeps in enumerate(primitive_patient_full_data):
+        for substep_idx, substep_data in enumerate(macro_substeps):
+            if substep_data is not None:
+                for attr_idx, attr_name in enumerate(attr_names):
+                    true_arr[macro_idx, substep_idx, :, attr_idx]  = substep_data['true'][attr_name]
+                    obs_arr[macro_idx, substep_idx, :, attr_idx]   = substep_data['observed'][attr_name]
+
+        reward_substeps = primitive_individual_rewards[macro_idx] if macro_idx < len(primitive_individual_rewards) else []
+        for substep_idx, substep_rewards in enumerate(reward_substeps):
+            if substep_rewards is not None:
+                rewards_arr[macro_idx, substep_idx, :] = substep_rewards
+
+        infected_substeps = primitive_patients_actually_infected[macro_idx] if macro_idx < len(primitive_patients_actually_infected) else []
+        for substep_idx, substep_infected in enumerate(infected_substeps):
+            if substep_infected is not None:
+                infected_arr[macro_idx, substep_idx, :] = substep_infected
+
+    save_dict[f'{ep_prefix}/primitive_patient_true']              = true_arr
+    save_dict[f'{ep_prefix}/primitive_patient_observed']          = obs_arr
+    save_dict[f'{ep_prefix}/primitive_patient_attrs']             = np.array(attr_names)
+    save_dict[f'{ep_prefix}/primitive_individual_rewards']        = rewards_arr
+    save_dict[f'{ep_prefix}/primitive_patients_actually_infected'] = infected_arr
+    save_dict[f'{ep_prefix}/primitive_substep_counts']            = np.array(substep_counts, dtype=np.int32)
+
+
 class DetailedEvalCallback(EvalCallback):
     """Extended EvalCallback that collects and saves full patient trajectories.
     
@@ -166,11 +370,10 @@ class DetailedEvalCallback(EvalCallback):
         verbose: int = 1,
         warn: bool = True,
         save_patient_trajectories: bool = True,
-        log_personalized_patient_attributes: bool = False,
-        personalized_sentinel_value: Optional[float] = None,
+        save_granular_trajectories: bool = False,
     ):
         """Initialize the DetailedEvalCallback.
-        
+
         Args:
             eval_env (VecEnv): Vectorized environment for evaluation (typically
                 DummyVecEnv wrapping a single ABXAMREnv).
@@ -190,23 +393,15 @@ class DetailedEvalCallback(EvalCallback):
             warn (bool): If True, warn about evaluation issues. Default: True.
             save_patient_trajectories (bool): If True, save full patient trajectories
                 to .npz files. Default: True.
-            log_personalized_patient_attributes (bool): If True, enriched personalized
-                subgroup logging is enabled. The sentinel value will be written to
-                every .npz artifact so downstream analysis can recover subgroup
-                membership via sentinel inference. Default: False.
-            personalized_sentinel_value (float, optional): The fill value used for
-                patients without a personalized prediction (i.e.
-                ``personalized_missing_prediction_fill_value`` from the patient
-                generator config). Required (must not be None) when
-                ``log_personalized_patient_attributes=True``.
+            save_granular_trajectories (bool): If True, additionally log per-primitive-step
+                patient data for every substep within each HRL macro-step. This includes
+                primitive_patient_true, primitive_patient_observed, primitive_individual_rewards,
+                primitive_patients_actually_infected, primitive_substep_counts, option_id, and
+                primitive_actions in the saved NPZ. Only meaningful for HRL runs; has no effect
+                for flat-policy runs (primitive_infos will be absent from info). Default: False.
+                WARNING: Significantly increases NPZ file size. Only enable for post-hoc
+                best-model evaluation passes, not during training.
         """
-        if log_personalized_patient_attributes and personalized_sentinel_value is None:
-            raise ValueError(
-                "personalized_sentinel_value must be provided when "
-                "log_personalized_patient_attributes=True. "
-                "Set personalized_missing_prediction_fill_value in the patient generator config."
-            )
-
         super().__init__(
             eval_env=eval_env,
             callback_on_new_best=callback_on_new_best,
@@ -222,10 +417,9 @@ class DetailedEvalCallback(EvalCallback):
         )
         
         self.save_patient_trajectories = save_patient_trajectories
-        self.log_personalized_patient_attributes = log_personalized_patient_attributes
-        self.personalized_sentinel_value = personalized_sentinel_value
+        self.save_granular_trajectories = save_granular_trajectories
         self.eval_count = 0
-        
+
         # Create eval_logs directory if saving trajectories
         if self.save_patient_trajectories and log_path is not None:
             self.trajectory_dir = Path(log_path) / 'eval_logs'
@@ -308,6 +502,14 @@ class DetailedEvalCallback(EvalCallback):
                 'steps_clipped': [],                # Number of steps clipped
                 'manager_transition_trainable': [],  # Trainability flag for manager training
             }
+            # HRL primitive-level logging: only collected when save_granular_trajectories=True.
+            # Keeping this off by default avoids large NPZ files during training eval passes.
+            if self.save_granular_trajectories:
+                episode_data['option_id'] = []
+                episode_data['primitive_actions'] = []
+                episode_data['primitive_patient_full_data'] = []   # list of lists: [macro_step][substep] -> patient_full_data dict
+                episode_data['primitive_individual_rewards'] = []  # list of lists: [macro_step][substep] -> reward array
+                episode_data['primitive_patients_actually_infected'] = []  # list of lists: [macro_step][substep] -> infected array
             
             done = False
             while not done:
@@ -337,6 +539,26 @@ class DetailedEvalCallback(EvalCallback):
                     episode_data['manager_clipped'].append(info.get('manager_clipped', False))
                     episode_data['steps_clipped'].append(info.get('steps_clipped', 0))
                     episode_data['manager_transition_trainable'].append(info.get('manager_transition_trainable', True))
+
+                    # HRL granular primitive-level logging (only when save_granular_trajectories=True)
+                    if self.save_granular_trajectories:
+                        episode_data['option_id'].append(info.get('option_id', None))
+                        episode_data['primitive_actions'].append(info.get('primitive_actions', None))
+
+                        # primitive_infos is a list of base-env info dicts, one per substep.
+                        # Each element has the same keys as a normal base-env step info dict
+                        # (patient_full_data, individual_rewards, patients_actually_infected, etc.).
+                        primitive_infos = info.get('primitive_infos', [])
+                        substep_patient_full_data = []
+                        substep_individual_rewards = []
+                        substep_patients_actually_infected = []
+                        for substep_info in primitive_infos:
+                            substep_patient_full_data.append(substep_info.get('patient_full_data', None))
+                            substep_individual_rewards.append(substep_info.get('individual_rewards', None))
+                            substep_patients_actually_infected.append(substep_info.get('patients_actually_infected', None))
+                        episode_data['primitive_patient_full_data'].append(substep_patient_full_data)
+                        episode_data['primitive_individual_rewards'].append(substep_individual_rewards)
+                        episode_data['primitive_patients_actually_infected'].append(substep_patients_actually_infected)
                 
                 episode_reward += reward
                 episode_length += 1
@@ -409,20 +631,12 @@ class DetailedEvalCallback(EvalCallback):
             for env in self.eval_env.envs:
                 try:
                     env.unwrapped.log_full_patient_attributes = value
-                    if hasattr(env.unwrapped, 'log_personalized_patient_attributes'):
-                        env.unwrapped.log_personalized_patient_attributes = bool(
-                            value and self.log_personalized_patient_attributes
-                        )
                 except AttributeError:
                     pass
         else:
             # Single env or wrapped env
             try:
                 self.eval_env.unwrapped.log_full_patient_attributes = value
-                if hasattr(self.eval_env.unwrapped, 'log_personalized_patient_attributes'):
-                    self.eval_env.unwrapped.log_personalized_patient_attributes = bool(
-                        value and self.log_personalized_patient_attributes
-                    )
             except AttributeError:
                 pass
     
@@ -434,7 +648,45 @@ class DetailedEvalCallback(EvalCallback):
     ):
         """
         Save evaluation trajectories to disk as .npz files.
-        
+
+        Output npz schema
+        -----------------
+        Top-level keys:
+            episode_rewards          : (num_episodes,) total reward per episode
+            episode_lengths          : (num_episodes,) length per episode
+            num_episodes             : scalar
+            timestep                 : scalar – training step at eval time
+            antibiotic_names         : (num_abx,) str array
+
+        Per-episode keys (prefix ``episode_N/``):
+            patient_true             : (steps, patients, attrs) true patient attributes
+            patient_observed         : (steps, patients, attrs) observed patient attributes
+            patient_attrs            : (num_attrs,) attribute name strings
+            actions                  : (steps, ...) manager's option_id at each macro-step
+                                       NOTE: for HRL runs this is the option index, NOT a
+                                       primitive prescription. Use ``primitive_actions`` for
+                                       per-step antibiotic decisions.
+            rewards                  : (steps,) reward at each macro-step
+            patients_actually_infected : (steps, patients) bool
+            individual_rewards       : (steps, patients) per-patient reward
+            actual_amr_levels        : (steps, num_abx) true AMR time series
+            visible_amr_levels       : (steps, num_abx) observable AMR time series
+            manager_clipped          : (steps,) bool – macro-action clipped at episode boundary
+            steps_clipped            : (steps,) int  – number of primitive steps clipped
+            manager_transition_trainable : (steps,) bool – manager transition usable for training
+            option_id                : (steps,) int  – only when save_granular_trajectories=True;
+                                       manager's selected option index (redundant with ``actions``)
+            primitive_actions        : (steps,) object array of lists – only when save_granular_trajectories=True;
+                                       each element is a list of length k containing the worker's
+                                       primitive action index at each primitive step within that macro-step
+            primitive_patient_true             : (steps, max_substeps, patients, attrs) – only when
+                                                 save_granular_trajectories=True; per-primitive-step true attrs
+            primitive_patient_observed         : (steps, max_substeps, patients, attrs) – same
+            primitive_patient_attrs            : (num_attrs,) str array – attribute names for primitive arrays
+            primitive_individual_rewards       : (steps, max_substeps, patients) – per-primitive-step rewards
+            primitive_patients_actually_infected : (steps, max_substeps, patients) – per-primitive-step infection
+            primitive_substep_counts           : (steps,) int – actual substep count per macro-step (rest is padding)
+
         Args:
             trajectories: List of episode trajectory dicts
             episode_rewards: List of total rewards per episode
@@ -461,27 +713,10 @@ class DetailedEvalCallback(EvalCallback):
 
         if antibiotic_names:
             save_dict['antibiotic_names'] = np.array(antibiotic_names)
-
-        # When enriched personalized logging is enabled, persist the sentinel value so
-        # downstream analysis scripts can recover subgroup membership via sentinel inference
-        # without hardcoding the fill value.
-        if self.log_personalized_patient_attributes:
-            if self.personalized_sentinel_value is None:
-                raise ValueError(
-                    "log_personalized_patient_attributes is True but personalized_sentinel_value "
-                    "is None — cannot write sentinel metadata to trajectory artifact."
-                )
-            save_dict['personalized_sentinel_value'] = np.float64(self.personalized_sentinel_value)
         
         # Save each episode's data
         for ep_idx, traj in enumerate(trajectories):
             ep_prefix = f'episode_{ep_idx}'
-
-            if self.log_personalized_patient_attributes:
-                self._validate_personalized_logging_contract(
-                    trajectory=traj,
-                    episode_prefix=ep_prefix,
-                )
             
             # Save patient data
             if traj['patient_full_data']:
@@ -535,131 +770,39 @@ class DetailedEvalCallback(EvalCallback):
 
                 save_dict[f'{ep_prefix}/actual_amr_levels'] = actual_amr_arr
                 save_dict[f'{ep_prefix}/visible_amr_levels'] = visible_amr_arr
-        
+
+            # Save Phase B clipping metadata
+            save_dict[f'{ep_prefix}/manager_clipped'] = np.array(traj['manager_clipped'])
+            save_dict[f'{ep_prefix}/steps_clipped'] = np.array(traj['steps_clipped'])
+            save_dict[f'{ep_prefix}/manager_transition_trainable'] = np.array(traj['manager_transition_trainable'])
+
+            # HRL granular data — only present when save_granular_trajectories=True
+            option_ids = traj.get('option_id', [])
+            if option_ids and any(v is not None for v in option_ids):
+                save_dict[f'{ep_prefix}/option_id'] = np.array(option_ids)
+
+            primitive_actions = traj.get('primitive_actions', [])
+            if primitive_actions and any(v is not None for v in primitive_actions):
+                save_dict[f'{ep_prefix}/primitive_actions'] = np.array(primitive_actions, dtype=object)
+
+            # Per-primitive-step patient data — only present when save_granular_trajectories=True.
+            # primitive_patient_full_data is a list (macro_steps) of lists (substeps) of dicts.
+            # We pad shorter options with zeros so all macro steps have the same max_substeps dim.
+            prim_patient_full = traj.get('primitive_patient_full_data', [])
+            if prim_patient_full:
+                _save_primitive_patient_arrays(
+                    save_dict=save_dict,
+                    ep_prefix=ep_prefix,
+                    primitive_patient_full_data=prim_patient_full,
+                    primitive_individual_rewards=traj.get('primitive_individual_rewards', []),
+                    primitive_patients_actually_infected=traj.get('primitive_patients_actually_infected', []),
+                )
+
         # Save to file
         np.savez_compressed(filename, **save_dict)
         
         if self.verbose >= 1:
             print(f"Saved evaluation trajectories to {filename}")
-
-    def _validate_personalized_logging_contract(
-        self,
-        trajectory: Dict[str, Any],
-        episode_prefix: str,
-    ) -> None:
-        patient_full_data = trajectory.get('patient_full_data', [])
-        if not patient_full_data:
-            raise ValueError(
-                f"{episode_prefix}: personalized logging contract requires non-empty patient_full_data"
-            )
-
-        required_step_keys = {
-            'has_personalized_prediction',
-        }
-
-        personalized_observed_prefix = 'personalized_predicted_resistance__'
-        sentinel_value = float(self.personalized_sentinel_value)
-        expected_num_steps = len(patient_full_data)
-
-        infected_rows = trajectory.get('patients_actually_infected', [])
-        if len(infected_rows) != expected_num_steps:
-            raise ValueError(
-                f"{episode_prefix}: expected patients_actually_infected for each step "
-                f"({expected_num_steps}), got {len(infected_rows)}"
-            )
-
-        individual_reward_rows = trajectory.get('individual_rewards', [])
-        if len(individual_reward_rows) != expected_num_steps:
-            raise ValueError(
-                f"{episode_prefix}: expected individual_rewards for each step "
-                f"({expected_num_steps}), got {len(individual_reward_rows)}"
-            )
-
-        for step_index, step_data in enumerate(patient_full_data):
-            if 'true' not in step_data or 'observed' not in step_data:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: patient_full_data must contain 'true' and 'observed'"
-                )
-
-            true_payload = step_data['true']
-            observed_payload = step_data['observed']
-
-            for required_key in required_step_keys:
-                if required_key not in true_payload or required_key not in observed_payload:
-                    raise ValueError(
-                        f"{episode_prefix} step {step_index}: missing required personalized field '{required_key}'"
-                    )
-
-            has_prediction_values = []
-            for patient_index, raw_value in enumerate(observed_payload['has_personalized_prediction']):
-                numeric_value = float(raw_value)
-                if numeric_value not in (0.0, 1.0):
-                    raise ValueError(
-                        f"{episode_prefix} step {step_index}: has_personalized_prediction for patient "
-                        f"{patient_index} must be 0.0 or 1.0, got {numeric_value}"
-                    )
-                has_prediction_values.append(bool(int(numeric_value)))
-
-            personalized_attribute_names = sorted(
-                attribute_name
-                for attribute_name in observed_payload.keys()
-                if attribute_name.startswith(personalized_observed_prefix)
-            )
-            if not personalized_attribute_names:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: no personalized prediction attributes found "
-                    f"(expected keys starting with '{personalized_observed_prefix}')"
-                )
-
-            expected_num_patients = len(has_prediction_values)
-            if expected_num_patients == 0:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: has_personalized_prediction is empty"
-                )
-
-            infected_row = infected_rows[step_index]
-            reward_row = individual_reward_rows[step_index]
-            if infected_row is None or reward_row is None:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: missing reward/outcome payload "
-                    "(patients_actually_infected or individual_rewards)"
-                )
-            if len(infected_row) != expected_num_patients:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: patients_actually_infected length "
-                    f"{len(infected_row)} != expected {expected_num_patients}"
-                )
-            if len(reward_row) != expected_num_patients:
-                raise ValueError(
-                    f"{episode_prefix} step {step_index}: individual_rewards length "
-                    f"{len(reward_row)} != expected {expected_num_patients}"
-                )
-
-            for attribute_name in personalized_attribute_names:
-                predicted_values = observed_payload[attribute_name]
-                if len(predicted_values) != expected_num_patients:
-                    raise ValueError(
-                        f"{episode_prefix} step {step_index}: field '{attribute_name}' length "
-                        f"{len(predicted_values)} != expected {expected_num_patients}"
-                    )
-
-                for patient_index, predicted_value_raw in enumerate(predicted_values):
-                    predicted_value = float(predicted_value_raw)
-                    has_prediction = has_prediction_values[patient_index]
-
-                    if has_prediction:
-                        if not 0.0 <= predicted_value <= 1.0:
-                            raise ValueError(
-                                f"{episode_prefix} step {step_index}: covered patient {patient_index} "
-                                f"field '{attribute_name}' must be in [0, 1], got {predicted_value}"
-                            )
-                    else:
-                        if predicted_value != sentinel_value:
-                            raise ValueError(
-                                f"{episode_prefix} step {step_index}: uncovered patient {patient_index} "
-                                f"field '{attribute_name}' must equal sentinel "
-                                f"{sentinel_value}, got {predicted_value}"
-                            )
 
 
 class EpisodeCounterCallback(BaseCallback):
@@ -756,4 +899,62 @@ class EpisodeCounterCallback(BaseCallback):
             return False
 
         return True
+
+
+class EpisodeProgressBarCallback(BaseCallback):
+    """Print a lightweight episode-based progress bar during training.
+
+    This callback is intended for episode-budgeted training where SB3's built-in
+    progress bar (timestep-based) is misleading, such as HRL with variable
+    macro-action durations.
+    """
+
+    def __init__(self, total_episodes: int, verbose: int = 0):
+        """Initialize episode progress bar callback.
+
+        Args:
+            total_episodes: Target number of completed episodes.
+            verbose: Verbosity level.
+        """
+        super().__init__(verbose=verbose)
+        if total_episodes <= 0:
+            raise ValueError(
+                f"total_episodes must be a positive integer, got {total_episodes}"
+            )
+        self.total_episodes = int(total_episodes)
+        self.n_episodes: int = 0
+
+    def _render(self) -> None:
+        """Render progress bar to stdout."""
+        ratio = min(max(self.n_episodes / self.total_episodes, 0.0), 1.0)
+        bar_width = 30
+        filled = int(round(bar_width * ratio))
+        bar = '#' * filled + '-' * (bar_width - filled)
+        pct = int(round(100 * ratio))
+        print(
+            f"\rEpisode progress [{bar}] {self.n_episodes}/{self.total_episodes} ({pct}%)",
+            end='',
+            flush=True,
+        )
+
+    def _on_training_start(self) -> None:
+        """Render initial progress state at training start."""
+        self._render()
+
+    def _on_step(self) -> bool:
+        """Update bar when one or more episodes complete this step."""
+        dones = self.locals.get('dones', self.locals.get('done', []))
+        if isinstance(dones, (bool, np.bool_)):
+            dones = [bool(dones)]
+
+        completed_episodes_this_step = sum(1 for done in dones if done)
+        if completed_episodes_this_step > 0:
+            self.n_episodes += completed_episodes_this_step
+            self._render()
+
+        return True
+
+    def _on_training_end(self) -> None:
+        """Ensure a final newline after progress updates."""
+        print()
 
