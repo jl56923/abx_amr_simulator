@@ -1,8 +1,8 @@
-# ABX AMR Capacitor RL
+# ABX AMR Simulator
 
-**Reinforcement learning simulator for optimizing antibiotic prescribing under antimicrobial resistance (AMR) constraints.**
+**A Gymnasium-compatible reinforcement learning environment for studying antibiotic stewardship under antimicrobial resistance (AMR) pressure.**
 
-The core insight: prescribing antibiotics drives up AMR levels like "capacitors charging up," forcing agents to balance short-term clinical benefit against long-term community resistance burden.
+`abx_amr_simulator` models antibiotic prescribing as a sequential decision problem: at each timestep, an agent assigns a treatment (one of the available antibiotics, or none) to each patient in the current cohort, and receives a reward combining patient-level clinical outcomes with community-level resistance levels. Because the environment conforms to the Gymnasium API, you can plug in any policy — a hard-coded heuristic, an off-the-shelf RL algorithm, or the package's built-in hierarchical PPO — and benchmark them against each other under controlled conditions. Three swappable components drive the dynamics: `PatientGenerator` (synthetic patient cohorts with configurable heterogeneity, noise, and partial observability), `AMR_LeakyBalloon` (per-antibiotic resistance that rises with prescribing and decays without it, with optional cross-resistance), and `RewardCalculator` (tunable weighting between individual clinical benefit and long-term stewardship). Run experiments through YAML configs and the CLI, launch them from a Streamlit GUI for quick exploration, or subclass any component to model custom scenarios.
 
 ## Quick Links
 
