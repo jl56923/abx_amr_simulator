@@ -537,10 +537,15 @@ def run_marl_agent_tuning(
 
     storage_url = f"sqlite:///{db_path}"
     sampler_name = opt_config.get("sampler", "TPE")
+    # Each distributed worker must use a unique sampler seed so that the
+    # TPE startup random-sampling phase explores different regions of the
+    # search space.  Without this, all workers create identical samplers
+    # and suggest the same hyperparameters (see Task 11 in CLAUDE_TODO).
+    sampler_seed = seed + worker_id
     sampler = (
-        optuna.samplers.TPESampler(seed=seed)
+        optuna.samplers.TPESampler(seed=sampler_seed)
         if sampler_name == "TPE"
-        else optuna.samplers.RandomSampler(seed=seed)
+        else optuna.samplers.RandomSampler(seed=sampler_seed)
     )
 
     load_if_exists = not overwrite_existing_study

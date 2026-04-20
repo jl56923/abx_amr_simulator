@@ -401,3 +401,56 @@ class TestRunMarlAgentTuning:
         assert summary_path.exists()
         summary = json.loads(summary_path.read_text())
         assert summary["n_trials_completed"] == 2
+
+    def test_distributed_workers_suggest_distinct_hyperparameters(self, tmp_path):
+        """Each worker should explore different hyperparameters, not identical ones.
+
+        This is a regression test for the bug where all distributed workers
+        created TPESampler(seed=<same_seed>), causing every worker to suggest
+        identical parameters during the startup random-sampling phase.
+        """
+        import optuna
+
+        config = _load()
+        # Use a wider search space so distinct seeds produce visibly different values.
+        tuning_cfg = copy.deepcopy(_MINIMAL_TUNING_CONFIG)
+        tuning_cfg["optimization"]["n_trials"] = 4
+        tuning_cfg["search_space"] = {
+            "learning_rate": {"type": "float", "low": 1e-5, "high": 1e-1, "log": True},
+            "gamma": {"type": "float", "low": 0.9, "high": 0.999},
+            "clip_range": {"type": "float", "low": 0.05, "high": 0.4},
+        }
+
+        # Run 4 workers sequentially, each contributing 1 trial.
+        for wid in range(4):
+            run_marl_agent_tuning(
+                config=config,
+                agent_id="agent_0",
+                tuning_config=tuning_cfg,
+                optimization_dir=tmp_path,
+                run_name="distinct_hp_run",
+                seed=42,
+                worker_id=wid,
+                total_workers=4,
+            )
+
+        # Load the study and inspect trial params.
+        db_path = tmp_path / "distinct_hp_run" / "optuna_study.db"
+        study = optuna.load_study(
+            study_name="distinct_hp_run",
+            storage=f"sqlite:///{db_path}",
+        )
+        completed = [
+            t for t in study.trials
+            if t.state == optuna.trial.TrialState.COMPLETE
+        ]
+        assert len(completed) == 4
+
+        # Collect all parameter dicts and verify they are not all identical.
+        param_sets = [tuple(sorted(t.params.items())) for t in completed]
+        unique_param_sets = set(param_sets)
+        assert len(unique_param_sets) > 1, (
+            f"All {len(completed)} distributed workers produced identical "
+            f"hyperparameters: {completed[0].params}. "
+            "Each worker's TPE sampler should use a different seed."
+        )
