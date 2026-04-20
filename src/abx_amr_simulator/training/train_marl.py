@@ -8,7 +8,7 @@ It never calls `PPO.learn()`. Instead it owns the complete rollout-collect-updat
   3. When a buffer fills, compute GAE and call `agent.train()`.
   4. Handle episode boundaries, evaluation, and checkpointing.
 
-Only HRL PPO (not RecurrentPPO) is supported. See
+Both HRL PPO and HRL RecurrentPPO (HRL_RPPO) are supported. See
 ADDING_MARL_SUPPORT_TO_ABX_AMR_SIMULATOR.md Section 3.5 for the design rationale and
 Section 3.5a for the training loop strategy analysis.
 
@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import math
 import re
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -43,9 +44,13 @@ import gymnasium as gym
 from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.buffers import RolloutBuffer
+from sb3_contrib.common.recurrent.buffers import RecurrentRolloutBuffer
+from sb3_contrib.common.recurrent.type_aliases import RNNStates
+from sb3_contrib import RecurrentPPO
 
 from abx_amr_simulator.callbacks.marl_callbacks import run_marl_eval_episodes
 from abx_amr_simulator.hrl.marl_wrapper import MARLOptionsWrapper
+from abx_amr_simulator.hrl.rl_algorithms.recurrent_ppo_masked import RecurrentPPO_Masked
 
 
 _RUN_TIMESTAMP_SUFFIX_PATTERN = re.compile(pattern=r"_\d{8}_\d{6}$")
@@ -315,6 +320,94 @@ def make_ppo_for_agent(
     )
 
 
+def make_recurrent_ppo_for_agent(
+    wrapper: MARLOptionsWrapper,
+    agent_id: str,
+    n_steps: int = 256,
+    batch_size: int = 64,
+    n_epochs: int = 10,
+    learning_rate: float = 3e-4,
+    gamma: float = 0.99,
+    gae_lambda: float = 0.95,
+    clip_range: float = 0.2,
+    ent_coef: float = 0.02,
+    vf_coef: float = 0.5,
+    max_grad_norm: float = 0.5,
+    lstm_hidden_size: int = 64,
+    n_lstm_layers: int = 1,
+    enable_critic_lstm: bool = True,
+    seed: Optional[int] = None,
+    tensorboard_log: Optional[str] = None,
+    verbose: int = 0,
+) -> RecurrentPPO_Masked:
+    """Instantiate a RecurrentPPO agent for one agent in a MARLOptionsWrapper.
+
+    Creates a ``RecurrentPPO_Masked`` with ``MlpLstmPolicy`` and the specified
+    LSTM configuration. Like ``make_ppo_for_agent``, the object is initialised
+    with a dummy Gymnasium env so SB3 builds the policy network and
+    ``RecurrentRolloutBuffer`` with the correct dimensions. ``learn()`` is
+    never called — ``MARLTrainer`` drives the rollout loop directly.
+
+    ``RecurrentPPO_Masked`` is used unconditionally (rather than plain
+    ``RecurrentPPO``) because the MARL trainer already filters non-trainable
+    transitions in ``_store_transition()``, so the masking logic in
+    ``RecurrentPPO_Masked.train()`` simply sees all-ones masks. Using the
+    masked variant keeps the agent type consistent with the single-agent
+    HRL_RPPO path.
+
+    Args:
+        wrapper: The MARLOptionsWrapper whose spaces define the agent's inputs.
+        agent_id: Which agent's spaces to use.
+        n_steps: Rollout buffer capacity in manager-level steps.
+        batch_size: Mini-batch size for PPO gradient updates.
+        n_epochs: Number of gradient epochs per buffer flush.
+        learning_rate: PPO learning rate.
+        gamma: Discount factor (should match wrapper.gamma for consistency).
+        gae_lambda: GAE lambda.
+        clip_range: PPO clip range.
+        ent_coef: Entropy coefficient.
+        vf_coef: Value function coefficient.
+        max_grad_norm: Gradient clipping norm.
+        lstm_hidden_size: Number of units in each LSTM layer.
+        n_lstm_layers: Number of stacked LSTM layers.
+        enable_critic_lstm: Whether the critic network also uses an LSTM
+            (True) or a feedforward network (False).
+        seed: Optional random seed for the policy.
+        tensorboard_log: Optional path for TensorBoard logging.
+        verbose: SB3 verbosity (0 = silent).
+
+    Returns:
+        Initialised RecurrentPPO_Masked object ready for use with MARLTrainer.
+    """
+    dummy_env = make_dummy_gym_env(
+        obs_space=wrapper.observation_spaces[agent_id],
+        action_space=wrapper.action_spaces[agent_id],
+    )
+    policy_kwargs = {
+        "lstm_hidden_size": lstm_hidden_size,
+        "n_lstm_layers": n_lstm_layers,
+        "enable_critic_lstm": enable_critic_lstm,
+    }
+    return RecurrentPPO_Masked(
+        policy="MlpLstmPolicy",
+        env=dummy_env,
+        n_steps=n_steps,
+        batch_size=batch_size,
+        n_epochs=n_epochs,
+        learning_rate=learning_rate,
+        gamma=gamma,
+        gae_lambda=gae_lambda,
+        clip_range=clip_range,
+        ent_coef=ent_coef,
+        vf_coef=vf_coef,
+        max_grad_norm=max_grad_norm,
+        policy_kwargs=policy_kwargs,
+        seed=seed,
+        tensorboard_log=tensorboard_log,
+        verbose=verbose,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # MARLTrainer
 # --------------------------------------------------------------------------- #
@@ -342,7 +435,7 @@ class MARLTrainer:
     def __init__(
         self,
         wrapper: MARLOptionsWrapper,
-        agents: Dict[str, PPO],
+        agents: Dict[str, Any],
         n_steps: int | Dict[str, int],
         total_primitive_steps: int,
         checkpoint_dir: Path,
@@ -355,10 +448,11 @@ class MARLTrainer:
 
         Args:
             wrapper: Pre-instantiated MARLOptionsWrapper (env + option libraries).
-            agents: Dict mapping agent_id → PPO object. Must contain one entry
-                per agent in wrapper.base_env.possible_agents. Each PPO object
-                must have been constructed with the matching observation/action
-                space (e.g. via make_ppo_for_agent()).
+            agents: Dict mapping agent_id → PPO or RecurrentPPO object. Must
+                contain one entry per agent in wrapper.base_env.possible_agents.
+                Each agent must have been constructed with the matching
+                observation/action space (e.g. via make_ppo_for_agent() or
+                make_recurrent_ppo_for_agent()).
             n_steps: Rollout buffer capacity per agent in manager steps. May
                 be a single shared integer for all agents or a dict mapping
                 each agent_id to its own rollout size. Values should match the
@@ -422,19 +516,43 @@ class MARLTrainer:
                     )
                 self.n_steps[aid] = int(n_steps[aid])
 
-        # Validate and extract rollout buffers from the PPO objects.
-        # The PPO objects already own RolloutBuffers — we use them directly.
-        self._buffers: Dict[str, RolloutBuffer] = {}
+        # Detect which agents are recurrent (RecurrentPPO or subclass).
+        self._is_recurrent: Dict[str, bool] = {
+            aid: isinstance(agents[aid], RecurrentPPO)
+            for aid in self._agent_ids
+        }
+
+        # Validate and extract rollout buffers from the PPO/RecurrentPPO objects.
+        # The agent objects already own their buffers — we use them directly.
+        self._buffers: Dict[str, Union[RolloutBuffer, RecurrentRolloutBuffer]] = {}
         for aid in self._agent_ids:
             buf = agents[aid].rollout_buffer
             expected_n_steps = self.n_steps[aid]
             if buf.buffer_size != expected_n_steps:
                 raise ValueError(
-                    f"Agent '{aid}': PPO rollout buffer size {buf.buffer_size} "
-                    f"does not match n_steps={expected_n_steps}. Construct PPO with "
-                    f"n_steps={expected_n_steps}."
+                    f"Agent '{aid}': rollout buffer size {buf.buffer_size} "
+                    f"does not match n_steps={expected_n_steps}. Construct the "
+                    f"agent with n_steps={expected_n_steps}."
                 )
             self._buffers[aid] = buf
+
+        # Per-agent LSTM state management for recurrent agents.
+        # _lstm_states: current LSTM hidden/cell states, carried across steps.
+        #   - For recurrent agents: initialized to zeros (matching _last_lstm_states).
+        #   - For non-recurrent agents: None.
+        # _lstm_states_at_action: snapshot of LSTM states at the time of action
+        #   selection (before the forward pass updates them). Needed for buffer
+        #   storage. Initialized to None; populated during action selection.
+        self._lstm_states: Dict[str, Optional[RNNStates]] = {}
+        self._lstm_states_at_action: Dict[str, Optional[RNNStates]] = {}
+        for aid in self._agent_ids:
+            if self._is_recurrent[aid]:
+                self._lstm_states[aid] = deepcopy(
+                    agents[aid]._last_lstm_states
+                )
+            else:
+                self._lstm_states[aid] = None
+            self._lstm_states_at_action[aid] = None
 
         # Per-agent best eval reward for best-model checkpointing
         self._best_mean_reward: Dict[str, float] = {
@@ -538,10 +656,8 @@ class MARLTrainer:
             else:
                 # Only completing agents need new option selections
                 for aid, next_obs in m_obs.items():
-                    pending_selections[aid] = int(
-                        self.agents[aid].policy.predict(
-                            next_obs[np.newaxis, :], deterministic=False
-                        )[0][0]
+                    pending_selections[aid] = self._predict_single(
+                        aid, next_obs, episode_start=False,
                     )
 
         # Save final models
@@ -555,27 +671,73 @@ class MARLTrainer:
     # Private helpers
     # ---------------------------------------------------------------------- #
 
+    def _predict_single(
+        self,
+        aid: str,
+        obs: np.ndarray,
+        episode_start: bool,
+    ) -> int:
+        """Select an option for a single agent, tracking LSTM states if recurrent.
+
+        For recurrent agents, uses ``policy.forward()`` to thread LSTM states
+        through the prediction and saves a pre-forward snapshot in
+        ``_lstm_states_at_action`` for later buffer storage.
+
+        For non-recurrent agents, uses ``policy.predict()`` (unchanged from
+        the original code path).
+
+        Args:
+            aid: Agent ID.
+            obs: Manager observation (1-D numpy array, no batch dim).
+            episode_start: Whether this is the first prediction of a new
+                episode for this agent.
+
+        Returns:
+            Integer option selection.
+        """
+        obs_batch = obs[np.newaxis, :]  # add batch dim
+
+        if self._is_recurrent[aid]:
+            obs_tensor, _ = self.agents[aid].policy.obs_to_tensor(obs_batch)
+            ep_start_tensor = torch.tensor(
+                [episode_start], dtype=torch.float32,
+                device=self.agents[aid].device,
+            )
+            # Save pre-forward LSTM states for buffer storage
+            self._lstm_states_at_action[aid] = deepcopy(self._lstm_states[aid])
+            with torch.no_grad():
+                action, _value, _log_prob, new_lstm = (
+                    self.agents[aid].policy.forward(
+                        obs_tensor, self._lstm_states[aid], ep_start_tensor,
+                        deterministic=False,
+                    )
+                )
+            self._lstm_states[aid] = new_lstm
+            return int(action.item())
+        else:
+            action, _ = self.agents[aid].policy.predict(
+                obs_batch, deterministic=False
+            )
+            return int(action[0])
+
     def _predict_all(
         self,
         obs_dict: Dict[str, np.ndarray],
         episode_starts: Dict[str, bool],
     ) -> Dict[str, int]:
-        """Call policy.predict for every agent and return action dict.
+        """Select options for all agents and return action dict.
 
         Args:
             obs_dict: Per-agent current manager observations.
-            episode_starts: Per-agent episode-start flags (unused for PPO but
-                kept for interface consistency).
+            episode_starts: Per-agent episode-start flags.
 
         Returns:
             Dict mapping agent_id → integer option selection.
         """
-        selections: Dict[str, int] = {}
-        for aid in self._agent_ids:
-            obs = obs_dict[aid][np.newaxis, :]   # add batch dim
-            action, _ = self.agents[aid].policy.predict(obs, deterministic=False)
-            selections[aid] = int(action[0])
-        return selections
+        return {
+            aid: self._predict_single(aid, obs_dict[aid], episode_starts[aid])
+            for aid in self._agent_ids
+        }
 
     @staticmethod
     def _count_primitive_steps(m_info: Dict[str, Dict]) -> int:
