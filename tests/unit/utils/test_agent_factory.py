@@ -231,6 +231,61 @@ class TestAgentFactory:
             
             assert agent.__class__.__name__ == 'A2C'
     
+    def test_agent_algorithm_overrides_merge_into_ppo_config(self):
+        """Test that tuned hyperparameters under agent_algorithm override ppo defaults.
+
+        The tuning pipeline stores best params under config['agent_algorithm'],
+        but create_agent() for PPO reads from config['ppo']. This test verifies
+        the merge logic that bridges the two.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            rc_path, pg_path, env_path = self._create_test_env(tmpdir_path)
+
+            agent_config = {
+                'algorithm': 'PPO',
+                'policy': 'MlpPolicy',
+            }
+            agent_path = tmpdir_path / "agent.yaml"
+            with open(agent_path, 'w') as f:
+                yaml.dump(agent_config, f)
+
+            umbrella = {
+                'config_folder_location': str(tmpdir_path),
+                'reward_calculator': 'rc.yaml',
+                'patient_generator': 'pg.yaml',
+                'environment': 'env.yaml',
+                'agent_algorithm': 'agent.yaml',
+                'ppo': {
+                    'learning_rate': 0.0003,
+                    'gamma': 0.99,
+                    'n_steps': 2048,
+                },
+                'training': {'seed': 42}
+            }
+            umbrella_path = tmpdir_path / "umbrella.yaml"
+            with open(umbrella_path, 'w') as f:
+                yaml.dump(umbrella, f)
+
+            config = load_config(config_path=str(umbrella_path))
+
+            # Simulate what train.py does when loading best params:
+            # it writes tuned values under config['agent_algorithm']
+            config['agent_algorithm'] = {
+                'learning_rate': 1.23e-4,
+                'gamma': 0.965,
+            }
+
+            rc = create_reward_calculator(config=config)
+            pg = create_patient_generator(config=config)
+            env = create_environment(config=config, reward_calculator=rc, patient_generator=pg)
+            agent = create_agent(config=config, env=env)
+
+            assert agent.__class__.__name__ == 'PPO'
+            # Tuned values should have overridden the ppo defaults
+            assert agent.gamma == pytest.approx(0.965)
+            assert agent.learning_rate == pytest.approx(1.23e-4)
+
     def test_validates_unsupported_algorithm(self):
         """Test that factory raises error for unsupported algorithms."""
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -910,6 +910,35 @@ def run_marl_training(
         saved_config, wrapper, agent_hyperparams=agent_hyperparams
     )
 
+    # Write resolved config that includes the actual per-agent hyperparameters.
+    # The config saved above (step 7) was written before tuned hyperparameters
+    # were loaded, so it reflects defaults rather than the values used during
+    # training.  This second file records the full provenance.
+    resolved_config_path = run_dir / "marl_resolved_config.yaml"
+    resolved_config = dict(saved_config)
+    if agent_hyperparams:
+        resolved_config["_resolved_agent_hyperparams"] = agent_hyperparams
+    # Also record the actual PPO kwargs each agent was constructed with.
+    resolved_ppo_kwargs: Dict[str, Dict] = {}
+    for aid, agent in agents.items():
+        resolved_ppo_kwargs[aid] = {
+            "learning_rate": float(agent.learning_rate),
+            "n_steps": int(agent.n_steps),
+            "batch_size": int(agent.batch_size),
+            "n_epochs": int(agent.n_epochs),
+            "gamma": float(agent.gamma),
+            "gae_lambda": float(agent.gae_lambda),
+            "clip_range": float(agent.clip_range(1.0))
+            if callable(agent.clip_range)
+            else float(agent.clip_range),
+            "ent_coef": float(agent.ent_coef),
+            "vf_coef": float(agent.vf_coef),
+            "max_grad_norm": float(agent.max_grad_norm),
+        }
+    resolved_config["_resolved_ppo_kwargs"] = resolved_ppo_kwargs
+    with open(resolved_config_path, "w") as f:
+        yaml.dump(resolved_config, f, default_flow_style=False, sort_keys=False)
+
     training_cfg = saved_config.get("training", {})
     trainer_n_steps = {
         aid: int(agent.rollout_buffer.buffer_size)

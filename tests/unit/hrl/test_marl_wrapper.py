@@ -25,7 +25,12 @@ from test_reference_helpers import make_pg, make_rc  # type: ignore[import-not-f
 
 
 class ConstantOption(OptionBase):
-    """Always prescribes a fixed antibiotic for k steps."""
+    """Prescribes a fixed antibiotic for k steps.
+
+    Returns ``no_treatment`` for patients with ``prob_infected == 0`` so the
+    option passes the semantic validation check in
+    ``OptionLibrary.validate_environment_compatibility()``.
+    """
 
     REQUIRES_OBSERVATION_ATTRIBUTES = ["prob_infected"]
     REQUIRES_AMR_LEVELS = False
@@ -37,8 +42,15 @@ class ConstantOption(OptionBase):
         self._action_name = action_name
 
     def decide(self, env_state: dict) -> np.ndarray:
-        n = env_state.get("num_patients", 1)
-        return np.full(shape=(n,), fill_value=self._action_name, dtype=object)
+        patients = env_state.get("patients", [])
+        n = env_state.get("num_patients", len(patients))
+        if not patients or self._action_name == "no_treatment":
+            return np.full(shape=(n,), fill_value=self._action_name, dtype=object)
+        actions = []
+        for p in patients:
+            pi = p.get("prob_infected_obs", p.get("prob_infected", 0.5))
+            actions.append(self._action_name if pi > 0.01 else "no_treatment")
+        return np.array(actions, dtype=object)
 
     def get_referenced_antibiotics(self) -> list:
         return [self._action_name] if self._action_name != "no_treatment" else []
@@ -577,3 +589,106 @@ class TestMultiStepRollout:
             pending_selections = {aid: 0 for aid in m_obs.keys()}
 
         assert episode_done, "Episode should have terminated"
+
+
+class TestStepsSincePrescribedConsistency:
+    """Regression tests for _steps_since_prescribed consistency between
+    MARLOptionsWrapper and the SA OptionsWrapper.
+
+    The off-by-one concern (SA=0 vs MARL=1 for a just-prescribed antibiotic)
+    was investigated and found to be non-reproducible — both wrappers use
+    identical update logic. These tests guard against future regressions.
+    """
+
+    def test_single_agent_matches_sa_wrapper(self):
+        """In a single-agent MARL scenario, _steps_since_prescribed should
+        match what the SA OptionsWrapper produces for the same option."""
+        from abx_amr_simulator.hrl import OptionsWrapper
+        from test_reference_helpers import make_env  # type: ignore[import-not-found]
+
+        abx_names = ["A", "B"]
+        k = 10
+
+        # --- SA wrapper ---
+        sa_env = make_env(
+            antibiotic_names=abx_names,
+            num_patients_per_time_step=3,
+            max_time_steps=50,
+        )
+        sa_lib = OptionLibrary(
+            reward_calculator=sa_env.reward_calculator, name="sa_lib"
+        )
+        sa_lib.add_option(ConstantOption(name="prescribe_A", action_name="A", k=k))
+        sa_wrapper = OptionsWrapper(env=sa_env, option_library=sa_lib, gamma=0.99)
+        sa_wrapper.reset(seed=42)
+        sa_wrapper.step(0)
+
+        # --- MARL wrapper (single agent) ---
+        base_env = make_parallel_env(
+            antibiotic_names=abx_names,
+            n_patients_per_agent=[3],
+            max_time_steps=50,
+        )
+        marl_libs = {}
+        for aid in base_env.possible_agents:
+            marl_rc = base_env._reward_calculators[aid]
+            lib = OptionLibrary(reward_calculator=marl_rc, name=f"lib_{aid}")
+            lib.add_option(ConstantOption(name="prescribe_A", action_name="A", k=k))
+            marl_libs[aid] = lib
+        marl_wrapper = MARLOptionsWrapper(
+            base_env=base_env, option_libraries=marl_libs, gamma=0.99
+        )
+        marl_wrapper.reset(seed=42)
+        marl_wrapper.step({base_env.possible_agents[0]: 0})
+
+        # Compare steps_since_prescribed for real antibiotics (skip no_treatment)
+        agent_id = base_env.possible_agents[0]
+        for abx in abx_names:
+            sa_val = sa_wrapper._steps_since_prescribed[abx]
+            marl_val = marl_wrapper._steps_since_prescribed[agent_id][abx]
+            assert sa_val == marl_val, (
+                f"steps_since_prescribed['{abx}'] mismatch: SA={sa_val}, MARL={marl_val}"
+            )
+
+    def test_async_options_accumulate_correctly(self):
+        """With two agents having different option durations, each agent's
+        _steps_since_prescribed should reflect its full option execution."""
+        abx_names = ["A", "B"]
+
+        base_env = make_parallel_env(
+            antibiotic_names=abx_names,
+            n_patients_per_agent=[3, 3],
+            max_time_steps=50,
+        )
+        libs = {}
+        for aid in base_env.possible_agents:
+            rc = base_env._reward_calculators[aid]
+            lib = OptionLibrary(reward_calculator=rc, name=f"lib_{aid}")
+            # Agent_0 gets k=5, Agent_1 gets k=10
+            k = 5 if aid == "agent_0" else 10
+            lib.add_option(ConstantOption(name="prescribe_A", action_name="A", k=k))
+            libs[aid] = lib
+
+        wrapper = MARLOptionsWrapper(
+            base_env=base_env, option_libraries=libs, gamma=0.99
+        )
+        wrapper.reset(seed=42)
+
+        # Step 1: both select option 0 → next_event=5, agent_0 returns
+        obs1, _, _, _, _ = wrapper.step({"agent_0": 0, "agent_1": 0})
+        assert "agent_0" in obs1
+        assert "agent_1" not in obs1  # agent_1 still running (5 of 10 done)
+
+        # After 5 steps of prescribing A: counter should be 0 for A
+        assert wrapper._steps_since_prescribed["agent_0"]["A"] == 0
+        assert wrapper._steps_since_prescribed["agent_0"]["B"] == 5
+
+        # Step 2: agent_0 re-selects, agent_1 finishes → both return
+        obs2, _, _, _, _ = wrapper.step({"agent_0": 0})
+        assert "agent_0" in obs2
+        assert "agent_1" in obs2
+
+        # After 10 total steps of prescribing A: counter should be 0 for A
+        assert wrapper._steps_since_prescribed["agent_0"]["A"] == 0
+        assert wrapper._steps_since_prescribed["agent_1"]["A"] == 0
+        assert wrapper._steps_since_prescribed["agent_1"]["B"] == 10

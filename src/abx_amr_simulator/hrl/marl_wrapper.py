@@ -97,6 +97,18 @@ class MARLOptionsWrapper:
                     f"the same antibiotic action-index mapping."
                 )
 
+        # Validate each agent's option library is compatible with its
+        # patient generator (same check the SA OptionsWrapper performs).
+        for aid in base_env.possible_agents:
+            pg = base_env._patient_generators[aid]
+            try:
+                option_libraries[aid].validate_environment_compatibility(pg)
+            except ValueError as e:
+                raise ValueError(
+                    f"Agent '{aid}' option library '{option_libraries[aid].name}' "
+                    f"incompatible with environment: {e}"
+                )
+
         self.antibiotic_names: List[str] = list(ref_abx_map.keys())
         self._action_index_to_abx: Dict[int, str] = {
             idx: name for name, idx in ref_abx_map.items()

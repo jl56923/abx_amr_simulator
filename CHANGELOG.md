@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **SA hyperparameter routing bug**: `create_agent()` in `factories.py` now
+  merges tuned hyperparameters from `config['agent_algorithm']` into the
+  algorithm-specific config section (e.g. `config['ppo']` for HRL_PPO,
+  `config['recurrent_ppo']` for HRL_RPPO). Previously, tuned hyperparameters
+  written by `train.py` under `agent_algorithm.*` were silently ignored for all
+  HRL algorithms (and flat PPO/RecurrentPPO when using `--load-best-params`).
+- **Gymnasium truncation semantics**: `ABXAMREnv.step()` now sets
+  `terminated=False, truncated=True` when `max_time_steps` is reached, matching
+  Gymnasium conventions and `ABXAMRParallelEnv` behavior. Previously both flags
+  were True, which prevented SB3 from bootstrapping at truncation boundaries.
+- **MARL config provenance**: `train_marl.py` now writes a second resolved
+  config file (`marl_resolved_config.yaml`) after agents are built, containing
+  the actual per-agent hyperparameters used during training. The original config
+  save occurs before tuned hyperparameters are loaded.
 - **Critical**: `OptionsWrapper._get_current_amr_levels()` was reading **true**
   AMR from balloon models, leaking privileged information into the HRL manager
   observation. The manager should only see **visible** (degraded) AMR, matching
@@ -17,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_get_current_visible_amr_levels()` to make the contract explicit.
 
 ### Added
+- **MARL option library validation**: `MARLOptionsWrapper.__init__()` now calls
+  `validate_environment_compatibility()` on each agent's option library,
+  matching the validation that the SA `OptionsWrapper` already performs.
+  Incompatible option libraries now fail loudly at construction time.
 - `write_aggregated_timeseries_csv()` helper in `metrics.py` — writes the
   output of `aggregate_trajectories()` as a CSV (columns: timestep, mean,
   median, p10, p25, p75, p90, iqm, n_active).

@@ -840,8 +840,14 @@ class ABXAMREnv(gym.Env):
             rng=self.np_random,
         )
         
-        # Check termination conditions; the condition for termination and truncation is the same, it's if we reached max_time_steps. I might want to change this in the future to have different conditions for termination vs truncation.
-        terminated = self.current_time_step >= self.max_time_steps
+        # Check termination conditions.  Reaching max_time_steps is a
+        # *truncation* (artificial time limit), not a *termination* (natural
+        # MDP end).  Per Gymnasium semantics, SB3 bootstraps the value
+        # function at truncation boundaries (reward += gamma * V(terminal_obs))
+        # only when `truncated and not terminated`.  Setting both to True
+        # previously disabled bootstrapping, causing the value function to
+        # treat time-limit boundaries as absorbing states.
+        terminated = False
         truncated = self.current_time_step >= self.max_time_steps
         
         # Collect patient data for logging

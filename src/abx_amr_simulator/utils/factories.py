@@ -558,13 +558,38 @@ def create_agent(config: Dict[str, Any], env: gym.Env, tb_log_path: Optional[str
     """
     algorithm = config.get('algorithm', 'PPO')
     action_mode = config.get('action_mode', 'multidiscrete')
-    
+
     # Common parameters
     learning_rate = config.get('learning_rate', 3.0e-4) # Overridden later if needed
     policy_kwargs = config.get('policy_kwargs', {})
     seed = config.get('training', {}).get('seed', None)  # Get seed from training config
     verbose = verbose
-    
+
+    # Merge tuned hyperparameters from agent_algorithm into the
+    # algorithm-specific config section.  The tuning pipeline writes best
+    # params under config['agent_algorithm'] (via the 'agent_algorithm.*'
+    # dotted-key prefix in train.py), but each algorithm branch below reads
+    # from its own section (config['ppo'], config['recurrent_ppo'], etc.).
+    # Without this merge the tuned values are silently ignored.
+    agent_algorithm_overrides = config.get('agent_algorithm', {})
+    if agent_algorithm_overrides:
+        # Determine which config section this algorithm reads from.
+        _algo_section_map = {
+            'PPO': 'ppo',
+            'A2C': 'a2c',
+            'RecurrentPPO': 'recurrent_ppo',
+            'HRL_PPO': 'ppo',
+            'HRL_RPPO': 'recurrent_ppo',
+        }
+        target_section = _algo_section_map.get(algorithm)
+        if target_section is not None:
+            merged = dict(config.get(target_section, {}))
+            merged.update(agent_algorithm_overrides)
+            config[target_section] = merged
+            print(f"[create_agent] Merged {len(agent_algorithm_overrides)} "
+                  f"agent_algorithm overrides into config['{target_section}']: "
+                  f"{sorted(agent_algorithm_overrides.keys())}")
+
     if algorithm == 'PPO':
         ppo_config = config.get('ppo', {})
         learning_rate = ppo_config.get('learning_rate', 3.0e-4)
