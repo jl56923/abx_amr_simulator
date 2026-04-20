@@ -6,7 +6,7 @@ and construct the objects needed to train with MARLTrainer:
     load_marl_config          — loads YAML, injects _config_dir
     build_marl_env_from_config    — ABXAMRParallelEnv
     build_marl_wrapper_from_config — MARLOptionsWrapper
-    build_marl_managers_from_config — {agent_id: PPO}
+    build_marl_managers_from_config — {agent_id: PPO or RecurrentPPO}
     build_marl_training_run_from_config — composed entry point
 
 Typical usage:
@@ -356,43 +356,59 @@ def build_marl_managers_from_config(
     wrapper: MARLOptionsWrapper,
     agent_hyperparams: Optional[Dict[str, Dict]] = None,
 ) -> Dict[str, Any]:
-    """Build one PPO agent per agent in a MARLOptionsWrapper from config.
+    """Build one PPO or RecurrentPPO agent per agent in a MARLOptionsWrapper.
 
-    Only HRL_PPO is supported. Raises ValueError for any other algorithm value.
-    Base PPO hyperparameters are read from the `training` section and applied
-    uniformly to all agents. If `agent_hyperparams` is provided, per-agent
-    overrides are merged on top of the shared defaults for the matching agent —
-    this is the mechanism used by the training CLI to load tuning results.
-    Note: `batch_size` is always taken from the training config and is NOT
-    overridden by per-agent params (it is not included in ``best_params.json``).
+    Both HRL_PPO and HRL_RPPO algorithms are supported.  Each agent's
+    ``algorithm`` field in the config selects which constructor to use;
+    it defaults to ``HRL_PPO`` if omitted (backward-compatible).
+
+    For HRL_RPPO agents, optional LSTM parameters can be specified in an
+    ``lstm_kwargs`` dict nested under the agent entry::
+
+        agents:
+          - agent_id: agent_0
+            algorithm: HRL_RPPO
+            lstm_kwargs:
+              lstm_hidden_size: 64
+              n_lstm_layers: 1
+              enable_critic_lstm: true
+
+    Base PPO hyperparameters are read from the ``training`` section and
+    applied uniformly to all agents.  If ``agent_hyperparams`` is provided,
+    per-agent overrides are merged on top of the shared defaults for the
+    matching agent — this is the mechanism used by the training CLI to
+    load tuning results.  Note: ``batch_size`` is always taken from the
+    training config and is NOT overridden by per-agent params (it is not
+    included in ``best_params.json``).
 
     Args:
-        config: MARL config dict as returned by `load_marl_config`.
-        wrapper: Pre-built MARLOptionsWrapper (from `build_marl_wrapper_from_config`).
+        config: MARL config dict as returned by ``load_marl_config``.
+        wrapper: Pre-built MARLOptionsWrapper (from
+            ``build_marl_wrapper_from_config``).
         agent_hyperparams: Optional dict mapping agent_id → PPO kwargs dict.
-            If provided, each agent's PPO is constructed by overlaying these
-            values on top of the shared training-section defaults. Agents not
-            present in this dict use the shared defaults unchanged.
+            If provided, each agent's constructor is called with these values
+            overlaid on top of the shared training-section defaults.  Agents
+            not present in this dict use the shared defaults unchanged.
 
     Returns:
-        Dict mapping agent_id → PPO object, ready for use with MARLTrainer.
+        Dict mapping agent_id → PPO or RecurrentPPO object, ready for use
+        with MARLTrainer.
 
     Raises:
-        ValueError: If any agent's `algorithm` is not 'HRL_PPO'.
+        ValueError: If any agent's ``algorithm`` is not ``'HRL_PPO'`` or
+            ``'HRL_RPPO'``.
     """
     env_config = config.get("environment", {})
     agent_entries = env_config.get("agents", [])
     training_config = config.get("training", {})
 
-    # Validate algorithm field for all agents
-    for entry in agent_entries:
-        aid = str(entry["agent_id"])
-        algorithm = entry.get("algorithm", "HRL_PPO")
-        if algorithm != "HRL_PPO":
-            raise ValueError(
-                f"Agent '{aid}': unsupported algorithm '{algorithm}'. "
-                "Only 'HRL_PPO' is supported for MARL training."
-            )
+    # Lazy imports to avoid circular dependency:
+    # marl_factories -> training.train_marl -> training/__init__
+    #   -> tune_marl_agent -> marl_factories
+    from abx_amr_simulator.training.train_marl import (
+        make_ppo_for_agent,
+        make_recurrent_ppo_for_agent,
+    )
 
     # Shared defaults from training section.
     shared_ppo_kwargs: Dict[str, Any] = {
@@ -407,6 +423,7 @@ def build_marl_managers_from_config(
     agents = {}
     for entry in agent_entries:
         aid = str(entry["agent_id"])
+        algorithm = entry.get("algorithm", "HRL_PPO")
 
         # Start with shared defaults, then overlay per-agent tuning results.
         # batch_size is excluded from the overlay: it is not a tuning param.
@@ -416,15 +433,27 @@ def build_marl_managers_from_config(
                 if k != "batch_size":
                     ppo_kwargs[k] = v
 
-        # Lazy import to avoid circular dependency:
-        # marl_factories -> training.train_marl -> training/__init__ -> tune_marl_agent -> marl_factories
-        from abx_amr_simulator.training.train_marl import make_ppo_for_agent
-
-        agents[aid] = make_ppo_for_agent(
-            wrapper=wrapper,
-            agent_id=aid,
-            **ppo_kwargs,
-        )
+        if algorithm == "HRL_PPO":
+            agents[aid] = make_ppo_for_agent(
+                wrapper=wrapper,
+                agent_id=aid,
+                **ppo_kwargs,
+            )
+        elif algorithm == "HRL_RPPO":
+            lstm_kwargs = entry.get("lstm_kwargs", {})
+            agents[aid] = make_recurrent_ppo_for_agent(
+                wrapper=wrapper,
+                agent_id=aid,
+                lstm_hidden_size=lstm_kwargs.get("lstm_hidden_size", 64),
+                n_lstm_layers=lstm_kwargs.get("n_lstm_layers", 1),
+                enable_critic_lstm=lstm_kwargs.get("enable_critic_lstm", True),
+                **ppo_kwargs,
+            )
+        else:
+            raise ValueError(
+                f"Agent '{aid}': unsupported algorithm '{algorithm}'. "
+                "Supported: 'HRL_PPO', 'HRL_RPPO'."
+            )
 
     return agents
 

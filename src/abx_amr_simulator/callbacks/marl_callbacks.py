@@ -1,23 +1,26 @@
-"""Evaluation utilities for multi-agent HRL PPO training.
+"""Evaluation utilities for multi-agent HRL training.
 
 Contains `run_marl_eval_episodes`, a standalone function used by `MARLTrainer`
 to periodically evaluate trained policies. Extracted here so it can be imported
 and tested independently of the full trainer.
+
+Both HRL PPO and HRL RecurrentPPO (HRL_RPPO) agents are supported.  For
+recurrent agents, LSTM states are threaded across steps within each eval
+episode and reset to None at the start of each new episode.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from stable_baselines3 import PPO
 
 from abx_amr_simulator.hrl.marl_wrapper import MARLOptionsWrapper
 
 
 def run_marl_eval_episodes(
     wrapper: MARLOptionsWrapper,
-    agents: Dict[str, PPO],
+    agents: Dict[str, Any],
     n_episodes: int,
 ) -> Dict[str, float]:
     """Run deterministic evaluation episodes and return per-agent mean reward.
@@ -25,9 +28,16 @@ def run_marl_eval_episodes(
     All agents act greedily (deterministic=True). Rollout buffers and training
     state are not modified. The wrapper is reset at the start of each episode.
 
+    For recurrent agents (RecurrentPPO / RecurrentPPO_Masked), LSTM hidden
+    states are tracked across steps within each episode via the ``state``
+    and ``episode_start`` kwargs of ``policy.predict()``.  For non-recurrent
+    agents, ``predict()`` accepts and ignores these kwargs (returning
+    ``state=None``), so the same code path handles both agent types.
+
     Args:
         wrapper: The MARLOptionsWrapper to evaluate in.
-        agents: Dict mapping agent_id → PPO (policy used for prediction only).
+        agents: Dict mapping agent_id → PPO or RecurrentPPO agent (policy
+            used for prediction only).
         n_episodes: Number of complete episodes to run.
 
     Returns:
@@ -46,11 +56,20 @@ def run_marl_eval_episodes(
         obs_dict, _ = wrapper.reset()
         last_obs = dict(obs_dict)
 
+        # Per-agent LSTM states (None for non-recurrent agents, and also
+        # None at episode start for recurrent agents — predict() will
+        # auto-initialize to zeros).
+        lstm_states: Dict[str, Any] = {aid: None for aid in agent_ids}
+
         # Select first option for every agent
         pending: Dict[str, int] = {}
         for aid in agent_ids:
             obs = last_obs[aid][np.newaxis, :]
-            action, _ = agents[aid].policy.predict(obs, deterministic=True)
+            action, lstm_states[aid] = agents[aid].policy.predict(
+                obs, state=lstm_states[aid],
+                episode_start=np.array([True]),
+                deterministic=True,
+            )
             pending[aid] = int(action[0])
 
         episode_done = False
@@ -68,7 +87,11 @@ def run_marl_eval_episodes(
                 pending = {}
                 for aid in m_obs:
                     obs = m_obs[aid][np.newaxis, :]
-                    action, _ = agents[aid].policy.predict(obs, deterministic=True)
+                    action, lstm_states[aid] = agents[aid].policy.predict(
+                        obs, state=lstm_states[aid],
+                        episode_start=np.array([False]),
+                        deterministic=True,
+                    )
                     pending[aid] = int(action[0])
 
         for aid in agent_ids:

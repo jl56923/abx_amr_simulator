@@ -292,7 +292,7 @@ class TestBuildMarlManagersFromConfig:
 
     def test_raises_for_unsupported_algorithm(self):
         config, wrapper = self._make_wrapper()
-        config["environment"]["agents"][0]["algorithm"] = "HRL_RPPO"
+        config["environment"]["agents"][0]["algorithm"] = "DQN"
         with pytest.raises(ValueError, match="unsupported algorithm"):
             build_marl_managers_from_config(config, wrapper)
 
@@ -303,6 +303,72 @@ class TestBuildMarlManagersFromConfig:
             entry["algorithm"] = "HRL_PPO"
         agents = build_marl_managers_from_config(config, wrapper)
         assert len(agents) == 2
+
+    def test_hrl_rppo_algorithm_creates_recurrent_agents(self):
+        """Setting algorithm: HRL_RPPO should create RecurrentPPO_Masked agents."""
+        from abx_amr_simulator.hrl.rl_algorithms.recurrent_ppo_masked import (
+            RecurrentPPO_Masked,
+        )
+        config, wrapper = self._make_wrapper()
+        for entry in config["environment"]["agents"]:
+            entry["algorithm"] = "HRL_RPPO"
+        agents = build_marl_managers_from_config(config, wrapper)
+        assert len(agents) == 2
+        for aid, agent in agents.items():
+            assert isinstance(agent, RecurrentPPO_Masked), (
+                f"Expected RecurrentPPO_Masked for {aid}"
+            )
+
+    def test_hrl_rppo_default_lstm_kwargs(self):
+        """HRL_RPPO without lstm_kwargs should use defaults (hidden=64, layers=1)."""
+        config, wrapper = self._make_wrapper()
+        for entry in config["environment"]["agents"]:
+            entry["algorithm"] = "HRL_RPPO"
+        agents = build_marl_managers_from_config(config, wrapper)
+        for aid, agent in agents.items():
+            assert agent.policy.lstm_actor.hidden_size == 64
+            assert agent.policy.lstm_actor.num_layers == 1
+
+    def test_hrl_rppo_custom_lstm_kwargs(self):
+        """HRL_RPPO with custom lstm_kwargs should respect them."""
+        config, wrapper = self._make_wrapper()
+        for entry in config["environment"]["agents"]:
+            entry["algorithm"] = "HRL_RPPO"
+            entry["lstm_kwargs"] = {
+                "lstm_hidden_size": 32,
+                "n_lstm_layers": 2,
+                "enable_critic_lstm": False,
+            }
+        agents = build_marl_managers_from_config(config, wrapper)
+        for aid, agent in agents.items():
+            assert agent.policy.lstm_actor.hidden_size == 32
+            assert agent.policy.lstm_actor.num_layers == 2
+            assert agent.policy.lstm_critic is None
+
+    def test_mixed_ppo_and_rppo(self):
+        """One agent HRL_PPO, another HRL_RPPO — both should be constructed."""
+        from abx_amr_simulator.hrl.rl_algorithms.recurrent_ppo_masked import (
+            RecurrentPPO_Masked,
+        )
+        config, wrapper = self._make_wrapper()
+        entries = config["environment"]["agents"]
+        entries[0]["algorithm"] = "HRL_PPO"
+        entries[1]["algorithm"] = "HRL_RPPO"
+        agents = build_marl_managers_from_config(config, wrapper)
+        aid_0 = str(entries[0]["agent_id"])
+        aid_1 = str(entries[1]["agent_id"])
+        assert isinstance(agents[aid_0], PPO)
+        assert not isinstance(agents[aid_0], RecurrentPPO_Masked)
+        assert isinstance(agents[aid_1], RecurrentPPO_Masked)
+
+    def test_algorithm_defaults_to_hrl_ppo(self):
+        """Omitting algorithm key should default to HRL_PPO (backward compat)."""
+        config, wrapper = self._make_wrapper()
+        for entry in config["environment"]["agents"]:
+            entry.pop("algorithm", None)
+        agents = build_marl_managers_from_config(config, wrapper)
+        for aid, agent in agents.items():
+            assert isinstance(agent, PPO)
 
 
 # --------------------------------------------------------------------------- #

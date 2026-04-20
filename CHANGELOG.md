@@ -31,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_get_current_visible_amr_levels()` to make the contract explicit.
 
 ### Added
+- **HRL_RPPO support for MARL training**: `MARLTrainer` now supports both
+  HRL_PPO and HRL_RPPO (recurrent) agents, including mixed configurations.
+  Per-agent LSTM states are tracked across steps within episodes and reset at
+  episode boundaries. New function `make_recurrent_ppo_for_agent()` in
+  `train_marl.py`. Config supports per-agent `algorithm` and `lstm_kwargs`
+  fields in `build_marl_managers_from_config()`.
+- **MARL granular eval RPPO support**: `run_granular_eval_best_models_marl.py`
+  now loads RPPO agents with `RecurrentPPO_Masked.load()` and tracks LSTM
+  states during eval trajectory collection.
+- **MARL eval RPPO support**: `run_marl_eval_episodes()` in
+  `marl_callbacks.py` now tracks LSTM states for recurrent agents using the
+  unified `predict(state=..., episode_start=...)` interface.
 - **MARL option library validation**: `MARLOptionsWrapper.__init__()` now calls
   `validate_environment_compatibility()` on each agent's option library,
   matching the validation that the SA `OptionsWrapper` already performs.

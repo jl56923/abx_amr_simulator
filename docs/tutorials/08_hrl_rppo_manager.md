@@ -455,6 +455,14 @@ recurrent_ppo:
 
 ---
 
+## RPPO in MARL
+
+HRL_RPPO is also available in the multi-agent (MARL) training path. Each agent in a MARL config can independently use `HRL_PPO` or `HRL_RPPO` via the `algorithm` field, with the same LSTM configuration options described above. Mixed configurations (some agents PPO, others RPPO) are fully supported.
+
+See [13_marl_training_quickstart.md](13_marl_training_quickstart.md) for MARL config details and the per-agent algorithm selection syntax.
+
+---
+
 ## What's Next?
 
 ✅ You've learned when and how to use HRL_RPPO!

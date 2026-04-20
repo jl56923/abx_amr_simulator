@@ -1,6 +1,6 @@
 # Tutorial 14: MARL Isolation Tuning
 
-**Goal**: Learn how to tune PPO hyperparameters for MARL experiments using
+**Goal**: Learn how to tune PPO/RPPO hyperparameters for MARL experiments using
 per-agent isolation tuning.
 
 **Prerequisites**: Completed Tutorial 6 (Optimization with Optuna) and Tutorial 13
@@ -96,6 +96,14 @@ All agents in a MARL config share the same tuning config. If agents are
 meaningfully different (e.g. very different patient cohort sizes), you can
 override `tuning_n_patients` at the call site — but the search space is always
 shared.
+
+> **Note on HRL_RPPO agents:** The isolation tuning infrastructure respects each
+> agent's `algorithm` field. An agent with `algorithm: HRL_RPPO` will be tuned
+> using a `RecurrentPPO_Masked` policy. The standard PPO hyperparameter search
+> space (learning_rate, n_steps, batch_size) applies to both PPO and RPPO agents.
+> LSTM-specific parameters (`lstm_hidden_size`, `n_lstm_layers`,
+> `enable_critic_lstm`) are set via `lstm_kwargs` in the MARL config and are not
+> included in the tuning search space by default.
 
 ---
 

@@ -64,13 +64,14 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from stable_baselines3 import PPO
 
 from abx_amr_simulator.hrl.marl_wrapper import MARLOptionsWrapper
+from abx_amr_simulator.hrl.rl_algorithms.recurrent_ppo_masked import RecurrentPPO_Masked
 from abx_amr_simulator.utils.marl_factories import (
     build_marl_env_from_config,
     build_marl_managers_from_config,
@@ -145,7 +146,7 @@ def remap_config_paths(config: object, old_prefix: str, new_prefix: str) -> obje
 
 def _collect_eval_trajectories(
     wrapper: MARLOptionsWrapper,
-    agents: Dict[str, PPO],
+    agents: Dict[str, Any],
     n_episodes: int,
 ) -> Dict[str, List[List[Dict]]]:
     """Run deterministic eval episodes and collect per-agent granular trajectory data.
@@ -156,10 +157,16 @@ def _collect_eval_trajectories(
                             visible_amr_levels)
         primitive_actions : list of per-substep action arrays, each shape (n_patients,)
 
+    Both HRL_PPO and HRL_RPPO agents are supported.  For recurrent agents,
+    LSTM states are tracked across steps within each eval episode and reset
+    to None at the start of each new episode.  The unified
+    ``predict(state=..., episode_start=...)`` interface handles both agent
+    types transparently.
+
     Args:
         wrapper: MARLOptionsWrapper with save_granular_trajectories enabled on the
                  underlying ABXAMRParallelEnv.
-        agents: Dict mapping agent_id → PPO.
+        agents: Dict mapping agent_id → PPO or RecurrentPPO_Masked.
         n_episodes: Number of complete episodes to run.
 
     Returns:
@@ -175,11 +182,20 @@ def _collect_eval_trajectories(
         obs_dict, _ = wrapper.reset()
         last_obs = dict(obs_dict)
 
+        # Per-agent LSTM states: None for non-recurrent agents, and also
+        # None at episode start for recurrent agents (predict() will
+        # auto-initialize to zeros).
+        lstm_states: Dict[str, Any] = {aid: None for aid in agent_ids}
+
         # Initial option selections for every agent.
         pending: Dict[str, int] = {}
         for aid in agent_ids:
             obs = last_obs[aid][np.newaxis, :]
-            action, _ = agents[aid].policy.predict(obs, deterministic=True)
+            action, lstm_states[aid] = agents[aid].policy.predict(
+                obs, state=lstm_states[aid],
+                episode_start=np.array([True]),
+                deterministic=True,
+            )
             pending[aid] = int(action[0])
 
         episode_done = False
@@ -199,7 +215,11 @@ def _collect_eval_trajectories(
                 pending = {}
                 for aid in m_obs:
                     obs = m_obs[aid][np.newaxis, :]
-                    action, _ = agents[aid].policy.predict(obs, deterministic=True)
+                    action, lstm_states[aid] = agents[aid].policy.predict(
+                        obs, state=lstm_states[aid],
+                        episode_start=np.array([False]),
+                        deterministic=True,
+                    )
                     pending[aid] = int(action[0])
 
         for aid in agent_ids:
@@ -593,12 +613,19 @@ def run_granular_eval_for_marl_seed(
     if not force and all(p.exists() for p in output_paths.values()):
         return "skip"
 
+    # Build per-agent algorithm lookup from config (default: HRL_PPO).
+    agent_algorithms: Dict[str, str] = {}
+    for entry in agent_entries:
+        aid = str(entry["agent_id"])
+        agent_algorithms[aid] = entry.get("algorithm", "HRL_PPO")
+
     # Reconstruct environment, wrapper, and agents.
     env = build_marl_env_from_config(config)
     wrapper = build_marl_wrapper_from_config(config, env)
     agents = build_marl_managers_from_config(config, wrapper)
 
-    # Load best model weights into each agent.
+    # Load best model weights into each agent, using the correct class
+    # for the agent's algorithm (PPO vs RecurrentPPO_Masked).
     checkpoints_dir = seed_folder / "checkpoints"
     for aid in agent_ids:
         model_path = checkpoints_dir / f"best_model_{aid}.zip"
@@ -606,7 +633,11 @@ def run_granular_eval_for_marl_seed(
             raise FileNotFoundError(
                 f"best_model_{aid}.zip not found in {checkpoints_dir}"
             )
-        agents[aid] = PPO.load(str(model_path))
+        algorithm = agent_algorithms.get(aid, "HRL_PPO")
+        if algorithm == "HRL_RPPO":
+            agents[aid] = RecurrentPPO_Masked.load(str(model_path))
+        else:
+            agents[aid] = PPO.load(str(model_path))
 
     # Enable granular trajectory logging on the parallel env.
     wrapper.base_env.save_granular_trajectories = True

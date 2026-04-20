@@ -11,7 +11,10 @@ import pytest
 from abx_amr_simulator.callbacks.marl_callbacks import run_marl_eval_episodes
 from abx_amr_simulator.core.abx_amr_parallel_env import ABXAMRParallelEnv
 from abx_amr_simulator.hrl import MARLOptionsWrapper, OptionBase, OptionLibrary
-from abx_amr_simulator.training.train_marl import make_ppo_for_agent
+from abx_amr_simulator.training.train_marl import (
+    make_ppo_for_agent,
+    make_recurrent_ppo_for_agent,
+)
 
 from test_reference_helpers import make_pg, make_rc  # type: ignore[import-not-found]
 
@@ -21,7 +24,7 @@ from test_reference_helpers import make_pg, make_rc  # type: ignore[import-not-f
 # --------------------------------------------------------------------------- #
 
 class ConstantOption(OptionBase):
-    """Always prescribes the same antibiotic for k steps."""
+    """Prescribes the same antibiotic for k steps (no_treatment if prob_infected=0)."""
 
     REQUIRES_OBSERVATION_ATTRIBUTES = ["prob_infected"]
     REQUIRES_AMR_LEVELS = False
@@ -33,8 +36,13 @@ class ConstantOption(OptionBase):
         self._action_name = action_name
 
     def decide(self, env_state: dict) -> np.ndarray:
-        n = env_state.get("num_patients", 1)
-        return np.full(shape=(n,), fill_value=self._action_name, dtype=object)
+        patients = env_state.get("patients", [])
+        n = env_state.get("num_patients", len(patients))
+        actions = np.full(shape=(n,), fill_value=self._action_name, dtype=object)
+        for i, patient in enumerate(patients):
+            if patient.get("prob_infected", 1.0) == 0.0:
+                actions[i] = "no_treatment"
+        return actions
 
     def get_referenced_antibiotics(self) -> list:
         return [self._action_name] if self._action_name != "no_treatment" else []
@@ -207,3 +215,86 @@ class TestRunMarlEvalEpisodes:
             assert result1[aid] == pytest.approx(result2[aid], abs=1e-6), (
                 f"Eval reward for {aid} not reproducible: {result1[aid]} vs {result2[aid]}"
             )
+
+
+# --------------------------------------------------------------------------- #
+# Tests: RPPO eval
+# --------------------------------------------------------------------------- #
+
+def _build_rppo_agents(wrapper: MARLOptionsWrapper, n_steps: int = 8) -> dict:
+    return {
+        aid: make_recurrent_ppo_for_agent(
+            wrapper=wrapper, agent_id=aid, n_steps=n_steps,
+            batch_size=4, seed=0,
+        )
+        for aid in wrapper.base_env.possible_agents
+    }
+
+
+def _build_mixed_agents(wrapper: MARLOptionsWrapper, n_steps: int = 8) -> dict:
+    agent_ids = list(wrapper.base_env.possible_agents)
+    return {
+        agent_ids[0]: make_ppo_for_agent(
+            wrapper=wrapper, agent_id=agent_ids[0], n_steps=n_steps,
+            batch_size=4, n_epochs=1, seed=0,
+        ),
+        agent_ids[1]: make_recurrent_ppo_for_agent(
+            wrapper=wrapper, agent_id=agent_ids[1], n_steps=n_steps,
+            batch_size=4, seed=0,
+        ),
+    }
+
+
+class TestRunMarlEvalEpisodesRPPO:
+    """Tests for run_marl_eval_episodes with recurrent agents."""
+
+    def test_returns_dict_with_all_agent_ids(self):
+        wrapper = _build_wrapper()
+        agents = _build_rppo_agents(wrapper)
+        result = run_marl_eval_episodes(wrapper=wrapper, agents=agents, n_episodes=2)
+        assert set(result.keys()) == set(wrapper.base_env.possible_agents)
+
+    def test_returns_finite_rewards(self):
+        wrapper = _build_wrapper()
+        agents = _build_rppo_agents(wrapper)
+        result = run_marl_eval_episodes(wrapper=wrapper, agents=agents, n_episodes=1)
+        for aid, r in result.items():
+            assert np.isfinite(r), f"Reward for {aid} is not finite: {r}"
+
+    def test_multiple_episodes_runs_without_error(self):
+        wrapper = _build_wrapper()
+        agents = _build_rppo_agents(wrapper)
+        result = run_marl_eval_episodes(wrapper=wrapper, agents=agents, n_episodes=3)
+        assert len(result) == len(wrapper.base_env.possible_agents)
+
+    def test_does_not_modify_rollout_buffers(self):
+        wrapper = _build_wrapper()
+        agents = _build_rppo_agents(wrapper)
+        before = {
+            aid: agents[aid].rollout_buffer.pos
+            for aid in wrapper.base_env.possible_agents
+        }
+        run_marl_eval_episodes(wrapper=wrapper, agents=agents, n_episodes=2)
+        after = {
+            aid: agents[aid].rollout_buffer.pos
+            for aid in wrapper.base_env.possible_agents
+        }
+        for aid in wrapper.base_env.possible_agents:
+            assert before[aid] == after[aid]
+
+
+class TestRunMarlEvalEpisodesMixed:
+    """Tests for run_marl_eval_episodes with mixed PPO + RPPO agents."""
+
+    def test_returns_all_agents(self):
+        wrapper = _build_wrapper()
+        agents = _build_mixed_agents(wrapper)
+        result = run_marl_eval_episodes(wrapper=wrapper, agents=agents, n_episodes=2)
+        assert set(result.keys()) == set(wrapper.base_env.possible_agents)
+
+    def test_returns_finite_rewards(self):
+        wrapper = _build_wrapper()
+        agents = _build_mixed_agents(wrapper)
+        result = run_marl_eval_episodes(wrapper=wrapper, agents=agents, n_episodes=1)
+        for aid, r in result.items():
+            assert np.isfinite(r)

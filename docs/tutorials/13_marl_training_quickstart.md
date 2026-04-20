@@ -20,7 +20,7 @@ At a high level, MARL training works like this:
 
 1. Build one shared parallel environment with global AMR dynamics
 2. Build one option library per agent
-3. Build one PPO manager per agent
+3. Build one PPO or RecurrentPPO manager per agent
 4. Wrap the environment with `MARLOptionsWrapper` so each agent can execute options asynchronously
 5. Train with `python -m abx_amr_simulator.training.train_marl`
 
@@ -30,7 +30,7 @@ Important differences from single-agent HRL:
 - the training entrypoint is different,
 - checkpoints are saved per agent,
 - option execution is asynchronous across agents,
-- only MARL HRL PPO is currently supported in this canonical training path.
+- both HRL PPO and HRL RPPO (recurrent) managers are supported, including mixed configurations where different agents use different algorithms.
 
 If you are starting from an empty experiment directory, create the bundled config and option scaffolds first:
 
@@ -200,7 +200,42 @@ The important design point is that MARL lets each agent have its own:
 
 - patient cohort definition,
 - reward function,
-- option menu.
+- option menu,
+- manager algorithm (PPO or RecurrentPPO).
+
+### Per-agent algorithm selection
+
+Each agent entry supports an optional `algorithm` field:
+
+- `HRL_PPO` (default if omitted) — feedforward MLP manager policy
+- `HRL_RPPO` — recurrent LSTM manager policy for partial observability and temporal reasoning
+
+When using `HRL_RPPO`, you can also specify LSTM configuration via an optional `lstm_kwargs` block:
+
+```yaml
+agents:
+  - agent_id: agent_0
+    algorithm: HRL_PPO
+    n_patients: 3
+    patient_generator: ...
+    reward_calculator: ...
+    option_library: default_deterministic.yaml
+
+  - agent_id: agent_1
+    algorithm: HRL_RPPO
+    lstm_kwargs:
+      lstm_hidden_size: 64        # default: 64
+      n_lstm_layers: 1            # default: 1
+      enable_critic_lstm: true    # default: true
+    n_patients: 4
+    patient_generator: ...
+    reward_calculator: ...
+    option_library: default_deterministic.yaml
+```
+
+Mixed configurations (some agents PPO, others RPPO) are fully supported. This is useful when agents face different levels of partial observability — for example, one agent observes AMR levels with noise while another has clean observations.
+
+For more on when to use RPPO and how to tune LSTM parameters, see [08_hrl_rppo_manager.md](08_hrl_rppo_manager.md).
 
 ## `training`
 
@@ -337,7 +372,7 @@ What this does:
 3. resolves relative config/plugin/library paths,
 4. writes a resolved `marl_full_agents_env_config.yaml` into the run folder,
 5. rebuilds the training objects from that saved config,
-6. trains one PPO manager per agent.
+6. trains one PPO or RecurrentPPO manager per agent (based on each agent's `algorithm` field).
 
 ## CLI overrides
 
@@ -477,12 +512,13 @@ The MARL override system only updates existing keys. If you need a new key such 
 ## 10. Key Takeaways
 
 1. MARL uses a dedicated config schema, not the single-agent umbrella config schema.
-2. Each agent gets its own patient generator, reward calculator, option library, and PPO manager.
+2. Each agent gets its own patient generator, reward calculator, option library, and manager (PPO or RecurrentPPO).
 3. All agents still share one AMR system and one episode clock.
 4. Training is run through `python -m abx_amr_simulator.training.train_marl`.
-5. Checkpoints and best models are written per agent.
-6. `eval_freq_episodes` and `save_freq_episodes` are separate controls.
-7. Relative component/plugin/library paths are resolved relative to the MARL config location and fail loudly when invalid.
+5. Each agent can independently use `HRL_PPO` or `HRL_RPPO` via the `algorithm` field — mixed configurations are supported.
+6. Checkpoints and best models are written per agent.
+7. `eval_freq_episodes` and `save_freq_episodes` are separate controls.
+8. Relative component/plugin/library paths are resolved relative to the MARL config location and fail loudly when invalid.
 
 ---
 

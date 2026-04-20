@@ -547,9 +547,7 @@ class MARLTrainer:
         self._lstm_states_at_action: Dict[str, Optional[RNNStates]] = {}
         for aid in self._agent_ids:
             if self._is_recurrent[aid]:
-                self._lstm_states[aid] = deepcopy(
-                    agents[aid]._last_lstm_states
-                )
+                self._lstm_states[aid] = self._make_zero_lstm_states(aid)
             else:
                 self._lstm_states[aid] = None
             self._lstm_states_at_action[aid] = None
@@ -650,6 +648,30 @@ class MARLTrainer:
                 last_obs = dict(obs_dict)
                 last_episode_start = {aid: True for aid in self._agent_ids}
 
+                # Reset LSTM states to zeros for recurrent agents.
+                #
+                # Strictly speaking, this explicit reset is redundant: the
+                # _predict_all() call below passes episode_start=True for every
+                # agent, and _predict_single() forwards that flag to
+                # policy.forward(), which internally calls _process_sequence().
+                # _process_sequence() zeros the LSTM hidden/cell states
+                # whenever episode_starts is True, so the forward pass would
+                # produce the same output regardless of the pre-call state.
+                #
+                # We reset explicitly anyway for two reasons:
+                # 1. Clarity — a reader of train() can see that LSTM states are
+                #    cleaned up at episode boundaries without needing to
+                #    understand the internals of _process_sequence().
+                # 2. Robustness — if _predict_single() is ever called with
+                #    episode_start=False at a boundary (e.g. due to a future
+                #    refactor), stale LSTM states from the previous episode
+                #    would silently corrupt the new episode's predictions.
+                for aid in self._agent_ids:
+                    if self._is_recurrent[aid]:
+                        self._lstm_states[aid] = self._make_zero_lstm_states(
+                            aid
+                        )
+
                 pending_selections = self._predict_all(
                     last_obs, last_episode_start
                 )
@@ -670,6 +692,31 @@ class MARLTrainer:
     # ---------------------------------------------------------------------- #
     # Private helpers
     # ---------------------------------------------------------------------- #
+
+    def _make_zero_lstm_states(self, aid: str) -> RNNStates:
+        """Create zero-initialized LSTM states for a recurrent agent.
+
+        Returns an ``RNNStates`` named tuple with ``.pi`` and ``.vf`` fields,
+        each containing a ``(hidden, cell)`` tuple of zero tensors with shape
+        ``(n_lstm_layers, 1, lstm_hidden_size)``.  The ``n_envs=1`` dimension
+        reflects the MARL convention of one dummy env per agent.
+
+        Args:
+            aid: Agent ID.  Must correspond to a recurrent agent
+                (``self._is_recurrent[aid]`` is True).
+
+        Returns:
+            RNNStates with all-zeros hidden and cell states.
+        """
+        lstm = self.agents[aid].policy.lstm_actor
+        shape = (lstm.num_layers, 1, lstm.hidden_size)
+        device = self.agents[aid].device
+        return RNNStates(
+            pi=(torch.zeros(shape, device=device),
+                torch.zeros(shape, device=device)),
+            vf=(torch.zeros(shape, device=device),
+                torch.zeros(shape, device=device)),
+        )
 
     def _predict_single(
         self,
@@ -790,18 +837,44 @@ class MARLTrainer:
             action_array, dtype=torch.long, device=policy.device
         )
 
-        with torch.no_grad():
-            value = policy.predict_values(obs_tensor)
-            _, log_prob, _ = policy.evaluate_actions(obs_tensor, action_tensor)
+        if self._is_recurrent[aid]:
+            ep_start_tensor = torch.tensor(
+                [episode_start], dtype=torch.float32, device=policy.device
+            )
+            lstm_at_action = self._lstm_states_at_action[aid]
 
-        self._buffers[aid].add(
-            obs=obs,
-            action=action_array,
-            reward=np.array([reward]),
-            episode_start=np.array([episode_start]),
-            value=value,
-            log_prob=log_prob,
-        )
+            with torch.no_grad():
+                value = policy.predict_values(
+                    obs_tensor, lstm_at_action.vf, ep_start_tensor
+                )
+                _, log_prob, _ = policy.evaluate_actions(
+                    obs_tensor, action_tensor, lstm_at_action, ep_start_tensor
+                )
+
+            self._buffers[aid].add(
+                obs=obs,
+                action=action_array,
+                reward=np.array([reward]),
+                episode_start=np.array([episode_start]),
+                value=value,
+                log_prob=log_prob,
+                lstm_states=lstm_at_action,
+            )
+        else:
+            with torch.no_grad():
+                value = policy.predict_values(obs_tensor)
+                _, log_prob, _ = policy.evaluate_actions(
+                    obs_tensor, action_tensor
+                )
+
+            self._buffers[aid].add(
+                obs=obs,
+                action=action_array,
+                reward=np.array([reward]),
+                episode_start=np.array([episode_start]),
+                value=value,
+                log_prob=log_prob,
+            )
 
     def _maybe_update(
         self,
@@ -823,8 +896,27 @@ class MARLTrainer:
 
         policy = self.agents[aid].policy
         next_obs_tensor, _ = policy.obs_to_tensor(next_obs)
-        with torch.no_grad():
-            last_value = policy.predict_values(next_obs_tensor)
+
+        if self._is_recurrent[aid]:
+            # episode_starts is False because next_obs belongs to the current
+            # episode — the LSTM states in self._lstm_states[aid] carry the
+            # correct history.  When done=True the bootstrap value is zeroed
+            # out by compute_returns_and_advantage() via the dones array, so
+            # the exact value does not affect training in that case.
+            lstm_states = self._lstm_states[aid]
+            assert lstm_states is not None  # guaranteed by _is_recurrent
+            ep_start_tensor = torch.tensor(
+                [False], dtype=torch.float32, device=policy.device
+            )
+            with torch.no_grad():
+                last_value = policy.predict_values(
+                    next_obs_tensor,
+                    lstm_states.vf,
+                    ep_start_tensor,
+                )
+        else:
+            with torch.no_grad():
+                last_value = policy.predict_values(next_obs_tensor)
 
         buf.compute_returns_and_advantage(
             last_values=last_value,
