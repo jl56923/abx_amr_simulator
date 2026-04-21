@@ -50,6 +50,9 @@ from stable_baselines3 import PPO
 
 from abx_amr_simulator.core.abx_amr_env import ABXAMREnv
 from abx_amr_simulator.hrl.option_loaders import OptionLibraryLoader
+from abx_amr_simulator.hrl.rl_algorithms.recurrent_ppo_masked import (
+    RecurrentPPO_Masked,
+)
 from abx_amr_simulator.hrl.wrapper import OptionsWrapper
 from abx_amr_simulator.utils.marl_factories import (
     build_patient_generator_from_config,
@@ -213,15 +216,19 @@ def build_single_agent_wrapper_from_marl_config(
 
 def _run_eval_episodes(
     wrapper: OptionsWrapper,
-    ppo: PPO,
+    ppo: Any,
     n_episodes: int,
     seed: int,
 ) -> float:
     """Run deterministic eval episodes and return mean cumulative reward.
 
+    Works for both ``PPO`` and ``RecurrentPPO_Masked`` agents: LSTM hidden
+    state is threaded through ``predict(state=..., episode_start=...)`` which
+    is a no-op for non-recurrent PPO (returns ``state=None``).
+
     Args:
         wrapper: Single-agent OptionsWrapper to evaluate in.
-        ppo: Trained PPO agent (deterministic=True).
+        ppo: Trained PPO or RecurrentPPO_Masked agent (deterministic=True).
         n_episodes: Number of eval episodes.
         seed: RNG seed for reproducibility.
 
@@ -233,8 +240,16 @@ def _run_eval_episodes(
         obs, _ = wrapper.reset(seed=seed + ep)
         done = False
         ep_reward = 0.0
+        lstm_state: Any = None
+        episode_start = np.array([True])
         while not done:
-            action, _ = ppo.predict(obs, deterministic=True)
+            action, lstm_state = ppo.predict(
+                obs,
+                state=lstm_state,
+                episode_start=episode_start,
+                deterministic=True,
+            )
+            episode_start = np.array([False])
             obs, reward, terminated, truncated, _ = wrapper.step(int(action))
             ep_reward += float(reward)
             done = terminated or truncated
@@ -322,6 +337,101 @@ def _compute_distributed_worker_quota(
     }
 
 
+def _get_agent_entry(
+    config: Dict[str, Any],
+    agent_id: str,
+) -> Dict[str, Any]:
+    """Return the agent entry dict for ``agent_id`` in a MARL config.
+
+    Raises:
+        ValueError: If ``agent_id`` is not found.
+    """
+    agent_entries = config.get("environment", {}).get("agents", [])
+    for entry in agent_entries:
+        if str(entry["agent_id"]) == agent_id:
+            return entry
+    available = [str(e["agent_id"]) for e in agent_entries]
+    raise ValueError(
+        f"Agent '{agent_id}' not found in MARL config. "
+        f"Available agent IDs: {available}"
+    )
+
+
+def _build_tuning_agent(
+    *,
+    algorithm: str,
+    wrapper: OptionsWrapper,
+    params: Dict[str, Any],
+    resolved_n_steps: int,
+    resolved_batch_size: int,
+    seed: int,
+    lstm_kwargs: Dict[str, Any],
+    net_arch: Optional[list],
+) -> Any:
+    """Construct a PPO or RecurrentPPO_Masked agent for a single tuning trial.
+
+    Dispatches on ``algorithm`` (``'HRL_PPO'`` or ``'HRL_RPPO'``) and wires
+    the suggested hyperparameters, optional LSTM kwargs, and optional
+    ``net_arch`` into the correct SB3 constructor.
+
+    Args:
+        algorithm: Either ``'HRL_PPO'`` or ``'HRL_RPPO'``.
+        wrapper: Single-agent OptionsWrapper used as the training env.
+        params: Suggested hyperparameters from the Optuna trial.
+        resolved_n_steps: Rollout buffer size (already reconciled with batch).
+        resolved_batch_size: Minibatch size (already reconciled with n_steps).
+        seed: Random seed for the trial.
+        lstm_kwargs: LSTM architecture kwargs for HRL_RPPO (ignored for PPO).
+        net_arch: Optional pre-policy MLP architecture (shared across algs).
+
+    Returns:
+        A fresh SB3 agent ready for ``.learn()``.
+
+    Raises:
+        ValueError: If ``algorithm`` is not one of the supported values.
+    """
+    common_kwargs = dict(
+        env=wrapper,
+        learning_rate=params.get("learning_rate", 3e-4),
+        n_steps=resolved_n_steps,
+        batch_size=resolved_batch_size,
+        n_epochs=params.get("n_epochs", 10),
+        gamma=params.get("gamma", 0.99),
+        gae_lambda=params.get("gae_lambda", 0.95),
+        clip_range=params.get("clip_range", 0.2),
+        ent_coef=params.get("ent_coef", 0.0),
+        seed=seed,
+        verbose=0,
+    )
+
+    if algorithm == "HRL_PPO":
+        policy_kwargs: Optional[Dict[str, Any]] = None
+        if net_arch is not None:
+            policy_kwargs = {"net_arch": list(net_arch)}
+        return PPO(
+            policy="MlpPolicy",
+            policy_kwargs=policy_kwargs,
+            **common_kwargs,
+        )
+    if algorithm == "HRL_RPPO":
+        rppo_policy_kwargs: Dict[str, Any] = {
+            "lstm_hidden_size": lstm_kwargs.get("lstm_hidden_size", 64),
+            "n_lstm_layers": lstm_kwargs.get("n_lstm_layers", 1),
+            "enable_critic_lstm": lstm_kwargs.get("enable_critic_lstm", True),
+        }
+        if net_arch is not None:
+            rppo_policy_kwargs["net_arch"] = list(net_arch)
+        return RecurrentPPO_Masked(
+            policy="MlpLstmPolicy",
+            policy_kwargs=rppo_policy_kwargs,
+            **common_kwargs,
+        )
+    raise ValueError(
+        f"Agent tuning: unsupported algorithm '{algorithm}'. "
+        "Supported: 'HRL_PPO', 'HRL_RPPO'."
+    )
+
+
 def _make_objective(
     config: Dict[str, Any],
     agent_id: str,
@@ -335,14 +445,23 @@ def _make_objective(
 
     Each call to the objective:
       1. Builds a fresh ABXAMREnv + OptionsWrapper for the agent.
-      2. Trains a PPO with the suggested hyperparameters for
-         `truncated_primitive_steps` total timesteps across all seeds.
+      2. Trains a PPO (HRL_PPO) or RecurrentPPO_Masked (HRL_RPPO) with the
+         suggested hyperparameters for `truncated_primitive_steps` total
+         timesteps across all seeds.  The algorithm, optional ``lstm_kwargs``,
+         and optional ``policy_kwargs.net_arch`` are read from the agent's
+         config entry so tuning matches the downstream training path.
       3. Evaluates the trained policy deterministically.
       4. Returns mean(rewards) - stability_penalty_weight * std(rewards).
     """
     opt_config = tuning_config["optimization"]
     truncated_steps = int(opt_config["truncated_primitive_steps"])
     search_space = tuning_config["search_space"]
+
+    agent_entry = _get_agent_entry(config=config, agent_id=agent_id)
+    algorithm = agent_entry.get("algorithm", "HRL_PPO")
+    lstm_kwargs = agent_entry.get("lstm_kwargs", {}) or {}
+    policy_kwargs_entry = agent_entry.get("policy_kwargs", {}) or {}
+    net_arch = policy_kwargs_entry.get("net_arch", None)
 
     def objective(trial: optuna.Trial) -> float:
         params = _suggest_hyperparameters(trial, search_space)
@@ -367,19 +486,15 @@ def _make_objective(
                 requested_batch_size=requested_batch_size,
             )
 
-            ppo = PPO(
-                policy="MlpPolicy",
-                env=wrapper,
-                learning_rate=params.get("learning_rate", 3e-4),
-                n_steps=resolved_n_steps,
-                batch_size=resolved_batch_size,
-                n_epochs=params.get("n_epochs", 10),
-                gamma=params.get("gamma", 0.99),
-                gae_lambda=params.get("gae_lambda", 0.95),
-                clip_range=params.get("clip_range", 0.2),
-                ent_coef=params.get("ent_coef", 0.0),
+            ppo = _build_tuning_agent(
+                algorithm=algorithm,
+                wrapper=wrapper,
+                params=params,
+                resolved_n_steps=resolved_n_steps,
+                resolved_batch_size=resolved_batch_size,
                 seed=seed,
-                verbose=0,
+                lstm_kwargs=lstm_kwargs,
+                net_arch=net_arch,
             )
             ppo.learn(total_timesteps=truncated_steps)
             reward = _run_eval_episodes(

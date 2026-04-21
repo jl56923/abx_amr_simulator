@@ -21,8 +21,9 @@ from abx_amr_simulator.training.tune_marl_agent import (
     build_single_agent_env_from_marl_config,
     build_single_agent_wrapper_from_marl_config,
     run_marl_agent_tuning,
-    _resolve_batch_size_for_n_steps,
+    _build_tuning_agent,
     _compute_distributed_worker_quota,
+    _resolve_batch_size_for_n_steps,
 )
 from abx_amr_simulator.utils.marl_factories import load_marl_config
 
@@ -454,3 +455,239 @@ class TestRunMarlAgentTuning:
             f"hyperparameters: {completed[0].params}. "
             "Each worker's TPE sampler should use a different seed."
         )
+
+
+# --------------------------------------------------------------------------- #
+# Algorithm dispatch: _build_tuning_agent and end-to-end HRL_RPPO tuning
+# --------------------------------------------------------------------------- #
+
+def _build_wrapper_for_agent(agent_id: str):
+    """Helper: build a fresh single-agent wrapper from the fixture config."""
+    config = _load()
+    env = build_single_agent_env_from_marl_config(
+        config=config,
+        agent_id=agent_id,
+        tuning_n_patients=3,
+    )
+    wrapper = build_single_agent_wrapper_from_marl_config(
+        config=config,
+        agent_id=agent_id,
+        env=env,
+    )
+    return wrapper
+
+
+class TestBuildTuningAgent:
+    """Direct tests of the algorithm-dispatch helper.
+
+    Uses real ABXAMREnv + OptionsWrapper instances (sociable testing)
+    and inspects the resulting SB3 agent's type and policy attributes.
+    """
+
+    _PARAMS = {
+        "learning_rate": 3e-4,
+        "n_epochs": 1,
+        "gamma": 0.99,
+        "gae_lambda": 0.95,
+        "clip_range": 0.2,
+        "ent_coef": 0.0,
+    }
+
+    def test_hrl_ppo_returns_ppo_instance(self):
+        from stable_baselines3 import PPO
+        wrapper = _build_wrapper_for_agent("agent_0")
+        try:
+            agent = _build_tuning_agent(
+                algorithm="HRL_PPO",
+                wrapper=wrapper,
+                params=self._PARAMS,
+                resolved_n_steps=16,
+                resolved_batch_size=4,
+                seed=0,
+                lstm_kwargs={},
+                net_arch=None,
+            )
+            assert isinstance(agent, PPO)
+        finally:
+            wrapper.close()
+
+    def test_hrl_rppo_returns_recurrent_ppo_masked_instance(self):
+        from abx_amr_simulator.hrl.rl_algorithms.recurrent_ppo_masked import (
+            RecurrentPPO_Masked,
+        )
+        wrapper = _build_wrapper_for_agent("agent_0")
+        try:
+            agent = _build_tuning_agent(
+                algorithm="HRL_RPPO",
+                wrapper=wrapper,
+                params=self._PARAMS,
+                resolved_n_steps=16,
+                resolved_batch_size=4,
+                seed=0,
+                lstm_kwargs={"lstm_hidden_size": 8, "n_lstm_layers": 1},
+                net_arch=None,
+            )
+            assert isinstance(agent, RecurrentPPO_Masked)
+        finally:
+            wrapper.close()
+
+    def test_hrl_rppo_honors_lstm_hidden_size(self):
+        wrapper = _build_wrapper_for_agent("agent_0")
+        try:
+            agent = _build_tuning_agent(
+                algorithm="HRL_RPPO",
+                wrapper=wrapper,
+                params=self._PARAMS,
+                resolved_n_steps=16,
+                resolved_batch_size=4,
+                seed=0,
+                lstm_kwargs={"lstm_hidden_size": 32, "n_lstm_layers": 2},
+                net_arch=None,
+            )
+            assert agent.policy.lstm_actor.hidden_size == 32
+            assert agent.policy.lstm_actor.num_layers == 2
+        finally:
+            wrapper.close()
+
+    def test_hrl_rppo_honors_net_arch(self):
+        wrapper = _build_wrapper_for_agent("agent_0")
+        try:
+            agent = _build_tuning_agent(
+                algorithm="HRL_RPPO",
+                wrapper=wrapper,
+                params=self._PARAMS,
+                resolved_n_steps=16,
+                resolved_batch_size=4,
+                seed=0,
+                lstm_kwargs={"lstm_hidden_size": 8, "n_lstm_layers": 1},
+                net_arch=[7, 11],
+            )
+            # SB3 stores policy_kwargs back onto the agent.
+            assert agent.policy_kwargs.get("net_arch") == [7, 11]
+        finally:
+            wrapper.close()
+
+    def test_hrl_ppo_honors_net_arch(self):
+        wrapper = _build_wrapper_for_agent("agent_0")
+        try:
+            agent = _build_tuning_agent(
+                algorithm="HRL_PPO",
+                wrapper=wrapper,
+                params=self._PARAMS,
+                resolved_n_steps=16,
+                resolved_batch_size=4,
+                seed=0,
+                lstm_kwargs={},
+                net_arch=[7, 11],
+            )
+            assert agent.policy_kwargs.get("net_arch") == [7, 11]
+        finally:
+            wrapper.close()
+
+    def test_hrl_ppo_net_arch_absent_when_none(self):
+        """When net_arch is None, policy_kwargs is not populated with a net_arch key."""
+        wrapper = _build_wrapper_for_agent("agent_0")
+        try:
+            agent = _build_tuning_agent(
+                algorithm="HRL_PPO",
+                wrapper=wrapper,
+                params=self._PARAMS,
+                resolved_n_steps=16,
+                resolved_batch_size=4,
+                seed=0,
+                lstm_kwargs={},
+                net_arch=None,
+            )
+            # SB3 normalises policy_kwargs to {} when nothing was passed.
+            assert "net_arch" not in (agent.policy_kwargs or {})
+        finally:
+            wrapper.close()
+
+    def test_unsupported_algorithm_raises(self):
+        wrapper = _build_wrapper_for_agent("agent_0")
+        try:
+            with pytest.raises(ValueError, match="unsupported algorithm"):
+                _build_tuning_agent(
+                    algorithm="NOT_AN_ALGO",
+                    wrapper=wrapper,
+                    params=self._PARAMS,
+                    resolved_n_steps=16,
+                    resolved_batch_size=4,
+                    seed=0,
+                    lstm_kwargs={},
+                    net_arch=None,
+                )
+        finally:
+            wrapper.close()
+
+
+class TestRunMarlAgentTuningHrlRppo:
+    """End-to-end tuning run with an HRL_RPPO agent config entry.
+
+    Patches the fixture config in-memory to set ``algorithm: HRL_RPPO`` +
+    ``lstm_kwargs`` + ``policy_kwargs.net_arch`` on agent_0, then verifies
+    that ``run_marl_agent_tuning`` completes and writes a best_params.json.
+    """
+
+    def test_hrl_rppo_tuning_runs_to_completion(self, tmp_path):
+        config = _load()
+        agent_entry = next(
+            e for e in config["environment"]["agents"]
+            if e["agent_id"] == "agent_0"
+        )
+        agent_entry["algorithm"] = "HRL_RPPO"
+        agent_entry["lstm_kwargs"] = {
+            "lstm_hidden_size": 8,
+            "n_lstm_layers": 1,
+            "enable_critic_lstm": True,
+        }
+        agent_entry["policy_kwargs"] = {"net_arch": [8, 8]}
+
+        best = run_marl_agent_tuning(
+            config=config,
+            agent_id="agent_0",
+            tuning_config=_MINIMAL_TUNING_CONFIG,
+            optimization_dir=tmp_path,
+            run_name="rppo_run",
+            seed=0,
+        )
+        assert (tmp_path / "rppo_run" / "best_params.json").exists()
+        assert isinstance(best, dict)
+        assert "learning_rate" in best
+
+    def test_hrl_ppo_regression_when_algorithm_omitted(self, tmp_path):
+        """With no ``algorithm`` field, tuning should still use plain PPO.
+
+        This is a regression guard: pre-existing MARL configs (without an
+        explicit algorithm field) must continue to work as HRL_PPO.
+        """
+        from stable_baselines3 import PPO
+        config = _load()
+
+        # Spy on _build_tuning_agent to capture the produced agent's class.
+        import abx_amr_simulator.training.tune_marl_agent as _mod
+        original_builder = _mod._build_tuning_agent
+        captured = {"instances": []}
+
+        def spy_builder(*args, **kwargs):
+            inst = original_builder(*args, **kwargs)
+            captured["instances"].append(inst)
+            return inst
+
+        _mod._build_tuning_agent = spy_builder
+        try:
+            run_marl_agent_tuning(
+                config=config,
+                agent_id="agent_0",
+                tuning_config=_MINIMAL_TUNING_CONFIG,
+                optimization_dir=tmp_path,
+                run_name="ppo_regression",
+                seed=0,
+            )
+        finally:
+            _mod._build_tuning_agent = original_builder
+
+        assert len(captured["instances"]) > 0
+        # All produced agents must be plain PPO (not RecurrentPPO_Masked).
+        for inst in captured["instances"]:
+            assert type(inst) is PPO

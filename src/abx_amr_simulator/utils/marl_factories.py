@@ -372,6 +372,14 @@ def build_marl_managers_from_config(
               lstm_hidden_size: 64
               n_lstm_layers: 1
               enable_critic_lstm: true
+            policy_kwargs:
+              net_arch: [64, 64]
+
+    For either algorithm, an optional ``policy_kwargs.net_arch`` list may be
+    specified to override the default MLP feature-extractor shape. For
+    HRL_RPPO this is the pre-LSTM MLP; for HRL_PPO it is the policy/value
+    MLP. When omitted, SB3's default ``MlpPolicy`` / ``MlpLstmPolicy`` shape
+    is used.
 
     Base PPO hyperparameters are read from the ``training`` section and
     applied uniformly to all agents.  If ``agent_hyperparams`` is provided,
@@ -433,10 +441,14 @@ def build_marl_managers_from_config(
                 if k != "batch_size":
                     ppo_kwargs[k] = v
 
+        policy_kwargs_entry = entry.get("policy_kwargs", {}) or {}
+        net_arch = policy_kwargs_entry.get("net_arch", None)
+
         if algorithm == "HRL_PPO":
             agents[aid] = make_ppo_for_agent(
                 wrapper=wrapper,
                 agent_id=aid,
+                net_arch=net_arch,
                 **ppo_kwargs,
             )
         elif algorithm == "HRL_RPPO":
@@ -447,6 +459,7 @@ def build_marl_managers_from_config(
                 lstm_hidden_size=lstm_kwargs.get("lstm_hidden_size", 64),
                 n_lstm_layers=lstm_kwargs.get("n_lstm_layers", 1),
                 enable_critic_lstm=lstm_kwargs.get("enable_critic_lstm", True),
+                net_arch=net_arch,
                 **ppo_kwargs,
             )
         else:

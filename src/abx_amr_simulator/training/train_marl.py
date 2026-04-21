@@ -266,6 +266,7 @@ def make_ppo_for_agent(
     ent_coef: float = 0.02,
     vf_coef: float = 0.5,
     max_grad_norm: float = 0.5,
+    net_arch: Optional[List[int]] = None,
     seed: Optional[int] = None,
     tensorboard_log: Optional[str] = None,
     verbose: int = 0,
@@ -290,6 +291,9 @@ def make_ppo_for_agent(
         ent_coef: Entropy coefficient.
         vf_coef: Value function coefficient.
         max_grad_norm: Gradient clipping norm.
+        net_arch: Optional MLP feature-extractor architecture for the MLP
+            policy (e.g. ``[64, 64]``). When ``None``, SB3's MlpPolicy default
+            is used.
         seed: Optional random seed for the PPO policy.
         tensorboard_log: Optional path for TensorBoard logging.
         verbose: SB3 verbosity (0 = silent).
@@ -301,6 +305,9 @@ def make_ppo_for_agent(
         obs_space=wrapper.observation_spaces[agent_id],
         action_space=wrapper.action_spaces[agent_id],
     )
+    policy_kwargs: Optional[Dict[str, Any]] = None
+    if net_arch is not None:
+        policy_kwargs = {"net_arch": list(net_arch)}
     return PPO(
         policy="MlpPolicy",
         env=dummy_env,
@@ -314,6 +321,7 @@ def make_ppo_for_agent(
         ent_coef=ent_coef,
         vf_coef=vf_coef,
         max_grad_norm=max_grad_norm,
+        policy_kwargs=policy_kwargs,
         seed=seed,
         tensorboard_log=tensorboard_log,
         verbose=verbose,
@@ -336,6 +344,7 @@ def make_recurrent_ppo_for_agent(
     lstm_hidden_size: int = 64,
     n_lstm_layers: int = 1,
     enable_critic_lstm: bool = True,
+    net_arch: Optional[List[int]] = None,
     seed: Optional[int] = None,
     tensorboard_log: Optional[str] = None,
     verbose: int = 0,
@@ -372,6 +381,9 @@ def make_recurrent_ppo_for_agent(
         n_lstm_layers: Number of stacked LSTM layers.
         enable_critic_lstm: Whether the critic network also uses an LSTM
             (True) or a feedforward network (False).
+        net_arch: Optional pre-LSTM MLP feature-extractor architecture
+            (e.g. ``[64, 64]``). When ``None``, SB3's MlpLstmPolicy default is
+            used.
         seed: Optional random seed for the policy.
         tensorboard_log: Optional path for TensorBoard logging.
         verbose: SB3 verbosity (0 = silent).
@@ -383,11 +395,13 @@ def make_recurrent_ppo_for_agent(
         obs_space=wrapper.observation_spaces[agent_id],
         action_space=wrapper.action_spaces[agent_id],
     )
-    policy_kwargs = {
+    policy_kwargs: Dict[str, Any] = {
         "lstm_hidden_size": lstm_hidden_size,
         "n_lstm_layers": n_lstm_layers,
         "enable_critic_lstm": enable_critic_lstm,
     }
+    if net_arch is not None:
+        policy_kwargs["net_arch"] = list(net_arch)
     return RecurrentPPO_Masked(
         policy="MlpLstmPolicy",
         env=dummy_env,

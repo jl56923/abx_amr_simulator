@@ -370,6 +370,54 @@ class TestBuildMarlManagersFromConfig:
         for aid, agent in agents.items():
             assert isinstance(agent, PPO)
 
+    def test_hrl_ppo_net_arch_absent_by_default(self):
+        """Without policy_kwargs.net_arch, HRL_PPO agents use SB3 defaults."""
+        config, wrapper = self._make_wrapper()
+        for entry in config["environment"]["agents"]:
+            entry["algorithm"] = "HRL_PPO"
+            entry.pop("policy_kwargs", None)
+        agents = build_marl_managers_from_config(config, wrapper)
+        for aid, agent in agents.items():
+            assert "net_arch" not in (agent.policy_kwargs or {})
+
+    def test_hrl_ppo_honors_policy_kwargs_net_arch(self):
+        """HRL_PPO reads policy_kwargs.net_arch from the agent entry."""
+        config, wrapper = self._make_wrapper()
+        for entry in config["environment"]["agents"]:
+            entry["algorithm"] = "HRL_PPO"
+            entry["policy_kwargs"] = {"net_arch": [7, 11]}
+        agents = build_marl_managers_from_config(config, wrapper)
+        for aid, agent in agents.items():
+            assert agent.policy_kwargs.get("net_arch") == [7, 11]
+
+    def test_hrl_rppo_honors_policy_kwargs_net_arch(self):
+        """HRL_RPPO reads policy_kwargs.net_arch alongside lstm_kwargs."""
+        config, wrapper = self._make_wrapper()
+        for entry in config["environment"]["agents"]:
+            entry["algorithm"] = "HRL_RPPO"
+            entry["lstm_kwargs"] = {"lstm_hidden_size": 16, "n_lstm_layers": 1}
+            entry["policy_kwargs"] = {"net_arch": [13, 17]}
+        agents = build_marl_managers_from_config(config, wrapper)
+        for aid, agent in agents.items():
+            assert agent.policy_kwargs.get("net_arch") == [13, 17]
+            # LSTM kwargs should still be honored when net_arch is also set.
+            assert agent.policy.lstm_actor.hidden_size == 16
+
+    def test_mixed_net_arch_across_agents(self):
+        """Per-agent net_arch values are applied independently."""
+        config, wrapper = self._make_wrapper()
+        entries = config["environment"]["agents"]
+        entries[0]["algorithm"] = "HRL_PPO"
+        entries[0]["policy_kwargs"] = {"net_arch": [5, 5]}
+        entries[1]["algorithm"] = "HRL_RPPO"
+        entries[1]["lstm_kwargs"] = {"lstm_hidden_size": 8}
+        entries[1]["policy_kwargs"] = {"net_arch": [9, 9]}
+        agents = build_marl_managers_from_config(config, wrapper)
+        aid_0 = str(entries[0]["agent_id"])
+        aid_1 = str(entries[1]["agent_id"])
+        assert agents[aid_0].policy_kwargs.get("net_arch") == [5, 5]
+        assert agents[aid_1].policy_kwargs.get("net_arch") == [9, 9]
+
 
 # --------------------------------------------------------------------------- #
 # build_marl_training_run_from_config (round-trip)

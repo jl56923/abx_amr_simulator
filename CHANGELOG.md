@@ -31,6 +31,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_get_current_visible_amr_levels()` to make the contract explicit.
 
 ### Added
+- **HRL_RPPO support for MARL tuning**: `tune_marl_agent.py` is now
+  algorithm-aware. Each trial reads the `algorithm` field (and optional
+  `lstm_kwargs`) from the named agent's entry in the MARL config and
+  dispatches to either `PPO` or `RecurrentPPO_Masked`. Previously the tuner
+  hard-coded feedforward `PPO(policy="MlpPolicy", ...)` for every trial,
+  which meant RPPO MARL experiments would receive hyperparameters tuned
+  against the wrong policy class and search space.
+- **Explicit `policy_kwargs.net_arch` plumbing in MARL agent factories**:
+  `make_ppo_for_agent()` and `make_recurrent_ppo_for_agent()` in
+  `train_marl.py` now accept an optional `net_arch` argument;
+  `build_marl_managers_from_config()` in `utils/marl_factories.py` reads
+  `policy_kwargs.net_arch` from each agent entry and forwards it. When
+  absent, SB3's default applies (backward-compatible).
+- **Canonical MARL tuning defaults**: Two new files under
+  `src/abx_amr_simulator/tuning/defaults/`:
+  - `hrl_ppo_marl_tuning_default.yaml` — canonical MARL-variant of
+    `hrl_ppo_tuning_default.yaml`. Search ranges match the SA PPO defaults
+    exactly; intentionally excludes `option_gamma` (shared across the
+    `MARLOptionsWrapper`, not per-agent) and `batch_size` (taken from the
+    training config). Uses `truncated_primitive_steps` as the budget.
+  - `hrl_rppo_marl_tuning_default.yaml` — canonical MARL-variant of
+    `hrl_rppo_tuning_default.yaml`. Same structural adjustments; search
+    ranges match the SA RPPO defaults (notably the smaller `n_steps`
+    range appropriate for recurrent agents).
 - **HRL_RPPO support for MARL training**: `MARLTrainer` now supports both
   HRL_PPO and HRL_RPPO (recurrent) agents, including mixed configurations.
   Per-agent LSTM states are tracked across steps within episodes and reset at

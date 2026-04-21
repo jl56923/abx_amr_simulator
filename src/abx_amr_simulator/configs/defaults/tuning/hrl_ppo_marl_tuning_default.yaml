@@ -1,0 +1,84 @@
+# Default HRL-PPO hyperparameter tuning configuration for MARL experiments.
+#
+# Used by `tune_marl_agent.py` to tune one agent at a time extracted from a
+# MARL config.  Each agent is tuned in isolation using a single-agent
+# ABXAMREnv + OptionsWrapper (not MARLOptionsWrapper), so this file is
+# structurally parallel to the single-agent `hrl_ppo_tuning_default.yaml`,
+# with two MARL-specific differences:
+#
+#   1. `truncated_primitive_steps` is used instead of `truncated_episodes`,
+#      because the MARL tuning loop works in primitive env-step units
+#      (there is no notion of a "full MARL episode" during isolation tuning).
+#
+#   2. `option_gamma` is intentionally excluded from the search space.
+#      During MARL training, `option_gamma` is a shared property of
+#      `MARLOptionsWrapper` and is set in the MARL config YAML, not
+#      per-agent.  Tuning it here would produce a value that cannot be
+#      cleanly transferred to the shared wrapper.
+#
+#   3. `batch_size` is intentionally excluded.  It is read from the
+#      `training` section of the MARL config uniformly across agents and
+#      is not overlaid from per-agent tuning results in
+#      `build_marl_managers_from_config` (see that function's docstring).
+#
+# Budget rationale:
+#   three_abx env: max_time_steps=500, option duration ~10 steps
+#   → one episode ≈ 500 primitive steps
+#   → 500 episodes ≈ 250,000 primitive steps (matching the SA HRL budget
+#     of truncated_episodes=500 in hrl_ppo_tuning_default.yaml).
+
+optimization:
+  n_trials: 32
+  n_seeds_per_trial: 3
+  truncated_primitive_steps: 250000
+  direction: maximize
+  sampler: TPE
+  stability_penalty_weight: 0.3
+
+  early_stopping:
+    enabled: true
+    warmup_trials: 8
+    patience: 8
+    min_delta: 2.0
+
+  tpe_config:
+    n_startup_trials: null
+    constant_liar: auto
+
+search_space:
+  learning_rate:
+    type: float
+    low: 5.0e-6
+    high: 5.0e-4
+    log: true
+
+  n_steps:
+    type: int
+    low: 32
+    high: 256
+    step: 32
+
+  gamma:
+    type: float
+    low: 0.95
+    high: 0.999
+
+  gae_lambda:
+    type: float
+    low: 0.9
+    high: 0.99
+
+  ent_coef:
+    type: categorical
+    choices: [0.01, 0.05, 0.1, 0.2, 0.3]
+
+  clip_range:
+    type: float
+    low: 0.1
+    high: 0.3
+
+  n_epochs:
+    type: int
+    low: 5
+    high: 15
+    step: 1
