@@ -181,6 +181,11 @@ def build_patient_generator_from_config(
     """
     pg_config, pg_config_dir = _load_component_config(pg_value, config_dir)
 
+    # Shallow-copy and inject _config_dir_hint so plugin subclasses can resolve
+    # relative file paths without needing Path(__file__) workarounds.
+    pg_config = dict(pg_config)
+    pg_config["_config_dir_hint"] = str(pg_config_dir)
+
     # Support plugin-based patient generators
     plugin_result = load_plugin_component(
         component_config=pg_config,
@@ -191,7 +196,6 @@ def build_patient_generator_from_config(
     if plugin_result is not None:
         return plugin_result
 
-    pg_config = dict(pg_config)  # copy before mutating
     pg_config["seed"] = seed
     return PatientGenerator(config=pg_config)
 
@@ -217,6 +221,11 @@ def build_reward_calculator_from_config(
     """
     rc_config, rc_config_dir = _load_component_config(rc_value, config_dir)
 
+    # Shallow-copy and inject _config_dir_hint so plugin subclasses can resolve
+    # relative file paths without needing Path(__file__) workarounds.
+    rc_config = dict(rc_config)
+    rc_config["_config_dir_hint"] = str(rc_config_dir)
+
     # Support plugin-based reward calculators
     plugin_result = load_plugin_component(
         component_config=rc_config,
@@ -227,7 +236,6 @@ def build_reward_calculator_from_config(
     if plugin_result is not None:
         return plugin_result
 
-    rc_config = dict(rc_config)  # copy before mutating
     rc_config["seed"] = seed
     return RewardCalculator(config=rc_config)
 

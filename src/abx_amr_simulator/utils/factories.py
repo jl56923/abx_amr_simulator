@@ -12,7 +12,7 @@ import importlib
 import importlib.util
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
 import pdb
 
@@ -71,11 +71,16 @@ def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
         >>> rc = create_reward_calculator(config)
         >>> # rc.seed now matches config['training']['seed']
     """
-    reward_config_for_plugin = config.get('reward_calculator', {})
     reward_config_dir_hint = (
         config.get('_reward_calculator_config_dir')
         or config.get('_umbrella_config_dir')
     )
+    # Shallow-copy so we don't mutate the caller's config dict.
+    # Inject _config_dir_hint so plugin subclasses can resolve relative file paths
+    # without needing Path(__file__) workarounds.
+    reward_config_for_plugin = dict(config.get('reward_calculator', {}))
+    if reward_config_dir_hint is not None:
+        reward_config_for_plugin['_config_dir_hint'] = reward_config_dir_hint
     plugin_result = load_plugin_component(
         component_config=reward_config_for_plugin,
         expected_base_class=RewardCalculatorBase,
@@ -91,6 +96,90 @@ def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
     reward_config['seed'] = training_config.get('seed', None)
     
     return RewardCalculator(config=reward_config)
+
+
+def build_patient_generator_from_spec(
+    spec: Dict[str, Any],
+    base_dir: Optional[Path] = None,
+    seed: Optional[int] = None,
+) -> PatientGeneratorBase:
+    """Build a PatientGenerator or PatientGeneratorMixer from a plain config dict.
+
+    This is the low-level utility used by :func:`create_patient_generator` and by
+    plugin subclasses (e.g. ``PersonalizedPredPatientGenerator``) that need to
+    construct a base generator internally without going through the full factory.
+
+    Args:
+        spec: Config dict. If ``spec['type'] == 'mixer'``, builds a
+            ``PatientGeneratorMixer`` whose children are specified in
+            ``spec['generators']``.  Each entry must have a ``'proportion'`` key
+            and either a ``'config_file'`` key (path to a child YAML) or inline
+            distribution keys.  ``config_file`` paths are resolved relative to
+            ``base_dir`` when not absolute.  For non-mixer specs the dict is
+            passed directly to ``PatientGenerator``.
+        base_dir: Directory used to resolve relative ``config_file`` paths.
+            If ``None`` and a relative path is encountered, ``ValueError`` is raised.
+        seed: Optional RNG seed forwarded to all instantiated generators.
+
+    Returns:
+        ``PatientGenerator`` or ``PatientGeneratorMixer`` instance.
+
+    Raises:
+        ValueError: If required keys are missing, proportions are invalid, or a
+            ``config_file`` path cannot be resolved.
+    """
+    if spec.get("type") == "mixer":
+        generators_spec: List[Dict[str, Any]] = spec.get("generators", [])
+        if not generators_spec:
+            raise ValueError("Mixer spec requires a non-empty 'generators' list")
+
+        child_generators: List[PatientGenerator] = []
+        proportions: List[float] = []
+
+        for i, gen_spec in enumerate(generators_spec):
+            if "proportion" not in gen_spec:
+                raise ValueError(f"generators[{i}] missing 'proportion'")
+            proportions.append(float(gen_spec["proportion"]))
+
+            if "config_file" in gen_spec:
+                cfg_path = Path(gen_spec["config_file"])
+                if not cfg_path.is_absolute():
+                    if base_dir is None:
+                        raise ValueError(
+                            f"generators[{i}] has a relative config_file path but no "
+                            f"base_dir was provided: '{gen_spec['config_file']}'"
+                        )
+                    cfg_path = (base_dir / cfg_path).resolve()
+                if not cfg_path.exists():
+                    raise ValueError(
+                        f"generators[{i}] config_file not found: {cfg_path}"
+                    )
+                with open(cfg_path, "r") as f:
+                    child_config = yaml.safe_load(f)
+            else:
+                child_config = {k: v for k, v in gen_spec.items() if k != "proportion"}
+
+            if "visible_patient_attributes" not in child_config:
+                raise ValueError(
+                    f"generators[{i}] config missing required key 'visible_patient_attributes'"
+                )
+            child_config["seed"] = seed
+            child_generators.append(PatientGenerator(config=child_config))
+
+        return PatientGeneratorMixer(config={
+            "generators": child_generators,
+            "proportions": proportions,
+            "seed": seed,
+        })
+
+    else:
+        if "visible_patient_attributes" not in spec:
+            raise ValueError(
+                "'visible_patient_attributes' must be specified in patient generator config"
+            )
+        child_config = dict(spec)
+        child_config["seed"] = seed
+        return PatientGenerator(config=child_config)
 
 
 def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
@@ -126,22 +215,30 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
     Raises:
         ValueError: If configuration is invalid or missing required fields
     """
-    patient_gen_config = config.get('patient_generator', {})
-    
-    if not patient_gen_config:
+    raw_patient_gen_config = config.get('patient_generator', {})
+
+    if not raw_patient_gen_config:
         raise ValueError(
             "Missing 'patient_generator' config section. "
             "PatientGenerator must be configured with required parameters including 'visible_patient_attributes'."
         )
 
+    config_dir_hint = (
+        config.get('_patient_generator_config_dir')
+        or config.get('_umbrella_config_dir')
+    )
+    # Shallow-copy so we don't mutate the caller's config dict.
+    # Inject _config_dir_hint so plugin subclasses can resolve relative file paths
+    # without needing Path(__file__) workarounds.
+    patient_gen_config = dict(raw_patient_gen_config)
+    if config_dir_hint is not None:
+        patient_gen_config['_config_dir_hint'] = config_dir_hint
+
     plugin_result = load_plugin_component(
         component_config=patient_gen_config,
         expected_base_class=PatientGeneratorBase,
         default_loader_fn_name='load_patient_generator_component',
-        config_dir_hint=(
-            config.get('_patient_generator_config_dir')
-            or config.get('_umbrella_config_dir')
-        ),
+        config_dir_hint=config_dir_hint,
     )
     if plugin_result is not None:
         return plugin_result
@@ -150,118 +247,48 @@ def create_patient_generator(config: Dict[str, Any]) -> PatientGenerator:
     training_config = config.get('training', {})
     seed = training_config.get('seed', None)
     
-    # Check if this is a mixer configuration
+    # Delegate construction to the shared utility.
+    # Determine base_dir for relative config_file path resolution:
+    #   1. _config_dir_hint (injected by Task 15) — simplest and preferred for new configs
+    #   2. patient_generator_config_folder_location chain — backward compat for old configs
+    #   3. Package root — legacy fallback of last resort
     if patient_gen_config.get('type') == 'mixer':
-        # For mixers, we'll derive visible_patient_attributes from sub-generators
-        # Load and instantiate child generators from config files
-        child_generators = []
-        proportions = []
-        all_visible_attrs = []  # Collect all visible attributes from sub-generators
-        
-        generators_config = patient_gen_config.get('generators', [])
-        if not generators_config:
-            raise ValueError(
-                "Mixer patient_generator requires 'generators' list with config files and proportions"
-            )
-        
-        # Determine base directory for child generator config resolution
-        # Following the same pattern as umbrella configs use config_folder_location
-        if 'patient_generator_config_folder_location' in patient_gen_config:
-            # Modern format: use explicit folder location (relative to umbrella config dir)
+        if config_dir_hint is not None:
+            child_gen_base_dir: Optional[Path] = Path(config_dir_hint)
+        elif 'patient_generator_config_folder_location' in patient_gen_config:
             pg_config_folder_location = patient_gen_config['patient_generator_config_folder_location']
-            
-            # Get umbrella config directory from config (injected by load_config)
             umbrella_config_dir = config.get('_umbrella_config_dir')
             if umbrella_config_dir is None:
                 raise ValueError(
                     "Mixer config specifies 'patient_generator_config_folder_location' but "
                     "'_umbrella_config_dir' not found in config. This should be set by load_config()."
                 )
-            
             umbrella_dir = Path(umbrella_config_dir)
             if not Path(pg_config_folder_location).is_absolute():
-                # Resolve relative to umbrella config location
-                # First resolve config_folder_location to get patient_generator config dir
                 config_folder_location = config.get('config_folder_location', '../')
                 if not Path(config_folder_location).is_absolute():
                     config_base_dir = (umbrella_dir / config_folder_location).resolve()
                 else:
                     config_base_dir = Path(config_folder_location).resolve()
-                
-                # Then resolve patient_generator subfolder
                 pg_base_dir = (config_base_dir / 'patient_generator').resolve()
-                
-                # Finally resolve the mixer's child generator folder
                 child_gen_base_dir = (pg_base_dir / pg_config_folder_location).resolve()
             else:
                 child_gen_base_dir = Path(pg_config_folder_location).resolve()
         else:
-            # Legacy fallback: resolve from project root (package location)
-            project_root = Path(__file__).parent.parent
-            child_gen_base_dir = project_root
-        
-        for i, gen_spec in enumerate(generators_config):
-            if 'config_file' not in gen_spec:
-                raise ValueError(f"generators[{i}] missing 'config_file'")
-            if 'proportion' not in gen_spec:
-                raise ValueError(f"generators[{i}] missing 'proportion'")
-            
-            # Load child config file
-            config_file = gen_spec['config_file']
-            
-            # Resolve relative paths from determined base directory
-            if not os.path.isabs(config_file):
-                config_file = str(child_gen_base_dir / config_file)
-            
-            if not os.path.exists(config_file):
-                raise ValueError(f"generators[{i}] config_file not found: {config_file}")
-            
-            # Load the child config
-            with open(config_file, 'r') as f:
-                child_config = yaml.safe_load(f)
-            
-            # Collect visible attributes from this child config
-            if 'visible_patient_attributes' not in child_config:
-                raise ValueError(
-                    f"generators[{i}] config file missing 'visible_patient_attributes': {config_file}"
-                )
-            all_visible_attrs.extend(child_config['visible_patient_attributes'])
-            
-            # Set seed for child generator
-            child_config['seed'] = seed
-            
-            # Instantiate child generator
-            child_gen = PatientGenerator(config=child_config)
-            child_generators.append(child_gen)
-            proportions.append(gen_spec['proportion'])
-        
-        # Create union of all visible attributes (preserves order, removes duplicates)
-        visible_attrs_union = []
-        seen = set()
-        for attr in all_visible_attrs:
-            if attr not in seen:
-                visible_attrs_union.append(attr)
-                seen.add(attr)
-        
-        # Create mixer config for PatientGeneratorMixer
-        mixer_config = {
-            'generators': child_generators,
-            'proportions': proportions,
-            'visible_patient_attributes': visible_attrs_union,
-            'seed': seed,
-        }
-        
-        return PatientGeneratorMixer(config=mixer_config)
-    
+            child_gen_base_dir = Path(__file__).parent.parent
+
+        return build_patient_generator_from_spec(
+            spec=patient_gen_config,
+            base_dir=child_gen_base_dir,
+            seed=seed,
+        )
+
     else:
-        # Regular PatientGenerator - validate visibility config
-        if 'visible_patient_attributes' not in patient_gen_config:
-            raise ValueError(
-                "'visible_patient_attributes' must be specified in patient_generator config, not environment config. "
-                "PatientGenerator owns visibility configuration."
-            )
-        patient_gen_config['seed'] = seed
-        return PatientGenerator(config=patient_gen_config)
+        return build_patient_generator_from_spec(
+            spec=patient_gen_config,
+            base_dir=None,
+            seed=seed,
+        )
 
 
 def create_amr_dynamics(config: Dict[str, Any]) -> Dict[str, AMRDynamicsBase]:
@@ -286,15 +313,21 @@ def create_amr_dynamics(config: Dict[str, Any]) -> Dict[str, AMRDynamicsBase]:
         ValueError: If required config sections are missing.
         TypeError: If plugin return payload has invalid type/contents.
     """
-    amr_dynamics_config = config.get('amr_dynamics', {})
+    amr_dynamics_dir_hint = (
+        config.get('_environment_config_dir')
+        or config.get('_umbrella_config_dir')
+    )
+    # Shallow-copy so we don't mutate the caller's config dict.
+    # Inject _config_dir_hint so plugin subclasses can resolve relative file paths
+    # without needing Path(__file__) workarounds.
+    amr_dynamics_config = dict(config.get('amr_dynamics', {}))
+    if amr_dynamics_dir_hint is not None:
+        amr_dynamics_config['_config_dir_hint'] = amr_dynamics_dir_hint
     plugin_result = load_plugin_component(
         component_config=amr_dynamics_config,
         expected_base_class=dict,
         default_loader_fn_name='load_amr_dynamics_component',
-        config_dir_hint=(
-            config.get('_environment_config_dir')
-            or config.get('_umbrella_config_dir')
-        ),
+        config_dir_hint=amr_dynamics_dir_hint,
     )
     if plugin_result is not None:
         for abx_name, dynamics_instance in plugin_result.items():

@@ -7,7 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`build_patient_generator_from_spec` utility**: new package-level function in
+  `abx_amr_simulator.utils` (and `abx_amr_simulator.utils.factories`) that builds
+  a `PatientGenerator` or `PatientGeneratorMixer` from a plain config dict and an
+  optional `base_dir` for relative `config_file` path resolution. Supports both
+  file-based child specs (`config_file` key) and inline child specs. Previously
+  this logic existed only inside `create_patient_generator` (for the `type: mixer`
+  path) and was duplicated in workspace plugin subclasses that needed to compose a
+  mixed base population internally. `create_patient_generator` now delegates its
+  mixer-building to this utility, and plugin subclasses can call it directly
+  instead of reimplementing path resolution and child instantiation.
+
 ### Fixed
+- **Plugin path context injection**: all five factory call sites that load
+  plugin components now forward path context to the plugin's config dict as
+  `_config_dir_hint` before calling `load_plugin_component`. Previously the
+  resolved umbrella/component config directory was used only to locate the
+  plugin loader module itself but was never passed into the config dict seen by
+  the plugin's `__init__`. This meant any plugin that needed to resolve relative
+  file paths (e.g. loading sub-component YAML files) had to resort to brittle
+  `Path(__file__)` workarounds. Affected call sites:
+  - `create_reward_calculator` (uses `_reward_calculator_config_dir` or `_umbrella_config_dir`)
+  - `create_patient_generator` (uses `_patient_generator_config_dir` or `_umbrella_config_dir`)
+  - `create_amr_dynamics` (uses `_environment_config_dir` or `_umbrella_config_dir`)
+  - `build_patient_generator_from_config` in `marl_factories.py` (uses the patient generator config file's own directory)
+  - `build_reward_calculator_from_config` in `marl_factories.py` (uses the reward calculator config file's own directory)
+
+  The caller's original config dict is never mutated; a shallow copy is made
+  before injecting `_config_dir_hint`. Plugins that do not use the key simply
+  ignore it. `load_plugin_component` itself is unchanged.
+
 - **SA hyperparameter routing bug**: `create_agent()` in `factories.py` now
   merges tuned hyperparameters from `config['agent_algorithm']` into the
   algorithm-specific config section (e.g. `config['ppo']` for HRL_PPO,

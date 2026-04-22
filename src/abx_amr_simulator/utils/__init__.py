@@ -21,6 +21,7 @@ from .config import (
 
 # Re-export from factories module
 from .factories import (
+    build_patient_generator_from_spec,
     create_reward_calculator,
     create_patient_generator,
     create_amr_dynamics,
@@ -71,6 +72,7 @@ __all__ = [
     'apply_subconfig_overrides',
     'apply_param_overrides',
     # Factories
+    'build_patient_generator_from_spec',
     'create_reward_calculator',
     'create_patient_generator',
     'create_amr_dynamics',

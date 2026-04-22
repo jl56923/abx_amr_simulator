@@ -241,7 +241,7 @@ class TestPatientGeneratorMixerVisibility:
             }
             
             # Should raise ValueError about missing visible_patient_attributes
-            with pytest.raises(ValueError, match="missing 'visible_patient_attributes'"):
+            with pytest.raises(ValueError, match="visible_patient_attributes"):
                 create_patient_generator(config=config)
     
     def test_mixer_removes_duplicate_attributes(self):
