@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_get_current_visible_amr_levels()` to make the contract explicit.
 
 ### Added
+- **MARL completion registry**: `train_marl.py` now follows the same
+  registry pattern as the single-agent runner. On successful completion,
+  `run_marl_training()` appends `run_name,timestamp` to
+  `<results_dir>/.training_completed.txt` via `utils/registry.py`. The
+  `skip_if_exists` check now consults this registry (with stale-entry
+  cleanup via `validate_and_clean_registry`) instead of probing for
+  `final_model_{aid}.zip` files. Interrupted runs (no registry entry) are
+  correctly retried on next invocation. `_find_existing_timestamped_run_dir`
+  removed as it is no longer needed.
 - **HRL_RPPO support for MARL tuning**: `tune_marl_agent.py` is now
   algorithm-aware. Each trial reads the `algorithm` field (and optional
   `lstm_kwargs`) from the named agent's entry in the MARL config and

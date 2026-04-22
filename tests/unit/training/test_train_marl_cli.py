@@ -469,6 +469,76 @@ class TestRunMarlTraining:
         assert Path(loader_module).is_absolute()
         assert Path(loader_module).resolve() == plugin_path.resolve()
 
+    def test_registry_written_on_completion(self, tmp_path):
+        """run_marl_training appends an entry to .training_completed.txt on success."""
+        from abx_amr_simulator.training.train_marl import run_marl_training
+        from abx_amr_simulator.utils.registry import load_registry
+
+        run_marl_training(
+            marl_config_path=_FIXTURE_CONFIG,
+            results_dir=tmp_path,
+            run_name="reg_run",
+            seed=0,
+        )
+        registry_path = tmp_path / ".training_completed.txt"
+        assert registry_path.exists(), "Registry file was not created after training"
+        assert "reg_run" in load_registry(str(registry_path))
+
+    def test_skip_if_exists_uses_registry_not_files(self, tmp_path):
+        """skip_if_exists skips based on the registry even if final model files are absent."""
+        from abx_amr_simulator.training.train_marl import run_marl_training
+
+        run_marl_training(
+            marl_config_path=_FIXTURE_CONFIG,
+            results_dir=tmp_path,
+            run_name="reg_skip_run",
+            seed=0,
+        )
+        # Delete the final model files to confirm the skip is registry-driven.
+        run_dir = _find_timestamped_run_dir(results_dir=tmp_path, run_name="reg_skip_run")
+        for f in (run_dir / "checkpoints").glob("final_model_*.zip"):
+            f.unlink()
+
+        run_marl_training(
+            marl_config_path=_FIXTURE_CONFIG,
+            results_dir=tmp_path,
+            run_name="reg_skip_run",
+            seed=99,
+            skip_if_exists=True,
+        )
+        # Files are still absent — training was skipped, not re-run.
+        remaining = list((run_dir / "checkpoints").glob("final_model_*.zip"))
+        assert len(remaining) == 0, "Training ran again despite registry entry"
+
+    def test_no_skip_when_not_in_registry(self, tmp_path):
+        """skip_if_exists re-runs training when the registry entry is absent."""
+        from abx_amr_simulator.training.train_marl import run_marl_training
+        from abx_amr_simulator.utils.registry import load_registry
+
+        run_marl_training(
+            marl_config_path=_FIXTURE_CONFIG,
+            results_dir=tmp_path,
+            run_name="reg_retry_run",
+            seed=0,
+        )
+        # Wipe the registry to simulate what an interrupted run looks like
+        # (run folder exists on disk but was never registered as complete).
+        registry_path = tmp_path / ".training_completed.txt"
+        registry_path.unlink()
+
+        run_marl_training(
+            marl_config_path=_FIXTURE_CONFIG,
+            results_dir=tmp_path,
+            run_name="reg_retry_run",
+            seed=1,
+            skip_if_exists=True,
+        )
+        # Training ran again and wrote a new registry entry.  If it had
+        # incorrectly skipped, the registry would still be empty.
+        assert "reg_retry_run" in load_registry(str(registry_path)), (
+            "Training did not re-run: registry is empty after retry"
+        )
+
     def test_save_freq_episodes_decoupled_from_eval_freq_episodes(self, tmp_path):
         """run_marl_training honors save_freq_episodes independently of eval_freq_episodes."""
         from abx_amr_simulator.training.train_marl import run_marl_training

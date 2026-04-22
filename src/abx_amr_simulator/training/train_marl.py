@@ -51,6 +51,12 @@ from sb3_contrib import RecurrentPPO
 from abx_amr_simulator.callbacks.marl_callbacks import run_marl_eval_episodes
 from abx_amr_simulator.hrl.marl_wrapper import MARLOptionsWrapper
 from abx_amr_simulator.hrl.rl_algorithms.recurrent_ppo_masked import RecurrentPPO_Masked
+from abx_amr_simulator.utils.registry import (
+    extract_timestamp_from_run_folder,
+    load_registry,
+    update_registry,
+    validate_and_clean_registry,
+)
 
 
 _RUN_TIMESTAMP_SUFFIX_PATTERN = re.compile(pattern=r"_\d{8}_\d{6}$")
@@ -66,30 +72,6 @@ def _ensure_timestamped_run_name(*, run_name: str) -> str:
         return run_name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"{run_name}_{timestamp}"
-
-
-def _find_existing_timestamped_run_dir(
-    *,
-    results_dir: "str | Path",
-    run_name_prefix: str,
-    agent_ids: List[str],
-) -> Optional[Path]:
-    """Find a timestamped run dir whose final models are all present.
-
-    Returns the first matching run directory (sorted newest-first) that
-    contains all ``final_model_{aid}.zip`` files.
-    """
-    results_dir_path = Path(results_dir)
-    pattern = f"{run_name_prefix}_????????_??????"
-    for candidate in sorted(results_dir_path.glob(pattern), reverse=True):
-        checkpoint_dir = candidate / "checkpoints"
-        all_exist = all(
-            (checkpoint_dir / f"final_model_{aid}.zip").exists()
-            for aid in agent_ids
-        )
-        if all_exist:
-            return candidate
-    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -1037,9 +1019,11 @@ def run_marl_training(
             Maps agent_id → ``{best_params_path, source_run_name}``. Agents
             whose ``best_params_path`` is non-empty are initialised with the
             referenced tuning results; others use training-config defaults.
-        skip_if_exists: If True and all ``final_model_{aid}.zip`` files
-            already exist for an existing run with this base name (or exact
-            timestamped name), return without re-running training.
+        skip_if_exists: If True, consult the completion registry
+            (``<results_dir>/.training_completed.txt``) and return without
+            re-running training when this run name is already recorded.
+            Stale registry entries (whose run folder no longer exists) are
+            cleaned up automatically before the check.
     """
     import json
 
@@ -1067,35 +1051,25 @@ def run_marl_training(
     run_dir = Path(results_dir) / timestamped_run_name
     checkpoint_dir = run_dir / "checkpoints"
 
-    # 5. Skip check (needs config to know agent IDs).
-    if skip_if_exists:
-        agent_ids = [
-            str(e["agent_id"]) for e in config["environment"]["agents"]
-        ]
+    # Derive the base run name (without timestamp) and timestamp for the registry.
+    # _ensure_timestamped_run_name always produces a name ending in _YYYYMMDD_HHMMSS.
+    run_timestamp = extract_timestamp_from_run_folder(timestamped_run_name)
+    assert run_timestamp is not None, (
+        f"_ensure_timestamped_run_name produced a name without a recognisable "
+        f"timestamp suffix: {timestamped_run_name!r}"
+    )
+    run_name_base = _RUN_TIMESTAMP_SUFFIX_PATTERN.sub("", timestamped_run_name)
+    registry_path = str(Path(results_dir) / ".training_completed.txt")
 
-        if timestamped_run_name == run_name:
-            all_exist = all(
-                (checkpoint_dir / f"final_model_{aid}.zip").exists()
-                for aid in agent_ids
+    # 5. Skip check: consult the completion registry.
+    if skip_if_exists:
+        validate_and_clean_registry(registry_path, str(results_dir))
+        if run_name_base in load_registry(registry_path):
+            print(
+                f"[skip] Run '{run_name_base}' is already recorded in the "
+                f"completion registry. Skipping training."
             )
-            if all_exist:
-                print(
-                    f"[skip] All final models already exist in {checkpoint_dir}. "
-                    "Skipping training."
-                )
-                return
-        else:
-            existing_run_dir = _find_existing_timestamped_run_dir(
-                results_dir=results_dir,
-                run_name_prefix=run_name,
-                agent_ids=agent_ids,
-            )
-            if existing_run_dir is not None:
-                print(
-                    f"[skip] All final models already exist in "
-                    f"{existing_run_dir / 'checkpoints'}. Skipping training."
-                )
-                return
+            return
 
     if timestamped_run_name != run_name:
         print(f"[run] Resolved MARL run folder: {timestamped_run_name}")
@@ -1229,6 +1203,10 @@ def run_marl_training(
         verbose=1,
     )
     trainer.train()
+
+    # Record successful completion in the registry.
+    update_registry(registry_path, run_name_base, run_timestamp)
+    print(f"✓ Recorded successful completion in registry: {registry_path}")
 
 
 # --------------------------------------------------------------------------- #
