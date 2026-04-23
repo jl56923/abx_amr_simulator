@@ -69,6 +69,11 @@ def _build_equal_mixer() -> PatientGeneratorMixer:
     )
 
 
+def _is_from_gen0(patient) -> bool:
+    """Return True if the patient came from gen_low (failure_value_multiplier == 0.8)."""
+    return abs(float(patient.failure_value_multiplier) - 0.8) < 0.01
+
+
 def test_mixer_n_equals_1_samples_both_generators():
     mixer = _build_equal_mixer()
     rng = np.random.default_rng(seed=42)
@@ -83,7 +88,7 @@ def test_mixer_n_equals_1_samples_both_generators():
             rng=rng,
         )
         assert len(patients) == 1
-        source_idx = int(getattr(patients[0], "source_generator_index"))
+        source_idx = 0 if _is_from_gen0(patients[0]) else 1
         counts[source_idx] += 1
 
     assert counts.sum() == n_draws
@@ -105,7 +110,7 @@ def test_mixer_uses_multinomial_sampling_for_n_equals_10():
             rng=rng,
         )
         assert len(patients) == 10
-        gen0_count = sum(int(getattr(patient, "source_generator_index")) == 0 for patient in patients)
+        gen0_count = sum(_is_from_gen0(p) for p in patients)
         per_step_counts_gen0.append(gen0_count)
 
     counts = np.array(per_step_counts_gen0, dtype=int)

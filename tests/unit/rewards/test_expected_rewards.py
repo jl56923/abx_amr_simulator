@@ -11,6 +11,7 @@ import pytest
 
 from abx_amr_simulator.core.reward_calculator import RewardCalculator
 from abx_amr_simulator.core import Patient
+from abx_amr_simulator.core.types import ObservedPatient, TruePatient
 
 
 def build_rc(
@@ -58,7 +59,7 @@ def homo_patient(
 ) -> Patient:
     if abx_sensitivity_dict is None:
         abx_sensitivity_dict = {"A": True}
-    return Patient(
+    tp = TruePatient(
         prob_infected=prob_infected,
         benefit_value_multiplier=vB,
         failure_value_multiplier=vF,
@@ -67,13 +68,17 @@ def homo_patient(
         recovery_without_treatment_prob=r_spont,
         infection_status=infection_status,
         abx_sensitivity_dict=abx_sensitivity_dict,
-        prob_infected_obs=prob_infected,
-        benefit_value_multiplier_obs=vB,
-        failure_value_multiplier_obs=vF,
-        benefit_probability_multiplier_obs=mB,
-        failure_probability_multiplier_obs=mF,
-        recovery_without_treatment_prob_obs=r_spont,
     )
+    visible = {
+        'prob_infected': prob_infected,
+        'benefit_value_multiplier': vB,
+        'failure_value_multiplier': vF,
+        'benefit_probability_multiplier': mB,
+        'failure_probability_multiplier': mF,
+        'recovery_without_treatment_prob': r_spont,
+    }
+    op = ObservedPatient(true_patient=tp, visible_attributes=visible)
+    return Patient(true_state=tp, observations=[op])
 
 
 def sample_patient(

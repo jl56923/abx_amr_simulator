@@ -39,7 +39,7 @@ Design Rationale:
 
 import numpy as np
 from typing import List, Dict, Optional, Any, ClassVar
-from .types import Patient
+from .types import ObservedPatient, Patient, TruePatient
 from .base_patient_generator import PatientGeneratorBase
 
 
@@ -500,45 +500,52 @@ class PatientGenerator(PatientGeneratorBase):
         rng = rng if rng is not None else self.rng
         if rng is None:
             raise ValueError("RNG must be provided either via argument or initialized on PatientGenerator")
-        
-        patients = []
+
+        true_patients = self._sample_true_patients(n_patients, true_amr_levels, rng)
+        observed_patients = self._apply_observation_model(true_patients, rng)
+        return [
+            Patient(true_state=tp, observations=[op])
+            for tp, op in zip(true_patients, observed_patients)
+        ]
+
+    def _sample_true_patients(
+        self,
+        n_patients: int,
+        true_amr_levels: Dict[str, float],
+        rng: np.random.Generator,
+    ) -> List[TruePatient]:
+        """Sample ground-truth patient states from configured distributions.
+
+        Draws attribute values from the configured probability distributions, samples
+        infection status from prob_infected, and samples per-antibiotic sensitivity from
+        true_amr_levels. Does not compute any observation noise or bias.
+
+        Args:
+            n_patients: Number of patients to sample.
+            true_amr_levels: Ground-truth AMR levels per antibiotic.
+            rng: NumPy random generator.
+
+        Returns:
+            List of TruePatient instances with sampled attribute values.
+        """
+        true_patients = []
         for _ in range(n_patients):
-            patient_kwargs = {}
-            
-            # Iterate through all known attributes
+            attr_values: Dict[str, float] = {}
+
             for attr_name in self.KNOWN_ATTRIBUTE_TYPES:
                 if attr_name not in self.attribute_configs:
-                    continue  # Skip unconfigured attributes
-                
+                    continue
                 attr_cfg = self.attribute_configs[attr_name]
-                
-                # Get sampling bounds based on attribute type
                 attr_type = self.KNOWN_ATTRIBUTE_TYPES[attr_name]
                 sampling_bounds = self.ATTRIBUTE_TYPE_VALIDATION[attr_type]['default_bounds']
-                
-                # Sample true value from the distribution
-                true_value = self._sample_from_dist(
+                attr_values[attr_name] = self._sample_from_dist(
                     rng=rng,
                     dist_config=attr_cfg['prob_dist'],
                     bounds=tuple(sampling_bounds) if sampling_bounds else None,
                 )
-                
-                # Apply observation transformation (bias + noise + clipping)
-                obs_value = self._apply_multip_bias_and_additive_noise(
-                    true_value=true_value,
-                    obs_bias_multiplier=attr_cfg['obs_bias_multiplier'],
-                    obs_noise_one_std_dev=attr_cfg['obs_noise_one_std_dev'],
-                    obs_noise_std_dev_fraction=attr_cfg['obs_noise_std_dev_fraction'],
-                    clipping_bounds=tuple(attr_cfg['clipping_bounds']) if attr_cfg['clipping_bounds'] else None,
-                    rng=rng,
-                )
-                
-                # Store both true and observed values
-                patient_kwargs[attr_name] = true_value
-                patient_kwargs[f'{attr_name}_obs'] = obs_value
-            
-            infection_prob = float(patient_kwargs['prob_infected'])
-            patient_kwargs['infection_status'] = bool(rng.random() < infection_prob)
+
+            infection_prob = float(attr_values['prob_infected'])
+            infection_status = bool(rng.random() < infection_prob)
 
             abx_sensitivity_dict: Dict[str, bool] = {}
             for abx_name, amr_level in true_amr_levels.items():
@@ -549,13 +556,59 @@ class PatientGenerator(PatientGeneratorBase):
                     )
                 sensitivity_probability = 1.0 - amr_value
                 abx_sensitivity_dict[abx_name] = bool(rng.random() < sensitivity_probability)
-            patient_kwargs['abx_sensitivity_dict'] = abx_sensitivity_dict
 
-            # Create Patient object dynamically with all sampled attributes
-            patient = Patient(**patient_kwargs)
-            patients.append(patient)
-        
-        return patients
+            true_patients.append(TruePatient(
+                prob_infected=attr_values['prob_infected'],
+                benefit_value_multiplier=attr_values['benefit_value_multiplier'],
+                failure_value_multiplier=attr_values['failure_value_multiplier'],
+                benefit_probability_multiplier=attr_values['benefit_probability_multiplier'],
+                failure_probability_multiplier=attr_values['failure_probability_multiplier'],
+                recovery_without_treatment_prob=attr_values['recovery_without_treatment_prob'],
+                infection_status=infection_status,
+                abx_sensitivity_dict=abx_sensitivity_dict,
+            ))
+
+        return true_patients
+
+    def _apply_observation_model(
+        self,
+        true_patients: List[TruePatient],
+        rng: np.random.Generator,
+    ) -> List[ObservedPatient]:
+        """Apply the configured observation model to produce ObservedPatient instances.
+
+        For each TruePatient, applies noise and bias to each visible attribute and
+        stores the result in the ObservedPatient's visible_attributes dict. Only
+        attributes listed in visible_patient_attributes are included — non-visible
+        attributes are simply absent rather than padded.
+
+        Args:
+            true_patients: Ground-truth patients from _sample_true_patients.
+            rng: NumPy random generator.
+
+        Returns:
+            List of ObservedPatient instances, one per TruePatient.
+        """
+        observed_patients = []
+        for tp in true_patients:
+            visible: Dict[str, float] = {}
+            for attr_name in self.visible_patient_attributes:
+                if attr_name not in self.attribute_configs:
+                    continue
+                attr_cfg = self.attribute_configs[attr_name]
+                true_val = getattr(tp, attr_name)
+                obs_val = self._apply_multip_bias_and_additive_noise(
+                    true_value=true_val,
+                    obs_bias_multiplier=attr_cfg['obs_bias_multiplier'],
+                    obs_noise_one_std_dev=attr_cfg['obs_noise_one_std_dev'],
+                    obs_noise_std_dev_fraction=attr_cfg['obs_noise_std_dev_fraction'],
+                    clipping_bounds=tuple(attr_cfg['clipping_bounds']) if attr_cfg['clipping_bounds'] else None,
+                    rng=rng,
+                )
+                visible[attr_name] = obs_val
+            observed_patients.append(ObservedPatient(true_patient=tp, visible_attributes=visible))
+
+        return observed_patients
 
     def observe(self, patients: List[Patient]) -> np.ndarray:
         """Extract observed patient attributes for agent observation.
@@ -593,9 +646,9 @@ class PatientGenerator(PatientGeneratorBase):
 
         obs_values = []
         for p in patients:
+            obs = p.primary_observation
             for attr in self.visible_patient_attributes:
-                obs_name = self._obs_attr_name(attr)
-                obs_values.append(float(getattr(p, obs_name)))
+                obs_values.append(float(obs.visible_attributes.get(attr, Patient.PADDING_VALUE)))
         return np.array(obs_values, dtype=np.float32)
 
     def obs_dim(self, num_patients: int) -> int:
@@ -1062,15 +1115,8 @@ class PatientGeneratorMixer(PatientGenerator):
                     true_amr_levels=true_amr_levels,
                     rng=gen_rng,
                 )
-                # Tag patients with source generator index for visibility padding
-                for p in patients:
-                    try:
-                        p.source_generator_index = i
-                    except Exception:
-                        # Best-effort; continue even if attribute assignment fails
-                        pass
                 mixed_patients.extend(patients)
-        
+
         # Shuffle to avoid ordering bias (low-risk always first, etc.)
         rng.shuffle(mixed_patients)
         
@@ -1108,19 +1154,15 @@ class PatientGeneratorMixer(PatientGenerator):
         if not self._uses_heterogeneous_visibility:
             return super().observe(patients)
         
-        # For heterogeneous visibility: pad each patient's observation to union length
+        # For heterogeneous visibility: read from visible_attributes; absent attrs fill with PADDING_VALUE.
+        # Child generators only populate visible_attributes for their own attrs, so attrs outside
+        # a generator's visibility set are naturally absent and return PADDING_VALUE here.
         obs_values = []
         union_attrs = self._visible_attrs_union
         for p in patients:
-            # Determine the originating generator's visibility set
-            gen_idx = getattr(p, 'source_generator_index', None)
-            gen_visible_attrs = self._generator_visibility_map.get(gen_idx, set())
+            obs = p.primary_observation
             for attr in union_attrs:
-                if attr in gen_visible_attrs:
-                    obs_name = self._obs_attr_name(attr)
-                    obs_values.append(float(getattr(p, obs_name)))
-                else:
-                    obs_values.append(self.PADDING_VALUE)
+                obs_values.append(float(obs.visible_attributes.get(attr, self.PADDING_VALUE)))
         return np.array(obs_values, dtype=np.float32)
     
     def obs_dim(self, num_patients: int) -> int:

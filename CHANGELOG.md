@@ -8,6 +8,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`TruePatient`/`ObservedPatient`/`Patient` type hierarchy** (Task 16, April 2026):
+  - Introduced `TruePatient`, `ObservedPatient`, and `Patient` dataclasses in
+    `src/abx_amr_simulator/core/types.py`.
+  - `TruePatient`: immutable ground-truth state (all six patient attribute fields,
+    `infection_status`, `abx_sensitivity_dict`).
+  - `ObservedPatient`: wraps a `TruePatient` reference plus a
+    `visible_attributes: Dict[str, float]` dict holding observed values by base
+    attribute name (no `_obs` suffix). Replaces the previous flat `_obs`-suffixed
+    attribute pattern.
+  - `Patient`: top-level container holding `true_state: TruePatient`,
+    `observations: List[ObservedPatient]`, and identity/routing fields
+    (`patient_id`, `treated_by_agent`, `treated_in_locale`, `origin_locale`,
+    `source_generator_index`). `primary_observation` property returns `observations[0]`.
+  - `PatientGenerator.sample()` now returns `List[Patient]`; observation values are
+    written into `ObservedPatient.visible_attributes` by base attribute name.
+  - `PatientGeneratorMixer.sample()` updated accordingly; `PADDING_VALUE` sentinel
+    is now written into `visible_attributes` for missing union attrs in
+    heterogeneous-visibility mixers.
+  - `PatientGenerator.observe()` reads from `primary_observation.visible_attributes`;
+    `obs_dim()` and `obs_dim_uncovered()` unchanged.
+  - All types exported from `abx_amr_simulator.core`.
+  - Added `tests/unit/core/test_types.py` covering construction, property access,
+    and equality for all three types.
+
+- **LSTM belief-encoding integration test** (Task 18, April 2026):
+  - Added `tests/integration/test_lstm_belief_encoding.py` — 10 tests covering
+    `LSTMStateLogger` output (episode .npz files written, hidden-state shapes,
+    `actual_amr_levels` passthrough via `OptionsWrapper` info dict) and the
+    `probe_hidden_belief` pipeline (`load_episodes` / `fit_probe` produce
+    finite R² values; best R² > 0.2 smoke-test threshold).
+  - Uses a module-scoped fixture that trains a single-agent `RecurrentPPO` on a
+    minimal `OptionsWrapper` (inline config, no workspace YAML dependencies) for
+    120 macro steps; all 10 tests reuse the same training run.
+  - Replaces the broken `tests/integration/test_lstm_belief_probing.py` in the
+    repo root, which was a standalone script with no `def test_*` functions that
+    executed a full training run at module-level (blocking pytest collection).
+
+- **Test suite relocation** (April 2026):
+  - Moved `test_abx_amr_parallel_env.py` from repo root `tests/unit/core/` into
+    `tests/unit/core/` here (was incorrectly located in workspace tests; only
+    imports from `abx_amr_simulator.core`).
+  - Moved `test_observation_dimension_regression.py` from repo root `tests/unit/core/`
+    into `tests/unit/core/` here for the same reason.
+  - Moved `test_tune_postgres_storage.py` from repo root `tests/unit/` into
+    `tests/unit/training/` here; removed now-redundant `sys.path` manipulation (package
+    is importable from the submodule test environment without it).
+  - `tests/integration/test_marl_wrapper_lpp_scenario.py` moved to repo root
+    `tests/integration/` (this test loads real workspace YAML configs; it belongs
+    in repo-level tests). Updated `_REPO_ROOT` path depth: `parents[4]` → `parents[2]`.
+
 - **`build_patient_generator_from_spec` utility**: new package-level function in
   `abx_amr_simulator.utils` (and `abx_amr_simulator.utils.factories`) that builds
   a `PatientGenerator` or `PatientGeneratorMixer` from a plain config dict and an

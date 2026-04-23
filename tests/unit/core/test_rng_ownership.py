@@ -94,8 +94,8 @@ class TestRewardCalculatorOwnership:
     @staticmethod
     def _make_dummy_patient():
         """Helper to create a minimal Patient object for testing."""
-        from abx_amr_simulator.core.types import Patient
-        return Patient(
+        from abx_amr_simulator.core.types import ObservedPatient, Patient, TruePatient
+        tp = TruePatient(
             prob_infected=0.5,
             benefit_value_multiplier=1.0,
             failure_value_multiplier=1.0,
@@ -104,13 +104,19 @@ class TestRewardCalculatorOwnership:
             recovery_without_treatment_prob=0.0,
             infection_status=True,
             abx_sensitivity_dict={"A": True},
-            prob_infected_obs=0.5,
-            benefit_value_multiplier_obs=1.0,
-            failure_value_multiplier_obs=1.0,
-            benefit_probability_multiplier_obs=1.0,
-            failure_probability_multiplier_obs=1.0,
-            recovery_without_treatment_prob_obs=0.0,
         )
+        op = ObservedPatient(
+            true_patient=tp,
+            visible_attributes={
+                'prob_infected': 0.5,
+                'benefit_value_multiplier': 1.0,
+                'failure_value_multiplier': 1.0,
+                'benefit_probability_multiplier': 1.0,
+                'failure_probability_multiplier': 1.0,
+                'recovery_without_treatment_prob': 0.0,
+            },
+        )
+        return Patient(true_state=tp, observations=[op])
 
 
 class TestPatientGeneratorOwnership:
@@ -274,10 +280,10 @@ class TestNoTreatmentRNGSkipping:
         rc = RewardCalculator(config=config)
         
         # Create homogeneous patients
-        from abx_amr_simulator.core.types import Patient
-        patients = [
-            Patient(
-                prob_infected=0.0,  # Not infected - simplifies test
+        from abx_amr_simulator.core.types import ObservedPatient, Patient, TruePatient
+        def _make_no_treatment_patient():
+            tp = TruePatient(
+                prob_infected=0.0,
                 benefit_value_multiplier=1.0,
                 failure_value_multiplier=1.0,
                 benefit_probability_multiplier=1.0,
@@ -285,15 +291,10 @@ class TestNoTreatmentRNGSkipping:
                 recovery_without_treatment_prob=0.0,
                 infection_status=False,
                 abx_sensitivity_dict={"A": True},
-                prob_infected_obs=0.0,
-                benefit_value_multiplier_obs=1.0,
-                failure_value_multiplier_obs=1.0,
-                benefit_probability_multiplier_obs=1.0,
-                failure_probability_multiplier_obs=1.0,
-                recovery_without_treatment_prob_obs=0.0,
             )
-            for _ in range(5)
-        ]
+            op = ObservedPatient(true_patient=tp, visible_attributes={})
+            return Patient(true_state=tp, observations=[op])
+        patients = [_make_no_treatment_patient() for _ in range(5)]
         
         # All no_treatment actions (action index = num_antibiotics)
         no_treatment_idx = rc.abx_name_to_index['no_treatment']
@@ -332,9 +333,9 @@ class TestNoTreatmentRNGSkipping:
         config = RewardCalculator.default_config()
         rc = RewardCalculator(config=config)
         
-        from abx_amr_simulator.core.types import Patient
-        patients = [
-            Patient(
+        from abx_amr_simulator.core.types import ObservedPatient, Patient, TruePatient
+        def _make_prescribe_patient():
+            tp = TruePatient(
                 prob_infected=0.5,
                 benefit_value_multiplier=1.0,
                 failure_value_multiplier=1.0,
@@ -343,15 +344,10 @@ class TestNoTreatmentRNGSkipping:
                 recovery_without_treatment_prob=0.0,
                 infection_status=True,
                 abx_sensitivity_dict={"A": True},
-                prob_infected_obs=0.5,
-                benefit_value_multiplier_obs=1.0,
-                failure_value_multiplier_obs=1.0,
-                benefit_probability_multiplier_obs=1.0,
-                failure_probability_multiplier_obs=1.0,
-                recovery_without_treatment_prob_obs=0.0,
             )
-            for _ in range(5)
-        ]
+            op = ObservedPatient(true_patient=tp, visible_attributes={})
+            return Patient(true_state=tp, observations=[op])
+        patients = [_make_prescribe_patient() for _ in range(5)]
         
         # All prescribe actions
         actions = np.array([0] * 5)  # Index 0 = antibiotic A

@@ -16,6 +16,49 @@ from abx_amr_simulator.core.reward_calculator import (
     RewardCalculator,
 )
 from abx_amr_simulator.core import Patient
+from abx_amr_simulator.core.types import ObservedPatient, TruePatient
+
+
+def make_patient(
+    prob_infected=0.5,
+    benefit_value_multiplier=1.0,
+    failure_value_multiplier=1.0,
+    benefit_probability_multiplier=1.0,
+    failure_probability_multiplier=1.0,
+    recovery_without_treatment_prob=0.0,
+    infection_status=True,
+    abx_sensitivity_dict=None,
+    prob_infected_obs=None,
+    benefit_value_multiplier_obs=None,
+    failure_value_multiplier_obs=None,
+    benefit_probability_multiplier_obs=None,
+    failure_probability_multiplier_obs=None,
+    recovery_without_treatment_prob_obs=None,
+) -> Patient:
+    """Build a Patient using the new TruePatient / ObservedPatient hierarchy."""
+    if abx_sensitivity_dict is None:
+        abx_sensitivity_dict = {"A": True}
+    tp = TruePatient(
+        prob_infected=prob_infected,
+        benefit_value_multiplier=benefit_value_multiplier,
+        failure_value_multiplier=failure_value_multiplier,
+        benefit_probability_multiplier=benefit_probability_multiplier,
+        failure_probability_multiplier=failure_probability_multiplier,
+        recovery_without_treatment_prob=recovery_without_treatment_prob,
+        infection_status=infection_status,
+        abx_sensitivity_dict=abx_sensitivity_dict,
+    )
+    visible = {
+        'prob_infected': prob_infected_obs if prob_infected_obs is not None else prob_infected,
+        'benefit_value_multiplier': benefit_value_multiplier_obs if benefit_value_multiplier_obs is not None else benefit_value_multiplier,
+        'failure_value_multiplier': failure_value_multiplier_obs if failure_value_multiplier_obs is not None else failure_value_multiplier,
+        'benefit_probability_multiplier': benefit_probability_multiplier_obs if benefit_probability_multiplier_obs is not None else benefit_probability_multiplier,
+        'failure_probability_multiplier': failure_probability_multiplier_obs if failure_probability_multiplier_obs is not None else failure_probability_multiplier,
+        'recovery_without_treatment_prob': recovery_without_treatment_prob_obs if recovery_without_treatment_prob_obs is not None else recovery_without_treatment_prob,
+    }
+    op = ObservedPatient(true_patient=tp, visible_attributes=visible)
+    return Patient(true_state=tp, observations=[op])
+
 
 def create_test_reward_calculator(
     antibiotic_names=None,
@@ -136,7 +179,7 @@ def test_calculate_reward_aggregation_and_counts():
 
     # Create Patient objects instead of raw arrays
     patients = [
-        Patient(
+        make_patient(
             prob_infected=1.0,
             benefit_value_multiplier=1.0,
             failure_value_multiplier=1.0,
@@ -152,7 +195,7 @@ def test_calculate_reward_aggregation_and_counts():
             failure_probability_multiplier_obs=1.0,
             recovery_without_treatment_prob_obs=0.0,
         ),
-        Patient(
+        make_patient(
             prob_infected=0.0,
             benefit_value_multiplier=1.0,
             failure_value_multiplier=1.0,
@@ -255,7 +298,7 @@ def test_patient_attributes_use_true_values():
 
     # Patient 1: Infected (true), but observed as not infected
     # This demonstrates: true state drives reward, not observed perception
-    patient_infected_true_noisy_obs = Patient(
+    patient_infected_true_noisy_obs = make_patient(
         prob_infected=1.0,  # TRUE: definitely infected
         benefit_value_multiplier=1.0,
         failure_value_multiplier=1.0,
@@ -273,7 +316,7 @@ def test_patient_attributes_use_true_values():
     )
 
     # Patient 2: Same true state, but DIFFERENT observed values
-    patient_infected_true_different_noisy_obs = Patient(
+    patient_infected_true_different_noisy_obs = make_patient(
         prob_infected=1.0,  # TRUE: same as Patient 1
         benefit_value_multiplier=1.0,
         failure_value_multiplier=1.0,
@@ -338,7 +381,7 @@ def test_community_reward_uses_true_amr():
     model.rng = np.random.default_rng(seed=100)
 
     patients = [
-        Patient(
+        make_patient(
             prob_infected=0.0,  # Not infected; community penalty is only component
             benefit_value_multiplier=1.0,
             failure_value_multiplier=1.0,
@@ -407,7 +450,7 @@ def test_sensitivity_calculation_uses_patient_sensitivity_dict():
     model.rng = np.random.default_rng(seed=200)
 
     # Patient definitely infected, definitely prescribed A
-    patient = Patient(
+    patient = make_patient(
         prob_infected=1.0,  # TRUE: definitely infected
         benefit_value_multiplier=1.0,
         failure_value_multiplier=1.0,
@@ -446,7 +489,7 @@ def test_sensitivity_calculation_uses_patient_sensitivity_dict():
 
     assert reward_resistant_high == reward_resistant_low
 
-    sensitive_patient = Patient(
+    sensitive_patient = make_patient(
         prob_infected=1.0,
         benefit_value_multiplier=1.0,
         failure_value_multiplier=1.0,
@@ -491,7 +534,7 @@ def test_individual_reward_uses_true_delta_amr():
     )
     model.rng = np.random.default_rng(seed=300)
 
-    patient = Patient(
+    patient = make_patient(
         prob_infected=1.0,
         benefit_value_multiplier=1.0,
         failure_value_multiplier=1.0,
@@ -546,7 +589,7 @@ class TestExpectedRewardCalculation:
             clinical_failure_probability=0.2,
         )
         
-        patient = Patient(
+        patient = make_patient(
             prob_infected=0.5,
             benefit_value_multiplier=1.0,
             failure_value_multiplier=1.0,
@@ -588,7 +631,7 @@ class TestExpectedRewardCalculation:
             adverse_effect_probability=0.05,
         )
         
-        patient = Patient(
+        patient = make_patient(
             prob_infected=0.6,
             benefit_value_multiplier=1.2,
             failure_value_multiplier=0.9,
@@ -625,7 +668,7 @@ class TestExpectedRewardCalculation:
             clinical_failure_penalty=-5.0,
         )
         
-        patient = Patient(
+        patient = make_patient(
             prob_infected=0.8,
             benefit_value_multiplier=1.0,
             failure_value_multiplier=1.0,
@@ -666,7 +709,7 @@ class TestExpectedRewardCalculation:
             adverse_effect_probability=0.6,
         )
         
-        patient = Patient(
+        patient = make_patient(
             prob_infected=0.5,
             benefit_value_multiplier=1.0,
             failure_value_multiplier=1.0,
@@ -699,7 +742,7 @@ class TestExpectedRewardCalculation:
         """Test error handling for invalid antibiotic name."""
         rc = create_test_reward_calculator(antibiotic_names=['A'])
         
-        patient = Patient(
+        patient = make_patient(
             prob_infected=0.5,
             benefit_value_multiplier=1.0,
             failure_value_multiplier=1.0,
@@ -731,7 +774,7 @@ class TestExpectedRewardCalculation:
         )
         
         patients = [
-            Patient(
+            make_patient(
                 prob_infected=0.5,
                 benefit_value_multiplier=1.0,
                 failure_value_multiplier=1.0,
@@ -747,7 +790,7 @@ class TestExpectedRewardCalculation:
                 failure_probability_multiplier_obs=1.0,
                 recovery_without_treatment_prob_obs=0.3,
             ),
-            Patient(
+            make_patient(
                 prob_infected=0.7,
                 benefit_value_multiplier=1.1,
                 failure_value_multiplier=0.9,
@@ -787,7 +830,7 @@ class TestExpectedRewardCalculation:
         rc = create_test_reward_calculator(antibiotic_names=['A'])
         
         patients = [
-            Patient(
+            make_patient(
                 prob_infected=0.5,
                 benefit_value_multiplier=1.0,
                 failure_value_multiplier=1.0,
@@ -833,7 +876,7 @@ class TestExpectedRewardCalculation:
         )
         
         patients = [
-            Patient(
+            make_patient(
                 prob_infected=0.5,
                 benefit_value_multiplier=1.0,
                 failure_value_multiplier=1.0,

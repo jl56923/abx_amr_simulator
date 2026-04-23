@@ -15,6 +15,7 @@ import pytest
 import numpy as np
 from abx_amr_simulator.core import PatientGenerator
 from abx_amr_simulator.core import Patient
+from abx_amr_simulator.core.types import ObservedPatient, TruePatient
 
 # Default AMR levels for tests (single antibiotic 'A')
 TRUE_AMR_LEVELS = {'A': 0.0}
@@ -25,7 +26,7 @@ class TestPatientDataclass:
     
     def test_patient_creation(self):
         """Test basic patient creation with all attributes."""
-        patient = Patient(
+        tp = TruePatient(
             prob_infected=0.5,
             benefit_value_multiplier=1.2,
             failure_value_multiplier=0.8,
@@ -34,13 +35,19 @@ class TestPatientDataclass:
             recovery_without_treatment_prob=0.3,
             infection_status=True,
             abx_sensitivity_dict={'A': True, 'B': False},
-            prob_infected_obs=0.5,
-            benefit_value_multiplier_obs=1.1,
-            failure_value_multiplier_obs=0.9,
-            benefit_probability_multiplier_obs=1.05,
-            failure_probability_multiplier_obs=0.95,
-            recovery_without_treatment_prob_obs=0.35,
         )
+        op = ObservedPatient(
+            true_patient=tp,
+            visible_attributes={
+                'prob_infected': 0.5,
+                'benefit_value_multiplier': 1.1,
+                'failure_value_multiplier': 0.9,
+                'benefit_probability_multiplier': 1.05,
+                'failure_probability_multiplier': 0.95,
+                'recovery_without_treatment_prob': 0.35,
+            },
+        )
+        patient = Patient(true_state=tp, observations=[op])
         assert patient.prob_infected == 0.5
         assert patient.benefit_value_multiplier == 1.2
         assert patient.failure_value_multiplier == 0.8
@@ -369,11 +376,8 @@ class TestPatientSampling:
         assert patient.benefit_probability_multiplier > 0
         assert patient.failure_probability_multiplier > 0
         assert 0.0 <= patient.recovery_without_treatment_prob <= 1.0
-        assert patient.benefit_value_multiplier_obs > 0
-        assert patient.failure_value_multiplier_obs > 0
-        assert patient.benefit_probability_multiplier_obs > 0
-        assert patient.failure_probability_multiplier_obs > 0
-        assert 0.0 <= patient.recovery_without_treatment_prob_obs <= 1.0
+        # Only prob_infected is in visible_patient_attributes; obs is only computed for visible attrs
+        assert 0.0 <= patient.prob_infected_obs <= 1.0
     
     def test_sample_reproducibility_with_seed(self):
         """Test that sampling is reproducible with the same seed."""
@@ -763,13 +767,14 @@ class TestObservationBiasAndNoise:
                 'obs_noise_std_dev_fraction': 0.0,
                 'clipping_bounds': [0.0, 1.0],
             },
-            'visible_patient_attributes': ['prob_infected'],
+            # benefit_value_multiplier must be visible to test that obs bias is applied to it
+            'visible_patient_attributes': ['prob_infected', 'benefit_value_multiplier'],
         }
         gen = PatientGenerator(config)
         rng = np.random.default_rng(seed=42)
-        
+
         patients = gen.sample(n_patients=50, true_amr_levels=TRUE_AMR_LEVELS, rng=rng)
-        
+
         # Observed values should generally differ from true values due to bias
         for patient in patients:
             # benefit_value_multiplier_obs should be ~20% higher on average than benefit_value_multiplier
@@ -932,11 +937,19 @@ class TestComplexConfigs:
                 'obs_noise_std_dev_fraction': 0.0,
                 'clipping_bounds': [0.0, 1.0],
             },
-            'visible_patient_attributes': ['prob_infected'],
+            # All 6 attrs must be visible to test that obs == true for each of them
+            'visible_patient_attributes': [
+                'prob_infected',
+                'benefit_value_multiplier',
+                'failure_value_multiplier',
+                'benefit_probability_multiplier',
+                'failure_probability_multiplier',
+                'recovery_without_treatment_prob',
+            ],
         }
         gen = PatientGenerator(config)
         rng = np.random.default_rng(seed=42)
-        
+
         patients = gen.sample(n_patients=50, true_amr_levels=TRUE_AMR_LEVELS, rng=rng)
         for patient in patients:
             # When bias=1.0 and noise=0.0, observed should equal true
@@ -1135,7 +1148,6 @@ class TestPatientGeneratorMixer:
         # Should have approximately 70 from gen_a and 30 from gen_b
         # Due to rounding, allow some flexibility
         assert len(patients) == 100
-        assert all(hasattr(p, 'source_generator_index') for p in patients)
     
     def test_mixer_sample_rounding(self):
         """Test that proportional allocation rounding works correctly."""

@@ -30,7 +30,7 @@ from test_reference_helpers import make_pg, make_rc  # type: ignore[import-not-f
 class ConstantOption(OptionBase):
     """Always prescribes the same antibiotic for k steps."""
 
-    REQUIRES_OBSERVATION_ATTRIBUTES = ["prob_infected"]
+    REQUIRES_OBSERVATION_ATTRIBUTES = []  # always prescribes fixed action; does not read patient state
     REQUIRES_AMR_LEVELS = False
     REQUIRES_STEP_NUMBER = False
     PROVIDES_TERMINATION_CONDITION = False

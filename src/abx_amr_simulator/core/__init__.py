@@ -4,7 +4,7 @@ from .abx_amr_env import ABXAMREnv
 from .abx_amr_parallel_env import ABXAMRParallelEnv
 from .reward_calculator import RewardCalculator
 from .leaky_balloon import AMR_LeakyBalloon
-from .types import Patient
+from .types import Patient, TruePatient, ObservedPatient
 from .patient_generator import PatientGenerator, PatientGeneratorMixer
 from .base_patient_generator import PatientGeneratorBase
 from .base_reward_calculator import RewardCalculatorBase
@@ -50,6 +50,8 @@ __all__ = [
     'PatientGenerator',
     'PatientGeneratorMixer',
     'Patient',
+    'TruePatient',
+    'ObservedPatient',
     'PatientGeneratorBase',
     'RewardCalculatorBase',
     'AMRDynamicsBase',
