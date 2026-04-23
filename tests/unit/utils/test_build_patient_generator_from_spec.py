@@ -16,6 +16,7 @@ All tests use real PatientGenerator/PatientGeneratorMixer instances — no mocks
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -25,6 +26,7 @@ import yaml
 
 from abx_amr_simulator.core.patient_generator import PatientGenerator, PatientGeneratorMixer
 from abx_amr_simulator.utils import build_patient_generator_from_spec, create_patient_generator
+from abx_amr_simulator.utils.factories import resolve_config_path
 
 
 # ---------------------------------------------------------------------------
@@ -346,3 +348,76 @@ class TestCreatePatientGeneratorRegression:
         }
         mixer = create_patient_generator(spec)
         assert isinstance(mixer, PatientGeneratorMixer)
+
+
+# ---------------------------------------------------------------------------
+# resolve_config_path
+# ---------------------------------------------------------------------------
+
+class TestResolveConfigPath:
+    """Tests for the resolve_config_path utility (Task 5 / $CONFIG_BASE_FOLDER support)."""
+
+    def test_absolute_path_returned_as_is(self, tmp_path):
+        target = tmp_path / "some" / "file.yaml"
+        result = resolve_config_path(str(target), base_dir=None)
+        assert result == target
+
+    def test_relative_path_resolved_against_base_dir(self, tmp_path):
+        result = resolve_config_path("subdir/file.yaml", base_dir=tmp_path)
+        assert result == (tmp_path / "subdir" / "file.yaml").resolve()
+
+    def test_relative_path_without_base_dir_raises(self):
+        with pytest.raises(ValueError, match="base_dir"):
+            resolve_config_path("relative/path.yaml", base_dir=None)
+
+    def test_config_base_folder_prefix_expands_from_env_var(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ABX_AMR_CONFIG_BASE_FOLDER", str(tmp_path))
+        result = resolve_config_path("$CONFIG_BASE_FOLDER/configs/pg/foo.yaml")
+        assert result == tmp_path / "configs" / "pg" / "foo.yaml"
+
+    def test_config_base_folder_prefix_without_env_var_raises(self, monkeypatch):
+        monkeypatch.delenv("ABX_AMR_CONFIG_BASE_FOLDER", raising=False)
+        with pytest.raises(RuntimeError, match="ABX_AMR_CONFIG_BASE_FOLDER"):
+            resolve_config_path("$CONFIG_BASE_FOLDER/configs/pg/foo.yaml")
+
+    def test_config_base_folder_prefix_ignores_base_dir(self, tmp_path, monkeypatch):
+        """$CONFIG_BASE_FOLDER/ prefix is absolute; base_dir is ignored."""
+        config_base = tmp_path / "workspace" / "experiments"
+        monkeypatch.setenv("ABX_AMR_CONFIG_BASE_FOLDER", str(config_base))
+        other_dir = tmp_path / "unrelated"
+        result = resolve_config_path("$CONFIG_BASE_FOLDER/configs/pg/foo.yaml", base_dir=other_dir)
+        assert result == config_base / "configs" / "pg" / "foo.yaml"
+
+
+class TestBuildPatientGeneratorFromSpecWithConfigBaseFolder:
+    """Tests that $CONFIG_BASE_FOLDER/ prefixed config_file paths work in mixer specs."""
+
+    def test_config_base_folder_path_resolves_correctly(self, tmp_path, monkeypatch):
+        """Mixer spec with $CONFIG_BASE_FOLDER/... config_file resolves when env var is set."""
+        child_yaml = tmp_path / "child.yaml"
+        child_yaml.write_text(
+            yaml.safe_dump({**_ALL_SIX, "visible_patient_attributes": list(_ALL_SIX.keys())}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ABX_AMR_CONFIG_BASE_FOLDER", str(tmp_path))
+
+        spec = {
+            "type": "mixer",
+            "generators": [
+                {"config_file": "$CONFIG_BASE_FOLDER/child.yaml", "proportion": 1.0},
+            ],
+        }
+        mixer = build_patient_generator_from_spec(spec)
+        assert isinstance(mixer, PatientGeneratorMixer)
+
+    def test_config_base_folder_path_without_env_raises_runtime_error(self, monkeypatch):
+        """Mixer spec with $CONFIG_BASE_FOLDER/... raises RuntimeError if env var unset."""
+        monkeypatch.delenv("ABX_AMR_CONFIG_BASE_FOLDER", raising=False)
+        spec = {
+            "type": "mixer",
+            "generators": [
+                {"config_file": "$CONFIG_BASE_FOLDER/configs/pg/foo.yaml", "proportion": 1.0},
+            ],
+        }
+        with pytest.raises(RuntimeError, match="ABX_AMR_CONFIG_BASE_FOLDER"):
+            build_patient_generator_from_spec(spec)

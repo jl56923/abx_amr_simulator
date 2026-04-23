@@ -14,12 +14,14 @@ from gymnasium import spaces
 from stable_baselines3 import PPO
 
 from abx_amr_simulator.core.abx_amr_parallel_env import ABXAMRParallelEnv
+from abx_amr_simulator.core.patient_generator import PatientGenerator, PatientGeneratorMixer
 from abx_amr_simulator.hrl import MARLOptionsWrapper
 from abx_amr_simulator.utils.marl_factories import (
     build_marl_env_from_config,
     build_marl_managers_from_config,
     build_marl_training_run_from_config,
     build_marl_wrapper_from_config,
+    build_patient_generator_from_config,
     load_marl_config,
 )
 
@@ -449,3 +451,223 @@ class TestBuildMarlTrainingRunFromConfig:
 
         m_obs, m_rew, m_term, m_trunc, m_info = wrapper.step(pending)
         assert len(m_obs) > 0
+
+
+# --------------------------------------------------------------------------- #
+# build_patient_generator_from_config — mixer branch
+# --------------------------------------------------------------------------- #
+
+def _minimal_pg_attrs() -> dict:
+    """Minimal inline PatientGenerator attribute config for use in mixer children."""
+    return {
+        "prob_infected": {
+            "prob_dist": {"type": "constant", "value": 0.7, "mu": None, "sigma": None},
+            "obs_bias_multiplier": 1.0,
+            "obs_noise_one_std_dev": 0.0,
+            "obs_noise_std_dev_fraction": 0.0,
+            "clipping_bounds": [0.0, 1.0],
+        },
+        "visible_patient_attributes": ["prob_infected"],
+    }
+
+
+class TestBuildPatientGeneratorFromConfigMixer:
+    def test_mixer_inline_returns_patient_generator_mixer(self, tmp_path):
+        """An inline type:mixer config is dispatched to PatientGeneratorMixer."""
+        config = {
+            "type": "mixer",
+            "generators": [
+                {"proportion": 0.6, **_minimal_pg_attrs()},
+                {"proportion": 0.4, **_minimal_pg_attrs()},
+            ],
+        }
+        pg = build_patient_generator_from_config(config, str(tmp_path), seed=0)
+        assert isinstance(pg, PatientGeneratorMixer)
+
+    def test_mixer_file_reference_returns_patient_generator_mixer(self, tmp_path):
+        """A mixer YAML referenced by filename is resolved and returns PatientGeneratorMixer."""
+        child_config = _minimal_pg_attrs()
+        child_yaml = tmp_path / "child_pg.yaml"
+        child_yaml.write_text(yaml.safe_dump(child_config))
+
+        mixer_config = {
+            "type": "mixer",
+            "generators": [
+                {"proportion": 0.5, "config_file": "child_pg.yaml"},
+                {"proportion": 0.5, "config_file": "child_pg.yaml"},
+            ],
+        }
+        mixer_yaml = tmp_path / "mixer_pg.yaml"
+        mixer_yaml.write_text(yaml.safe_dump(mixer_config))
+
+        pg = build_patient_generator_from_config(str(mixer_yaml), str(tmp_path), seed=1)
+        assert isinstance(pg, PatientGeneratorMixer)
+
+    def test_mixer_proportions_sum_to_one(self, tmp_path):
+        config = {
+            "type": "mixer",
+            "generators": [
+                {"proportion": 0.3, **_minimal_pg_attrs()},
+                {"proportion": 0.7, **_minimal_pg_attrs()},
+            ],
+        }
+        pg = build_patient_generator_from_config(config, str(tmp_path), seed=0)
+        assert isinstance(pg, PatientGeneratorMixer)
+        assert abs(pg.proportions.sum() - 1.0) < 1e-6
+
+    def test_mixer_child_count(self, tmp_path):
+        config = {
+            "type": "mixer",
+            "generators": [
+                {"proportion": 0.5, **_minimal_pg_attrs()},
+                {"proportion": 0.5, **_minimal_pg_attrs()},
+            ],
+        }
+        pg = build_patient_generator_from_config(config, str(tmp_path), seed=0)
+        assert len(pg.generators) == 2
+
+    def test_non_mixer_inline_still_returns_patient_generator(self, tmp_path):
+        """A plain (non-mixer) inline config still produces a PatientGenerator."""
+        config = _minimal_pg_attrs()
+        pg = build_patient_generator_from_config(config, str(tmp_path), seed=0)
+        assert isinstance(pg, PatientGenerator)
+        assert not isinstance(pg, PatientGeneratorMixer)
+
+    def test_mixer_with_config_base_folder_prefix_resolves(self, tmp_path, monkeypatch):
+        """Inline mixer with $CONFIG_BASE_FOLDER/ config_file resolves when env var is set."""
+        child_yaml = tmp_path / "child_pg.yaml"
+        child_yaml.write_text(yaml.safe_dump(_minimal_pg_attrs()))
+        monkeypatch.setenv("ABX_AMR_CONFIG_BASE_FOLDER", str(tmp_path))
+
+        config = {
+            "type": "mixer",
+            "generators": [
+                {"proportion": 1.0, "config_file": "$CONFIG_BASE_FOLDER/child_pg.yaml"},
+            ],
+        }
+        pg = build_patient_generator_from_config(config, ".", seed=0)
+        assert isinstance(pg, PatientGeneratorMixer)
+
+
+# --------------------------------------------------------------------------- #
+# Inline config_file absolutization (pre-save robustness for run-dir reload)
+# --------------------------------------------------------------------------- #
+
+class TestInlineConfigFileAbsolutization:
+    """Verify that inline patient_generator config_file paths are absolutized before saving.
+
+    This simulates the pre-save step in train_marl.py: after absolutization,
+    reloading from a different directory (the run dir) must not break path resolution.
+    """
+
+    def _make_inline_mixer_config(self, config_dir: Path, child_yaml: Path) -> dict:
+        """Return a minimal MARL config with an inline mixer patient_generator."""
+        return {
+            "_config_dir": str(config_dir),
+            "environment": {
+                "shared": {
+                    "antibiotics_AMR_dict": {
+                        "A": {"leak": 0.05, "flatness_parameter": 1.0,
+                              "permanent_residual_volume": 0.0, "initial_amr_level": 0.0}
+                    },
+                    "max_time_steps": 5,
+                    "num_patients_per_time_step": 1,
+                },
+                "agents": [
+                    {
+                        "agent_id": "agent_0",
+                        "n_patients": 2,
+                        "patient_generator": {
+                            "type": "mixer",
+                            "generators": [
+                                {"proportion": 0.5, "config_file": "child_pg.yaml"},
+                                {"proportion": 0.5, "config_file": "child_pg.yaml"},
+                            ],
+                        },
+                        "reward_calculator": _load()["environment"]["agents"][0]["reward_calculator"],
+                        "option_library": str(
+                            Path(_FIXTURE_DIR / "minimal_two_agent.yaml").resolve().parent
+                            / "default_deterministic.yaml"
+                        ),
+                    }
+                ],
+            },
+            "training": {"n_steps": 4, "batch_size": 2, "n_epochs": 1,
+                         "learning_rate": 3e-4, "total_primitive_steps": 10,
+                         "option_gamma": 0.99, "seed": 0},
+        }
+
+    def test_inline_config_file_paths_absolutized(self, tmp_path):
+        """After applying the pre-save absolutization logic, config_file paths become absolute."""
+        from abx_amr_simulator.utils.factories import resolve_config_path
+
+        child_yaml = tmp_path / "child_pg.yaml"
+        child_yaml.write_text(yaml.safe_dump(_minimal_pg_attrs()))
+
+        config = self._make_inline_mixer_config(tmp_path, child_yaml)
+        config_dir = Path(config["_config_dir"])
+
+        # Replicate the absolutization logic from train_marl.py
+        def absolutize_config_file_paths(obj):
+            if isinstance(obj, dict):
+                if "config_file" in obj:
+                    val = obj["config_file"]
+                    if isinstance(val, str):
+                        obj["config_file"] = str(resolve_config_path(val, base_dir=config_dir))
+                for v in obj.values():
+                    absolutize_config_file_paths(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    absolutize_config_file_paths(item)
+
+        pg_value = config["environment"]["agents"][0]["patient_generator"]
+        absolutize_config_file_paths(pg_value)
+
+        for gen_entry in pg_value["generators"]:
+            assert Path(gen_entry["config_file"]).is_absolute(), (
+                f"config_file should be absolute after pre-save, got: {gen_entry['config_file']}"
+            )
+
+    def test_reloaded_config_builds_correctly_after_absolutization(self, tmp_path):
+        """After saving and reloading config, inline mixer resolves correctly from run dir."""
+        from abx_amr_simulator.utils.factories import resolve_config_path
+
+        config_dir = tmp_path / "marl_configs"
+        config_dir.mkdir()
+        child_yaml = config_dir / "child_pg.yaml"
+        child_yaml.write_text(yaml.safe_dump(_minimal_pg_attrs()))
+
+        config = self._make_inline_mixer_config(config_dir, child_yaml)
+        cfg_dir_path = Path(config["_config_dir"])
+
+        def absolutize_config_file_paths(obj):
+            if isinstance(obj, dict):
+                if "config_file" in obj:
+                    val = obj["config_file"]
+                    if isinstance(val, str):
+                        obj["config_file"] = str(resolve_config_path(val, base_dir=cfg_dir_path))
+                for v in obj.values():
+                    absolutize_config_file_paths(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    absolutize_config_file_paths(item)
+
+        pg_value = config["environment"]["agents"][0]["patient_generator"]
+        absolutize_config_file_paths(pg_value)
+
+        # Simulate reload from run dir (different directory than config_dir)
+        run_dir = tmp_path / "run" / "deep" / "path"
+        run_dir.mkdir(parents=True)
+        saved_config_path = run_dir / "marl_full_agents_env_config.yaml"
+        config_to_save = {k: v for k, v in config.items() if not k.startswith("_")}
+        with open(saved_config_path, "w") as f:
+            yaml.dump(config_to_save, f)
+
+        reloaded = load_marl_config(saved_config_path)
+        # _config_dir is now run_dir — but config_file paths are absolute, so no error
+        pg = build_patient_generator_from_config(
+            reloaded["environment"]["agents"][0]["patient_generator"],
+            reloaded["_config_dir"],
+            seed=0,
+        )
+        assert isinstance(pg, PatientGeneratorMixer)

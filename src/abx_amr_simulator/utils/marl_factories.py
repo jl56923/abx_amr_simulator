@@ -62,6 +62,7 @@ from abx_amr_simulator.core.base_patient_generator import PatientGeneratorBase
 from abx_amr_simulator.core.base_reward_calculator import RewardCalculatorBase
 from abx_amr_simulator.hrl import MARLOptionsWrapper
 from abx_amr_simulator.hrl.option_loaders import OptionLibraryLoader
+from abx_amr_simulator.utils.factories import build_patient_generator_from_spec
 from abx_amr_simulator.utils.plugin_loader import load_plugin_component
 
 
@@ -195,6 +196,14 @@ def build_patient_generator_from_config(
     )
     if plugin_result is not None:
         return plugin_result
+
+    # Support mixer-type patient generators (type: mixer)
+    if pg_config.get("type") == "mixer":
+        return build_patient_generator_from_spec(
+            spec=pg_config,
+            base_dir=pg_config_dir,
+            seed=seed,
+        )
 
     pg_config["seed"] = seed
     return PatientGenerator(config=pg_config)

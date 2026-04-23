@@ -1106,6 +1106,27 @@ def run_marl_training(
             for value in obj:
                 _resolve_inline_plugin_loader_modules(value)
 
+    def _resolve_inline_config_file_paths(obj: object) -> None:
+        """Recursively absolutize 'config_file' string values inside inline dicts.
+
+        Handles both plain relative paths (resolved against config_dir) and
+        '$CONFIG_BASE_FOLDER/' prefixed paths (resolved via the env var).  Only
+        modifies string values — already-absolute paths are left unchanged.
+        This makes saved configs self-contained so they can be reloaded from the
+        run directory without path-resolution failures.
+        """
+        from abx_amr_simulator.utils.factories import resolve_config_path
+        if isinstance(obj, dict):
+            if "config_file" in obj:
+                val = obj["config_file"]
+                if isinstance(val, str):
+                    obj["config_file"] = str(resolve_config_path(val, base_dir=config_dir))
+            for value in obj.values():
+                _resolve_inline_config_file_paths(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                _resolve_inline_config_file_paths(item)
+
     # Resolve plugin loader paths across the whole environment block.
     _resolve_inline_plugin_loader_modules(config.get("environment", {}))
 
@@ -1116,9 +1137,13 @@ def run_marl_training(
             entry["option_library"] = str((config_dir / lib_value).resolve())
 
         # Resolve patient_generator path when it is a filename reference (string).
+        # Inline dict patient_generators have their nested config_file paths
+        # absolutized recursively so the saved config is self-contained.
         pg_value = entry.get("patient_generator")
         if isinstance(pg_value, str) and not Path(pg_value).is_absolute():
             entry["patient_generator"] = str((config_dir / pg_value).resolve())
+        elif isinstance(pg_value, dict):
+            _resolve_inline_config_file_paths(pg_value)
 
         rc_value = entry.get("reward_calculator")
         if isinstance(rc_value, str) and not Path(rc_value).is_absolute():

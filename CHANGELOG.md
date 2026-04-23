@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`resolve_config_path` utility and `$CONFIG_BASE_FOLDER/` prefix support (Task 5, April 2026)**:
+  - Added `resolve_config_path(path_str, base_dir)` to `abx_amr_simulator.utils.factories`.
+    Handles three cases: `$CONFIG_BASE_FOLDER/`-prefixed paths (expanded from
+    `ABX_AMR_CONFIG_BASE_FOLDER` env var), absolute paths (returned as-is), and plain
+    relative paths (resolved against `base_dir`).  Raises `RuntimeError` with clear
+    instructions when the env var is unset and the prefix is encountered.
+  - `build_patient_generator_from_spec` now delegates `config_file` resolution to
+    `resolve_config_path`, enabling mixer specs to use the portable
+    `$CONFIG_BASE_FOLDER/configs/patient_generator/...` prefix instead of fragile
+    deep relative paths.
+  - Added tutorial `docs/tutorials/11_config_path_conventions.md` explaining the
+    mechanism for both config authors and factory contributors.
+
+### Fixed
+- **`build_patient_generator_from_config` now handles `type: mixer` configs**:
+  Previously, `build_patient_generator_from_config` in `marl_factories.py` only
+  checked for a `plugin` key and fell through to `PatientGenerator(config=...)` for
+  everything else. A mixer-type YAML (produced by commit 8301816) carried no `plugin`
+  key, so the fallthrough reached `PatientGenerator.__init__`, which raised
+  `ValueError: Missing required config key: 'visible_patient_attributes'` and caused
+  all MARL tuning jobs that used a mixer patient-generator config to fail. The fix
+  adds a `type: mixer` branch before the fallthrough that delegates to the existing
+  `build_patient_generator_from_spec` utility (already the canonical handler for mixer
+  specs in `factories.py`). Five new unit tests in
+  `tests/unit/utils/test_marl_factories.py` cover the inline-mixer, file-reference-mixer,
+  proportions, child count, and non-mixer fallthrough cases.
+
+### Added
 - **`TruePatient`/`ObservedPatient`/`Patient` type hierarchy** (Task 16, April 2026):
   - Introduced `TruePatient`, `ObservedPatient`, and `Patient` dataclasses in
     `src/abx_amr_simulator/core/types.py`.

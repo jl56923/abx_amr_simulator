@@ -98,6 +98,73 @@ def create_reward_calculator(config: Dict[str, Any]) -> RewardCalculator:
     return RewardCalculator(config=reward_config)
 
 
+_CONFIG_BASE_FOLDER_PREFIX = "$CONFIG_BASE_FOLDER/"
+
+
+def resolve_config_path(path_str: str, base_dir: Optional[Path] = None) -> Path:
+    """Resolve a config file path, supporting the ``$CONFIG_BASE_FOLDER/`` prefix.
+
+    YAML config files may use ``$CONFIG_BASE_FOLDER/`` as a portable prefix to
+    reference shared config files without hard-coding deep relative paths.  The
+    prefix is replaced at runtime with the directory pointed to by the
+    ``ABX_AMR_CONFIG_BASE_FOLDER`` environment variable, which can be set to any
+    directory that should serve as the root for shared config resolution.
+
+    For example, if a user sets::
+
+        export ABX_AMR_CONFIG_BASE_FOLDER=/my/project/shared_configs
+
+    then a YAML entry of::
+
+        config_file: $CONFIG_BASE_FOLDER/patient_generators/low_risk.yaml
+
+    resolves to ``/my/project/shared_configs/patient_generators/low_risk.yaml``.
+
+    Resolution rules:
+    - If ``path_str`` starts with ``$CONFIG_BASE_FOLDER/``, the prefix is
+      replaced with the value of ``ABX_AMR_CONFIG_BASE_FOLDER``.  If the variable
+      is not set, a ``RuntimeError`` is raised.
+    - If ``path_str`` is absolute, it is returned as-is.
+    - If ``path_str`` is relative, it is resolved relative to ``base_dir``.  If
+      ``base_dir`` is ``None`` and the path is relative, ``ValueError`` is raised.
+
+    Args:
+        path_str: Raw path string from a config file.
+        base_dir: Directory used to resolve relative paths (without prefix).
+
+    Returns:
+        Resolved ``Path`` object.
+
+    Raises:
+        RuntimeError: ``$CONFIG_BASE_FOLDER/`` prefix used but
+            ``ABX_AMR_CONFIG_BASE_FOLDER`` is not set.
+        ValueError: Relative path provided without ``base_dir``.
+    """
+    if path_str.startswith(_CONFIG_BASE_FOLDER_PREFIX):
+        config_base = os.environ.get("ABX_AMR_CONFIG_BASE_FOLDER")
+        if not config_base:
+            raise RuntimeError(
+                "Config path uses the '$CONFIG_BASE_FOLDER/' prefix but the "
+                "ABX_AMR_CONFIG_BASE_FOLDER environment variable is not set. "
+                "Set it to the directory that should serve as the base for "
+                "shared config file resolution (e.g. the root of your shared "
+                "configs folder) before invoking factory functions."
+            )
+        relative_part = path_str[len(_CONFIG_BASE_FOLDER_PREFIX):]
+        return Path(config_base) / relative_part
+
+    cfg_path = Path(path_str)
+    if cfg_path.is_absolute():
+        return cfg_path
+
+    if base_dir is None:
+        raise ValueError(
+            f"Relative config_file path '{path_str}' requires base_dir to be provided. "
+            "Consider using the '$CONFIG_BASE_FOLDER/' prefix instead of a relative path."
+        )
+    return (base_dir / cfg_path).resolve()
+
+
 def build_patient_generator_from_spec(
     spec: Dict[str, Any],
     base_dir: Optional[Path] = None,
@@ -114,11 +181,16 @@ def build_patient_generator_from_spec(
             ``PatientGeneratorMixer`` whose children are specified in
             ``spec['generators']``.  Each entry must have a ``'proportion'`` key
             and either a ``'config_file'`` key (path to a child YAML) or inline
-            distribution keys.  ``config_file`` paths are resolved relative to
-            ``base_dir`` when not absolute.  For non-mixer specs the dict is
+            distribution keys.  ``config_file`` values are resolved via
+            :func:`resolve_config_path`: absolute paths are used as-is, paths
+            starting with ``$CONFIG_BASE_FOLDER/`` are expanded from the
+            ``ABX_AMR_CONFIG_BASE_FOLDER`` env var, and plain relative paths are
+            resolved against ``base_dir``.  For non-mixer specs the dict is
             passed directly to ``PatientGenerator``.
-        base_dir: Directory used to resolve relative ``config_file`` paths.
-            If ``None`` and a relative path is encountered, ``ValueError`` is raised.
+        base_dir: Directory used to resolve plain relative ``config_file`` paths.
+            Not required for absolute or ``$CONFIG_BASE_FOLDER/``-prefixed paths.
+            If ``None`` and a plain relative path is encountered, ``ValueError``
+            is raised.
         seed: Optional RNG seed forwarded to all instantiated generators.
 
     Returns:
@@ -142,14 +214,7 @@ def build_patient_generator_from_spec(
             proportions.append(float(gen_spec["proportion"]))
 
             if "config_file" in gen_spec:
-                cfg_path = Path(gen_spec["config_file"])
-                if not cfg_path.is_absolute():
-                    if base_dir is None:
-                        raise ValueError(
-                            f"generators[{i}] has a relative config_file path but no "
-                            f"base_dir was provided: '{gen_spec['config_file']}'"
-                        )
-                    cfg_path = (base_dir / cfg_path).resolve()
+                cfg_path = resolve_config_path(gen_spec["config_file"], base_dir=base_dir)
                 if not cfg_path.exists():
                     raise ValueError(
                         f"generators[{i}] config_file not found: {cfg_path}"
