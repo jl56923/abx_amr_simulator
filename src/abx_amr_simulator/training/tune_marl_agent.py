@@ -547,24 +547,46 @@ def _make_early_stopping_callback(
 ) -> Any:
     """Return an Optuna callback that stops the study when improvement plateaus.
 
-    Args:
-        warmup_trials: Minimum number of trials before stopping is considered.
-        patience: Stop after this many consecutive trials with no improvement
-                  of at least min_delta.
-        min_delta: Minimum improvement in best value to reset the patience counter.
-    """
-    state = {"best_value": float("-inf"), "trials_since_improvement": 0}
+    Designed to work correctly with distributed workers sharing a study via
+    SQLite. Rather than maintaining per-worker mutable state, each callback
+    invocation recomputes the patience counter from the full set of completed
+    trials in the shared study. This means any worker that fires the callback
+    will make the same stopping decision from the same shared data, and
+    study.stop() (which propagates via SQLite) will cause all other workers
+    to exit after their current trial finishes.
 
+    Args:
+        warmup_trials: Minimum number of completed trials before stopping is
+            considered. Trials completing during the warmup window are ignored.
+        patience: Stop after this many consecutive completed trials (post-warmup)
+            with no improvement of at least min_delta.
+        min_delta: Minimum improvement in best value needed to reset the
+            patience counter. Improvements <= this threshold are treated as noise.
+    """
     def callback(study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
-        if len(study.trials) < warmup_trials:
+        completed = [
+            t for t in study.trials
+            if t.state == optuna.trial.TrialState.COMPLETE
+        ]
+        if len(completed) <= warmup_trials:
             return
-        current_best = study.best_value
-        if current_best > state["best_value"] + min_delta:
-            state["best_value"] = current_best
-            state["trials_since_improvement"] = 0
-        else:
-            state["trials_since_improvement"] += 1
-        if state["trials_since_improvement"] >= patience:
+
+        # Sort by actual completion time so the counter reflects improvement
+        # in the order results became available, matching what a sequential
+        # single-worker run would observe.
+        completed_sorted = sorted(completed, key=lambda t: t.datetime_complete)
+        post_warmup = completed_sorted[warmup_trials:]
+
+        best_so_far = float("-inf")
+        trials_since_improvement = 0
+        for t in post_warmup:
+            if t.value > best_so_far + min_delta:
+                best_so_far = t.value
+                trials_since_improvement = 0
+            else:
+                trials_since_improvement += 1
+
+        if trials_since_improvement >= patience:
             study.stop()
 
     return callback

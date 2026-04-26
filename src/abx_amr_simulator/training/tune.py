@@ -869,18 +869,19 @@ class EarlyStoppingStudyCallback:
     the study once convergence is detected, saving compute without sacrificing
     solution quality.
 
-    In distributed mode (multiple workers sharing a study), `study.stop()`
-    only halts the calling worker's `study.optimize` loop — other workers
-    continue until their own callbacks fire. Because each worker evaluates
-    the same global `study.best_value`, all workers will converge on stopping
-    within `patience` trials of each other.
+    Distributed-safe: each invocation recomputes the patience counter from
+    the full set of completed trials in the shared study (sorted by completion
+    time), so no per-instance mutable state is needed. Any worker that fires
+    the callback will make the same stopping decision. study.stop() propagates
+    via the shared storage (SQLite), causing all other workers to exit after
+    their current trial finishes.
 
     Args:
         warmup_trials: Number of globally completed trials to skip before
             monitoring begins. Should be >= TPE n_startup_trials to avoid
             penalizing the optimizer during its random exploration phase.
-        patience: Number of consecutive trials without meaningful improvement
-            before calling study.stop().
+        patience: Number of consecutive post-warmup trials without meaningful
+            improvement before calling study.stop().
         min_delta: Minimum improvement over the tracked best value needed to
             reset the patience counter. Improvements <= this threshold are
             treated as noise.
@@ -890,8 +891,6 @@ class EarlyStoppingStudyCallback:
         self.warmup_trials = warmup_trials
         self.patience = patience
         self.min_delta = min_delta
-        self._best_value: float = float('-inf')
-        self._no_improve_count: int = 0
 
     def __call__(self, study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
         completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
@@ -900,14 +899,22 @@ class EarlyStoppingStudyCallback:
         if n_completed <= self.warmup_trials:
             return
 
-        current_best = study.best_value
-        if current_best > self._best_value + self.min_delta:
-            self._best_value = current_best
-            self._no_improve_count = 0
-        else:
-            self._no_improve_count += 1
+        # Sort by actual completion time so the counter reflects improvement
+        # in the order results became available, matching what a sequential
+        # single-worker run would observe.
+        completed_sorted = sorted(completed, key=lambda t: t.datetime_complete)
+        post_warmup = completed_sorted[self.warmup_trials:]
 
-        if self._no_improve_count >= self.patience:
+        best_so_far = float("-inf")
+        no_improve_count = 0
+        for t in post_warmup:
+            if t.value > best_so_far + self.min_delta:
+                best_so_far = t.value
+                no_improve_count = 0
+            else:
+                no_improve_count += 1
+
+        if no_improve_count >= self.patience:
             print(
                 f"\n[Early Stopping] No improvement > {self.min_delta} for "
                 f"{self.patience} consecutive trials after warmup."

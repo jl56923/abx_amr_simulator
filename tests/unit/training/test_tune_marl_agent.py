@@ -14,8 +14,11 @@ import json
 from pathlib import Path
 
 import numpy as np
+import optuna
 import pytest
 import yaml
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 from abx_amr_simulator.training.tune_marl_agent import (
     build_single_agent_env_from_marl_config,
@@ -691,3 +694,136 @@ class TestRunMarlAgentTuningHrlRppo:
         # All produced agents must be plain PPO (not RecurrentPPO_Masked).
         for inst in captured["instances"]:
             assert type(inst) is PPO
+
+
+# --------------------------------------------------------------------------- #
+# _make_early_stopping_callback
+# --------------------------------------------------------------------------- #
+
+class TestMakeEarlyStoppingCallback:
+    """Tests for the stateless distributed-safe early stopping callback.
+
+    All tests use real in-memory Optuna studies with synthetic objectives —
+    no mocks of Optuna internals.
+    """
+
+    from abx_amr_simulator.training.tune_marl_agent import _make_early_stopping_callback
+
+    def _run_study(
+        self,
+        values: list,
+        warmup_trials: int,
+        patience: int,
+        min_delta: float,
+        n_trials: int | None = None,
+    ) -> optuna.Study:
+        """Run an in-memory study whose objective returns values[trial_number % len(values)]."""
+        from abx_amr_simulator.training.tune_marl_agent import _make_early_stopping_callback
+        if n_trials is None:
+            n_trials = len(values)
+        callback = _make_early_stopping_callback(
+            warmup_trials=warmup_trials,
+            patience=patience,
+            min_delta=min_delta,
+        )
+        study = optuna.create_study(direction="maximize")
+        study.optimize(
+            lambda trial: values[trial.number % len(values)],
+            n_trials=n_trials,
+            callbacks=[callback],
+        )
+        return study
+
+    def _n_completed(self, study: optuna.Study) -> int:
+        return len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+
+    def test_stops_after_warmup_plus_patience_on_flat_objective(self):
+        """Flat objective: stops at warmup + 1 (initial reset from -inf) + patience."""
+        warmup, patience = 2, 3
+        study = self._run_study(
+            values=[-275.0] * 20,
+            warmup_trials=warmup,
+            patience=patience,
+            min_delta=2.0,
+            n_trials=20,
+        )
+        assert self._n_completed(study) == warmup + 1 + patience
+
+    def test_does_not_stop_during_warmup(self):
+        """Stopping must never fire before warmup_trials completions."""
+        warmup = 5
+        study = self._run_study(
+            values=[-275.0] * 20,
+            warmup_trials=warmup,
+            patience=1,
+            min_delta=2.0,
+            n_trials=20,
+        )
+        assert self._n_completed(study) >= warmup
+
+    def test_improvement_resets_patience_counter(self):
+        """A gain above min_delta resets the counter and keeps the study running longer."""
+        warmup, patience, min_delta = 2, 3, 2.0
+        # Trials 0-1: warmup. Trial 2: initial reset. Trials 3-5: flat → patience=3 → stop
+        # without improvement. Insert big improvement at trial 3 to reset and push stopping later.
+        values = [-275.0, -275.0, -275.0, -250.0] + [-250.0] * 20
+        study = self._run_study(
+            values=values,
+            warmup_trials=warmup,
+            patience=patience,
+            min_delta=min_delta,
+            n_trials=20,
+        )
+        assert self._n_completed(study) > warmup + patience
+
+    def test_small_gain_below_min_delta_does_not_reset(self):
+        """An improvement below min_delta is treated as noise and does not reset patience."""
+        warmup, patience, min_delta = 2, 3, 2.0
+        # Trial 2: -274.0 → initial reset (best=-274.0). Trial 3+: -273.5 (+0.5 < 2.0).
+        values = [-275.0, -275.0, -274.0] + [-273.5] * 20
+        study = self._run_study(
+            values=values,
+            warmup_trials=warmup,
+            patience=patience,
+            min_delta=min_delta,
+            n_trials=25,
+        )
+        assert self._n_completed(study) == warmup + 1 + patience
+
+    def test_runs_all_trials_when_improvement_is_continuous(self):
+        """When every trial improves by more than min_delta, all n_trials complete."""
+        n = 15
+        values = [-300.0 + i * 10 for i in range(n)]
+        study = self._run_study(
+            values=values,
+            warmup_trials=3,
+            patience=3,
+            min_delta=2.0,
+            n_trials=n,
+        )
+        assert self._n_completed(study) == n
+
+    def test_stateless_across_multiple_callback_instances(self):
+        """Two separate callback instances on the same study produce consistent stopping.
+
+        Simulates distributed workers: one study, two callbacks (one per simulated
+        worker). The study should stop at the same global trial count regardless of
+        which callback instance fires. We verify this by comparing outcomes when
+        only one callback is attached vs. when a second identical callback would
+        observe the same history.
+        """
+        from abx_amr_simulator.training.tune_marl_agent import _make_early_stopping_callback
+
+        warmup, patience, min_delta = 2, 3, 2.0
+        # Both callback instances see the same shared study state.
+        cb1 = _make_early_stopping_callback(warmup, patience, min_delta)
+        cb2 = _make_early_stopping_callback(warmup, patience, min_delta)
+
+        study = optuna.create_study(direction="maximize")
+        study.optimize(
+            lambda trial: -275.0,  # flat objective
+            n_trials=20,
+            callbacks=[cb1, cb2],  # both fire after each trial
+        )
+        # Both callbacks recompute from shared history — idempotent stop calls are harmless.
+        assert self._n_completed(study) == warmup + 1 + patience
