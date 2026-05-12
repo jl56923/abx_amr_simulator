@@ -45,6 +45,7 @@ class TestHeuristicWorkerInstantiation:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         assert worker.name == 'HEURISTIC_test'
         assert worker.k == 10
@@ -80,6 +81,7 @@ class TestUncertaintyScoring:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         patient = {
@@ -101,6 +103,7 @@ class TestUncertaintyScoring:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # Inject full attribute list so worker checks all attributes
@@ -133,6 +136,7 @@ class TestUncertaintyScoring:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # Inject full attribute list (6 total)
@@ -168,6 +172,7 @@ class TestUncertaintyScoring:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # Inject full attribute list (6 total)
@@ -209,6 +214,7 @@ class TestExpectedRewardBehavior:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         reward_calculator = _create_reward_calculator_for_expected_reward_tests()
         patient = {
@@ -371,6 +377,7 @@ class TestActionSelection:
                 'no_treatment': 0.0
             },
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         patients = [
@@ -403,6 +410,7 @@ class TestActionSelection:
                 'no_treatment': 0.0
             },
             uncertainty_threshold=1.0,  # Low tolerance for uncertainty
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # Patient with many padded attributes
@@ -438,6 +446,7 @@ class TestActionSelection:
                 'no_treatment': 0.0
             },
             uncertainty_threshold=5.0,  # High tolerance
+            default_recovery_without_treatment_prob=0.1,
         )
         
         patients = [
@@ -471,6 +480,7 @@ class TestActionSelection:
                 'no_treatment': 0.0
             },
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         patients = [
@@ -491,6 +501,215 @@ class TestActionSelection:
         # With realistic reward calculation, both patients' expected rewards may be below threshold
         # Just verify we get valid antibiotic name strings ('A', 'B', or 'no_treatment')
         assert all(action in ['A', 'B', 'no_treatment'] for action in actions)
+
+
+class TestSentinelValueHandling:
+    """Tests that -1 sentinel values (padded/missing attributes) are treated as neutral defaults.
+
+    Before the fix, dict.get(key, default) would return -1 when the key was present
+    but set to -1, corrupting the expected reward calculation for limited-visibility patients.
+    These tests verify the fix: any attribute value < 0 is replaced with the appropriate default
+    before use in the reward formula.
+    """
+
+    def _make_worker(
+        self,
+        *,
+        uncertainty_threshold: float = 10.0,
+        default_recovery_prob: float = 0.1,
+    ) -> HeuristicWorker:
+        return HeuristicWorker(
+            name='sentinel_test',
+            duration=10,
+            action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
+            uncertainty_threshold=uncertainty_threshold,
+            default_recovery_without_treatment_prob=default_recovery_prob,
+        )
+
+    def _make_rc(self) -> RewardCalculator:
+        # benefit_prob=1.0, failure_prob=0.0, adverse_effect_prob=0.0 simplifies
+        # expected reward to: prescribe_A = pI * pS * RB; no_treatment = pI * r_spont * RB
+        return _create_reward_calculator_for_expected_reward_tests()
+
+    def test_sentinel_minus_one_produces_same_rewards_as_neutral_defaults(self):
+        """All five optional attributes set to -1 must yield the same rewards as 1.0/default."""
+        worker = self._make_worker(default_recovery_prob=0.1)
+        rc = self._make_rc()
+        antibiotic_names = ['A']
+        amr_levels = {'A': 0.2}
+
+        full_visibility_patient = {
+            'prob_infected': 0.8,
+            'benefit_value_multiplier': 1.0,
+            'failure_value_multiplier': 1.0,
+            'benefit_probability_multiplier': 1.0,
+            'failure_probability_multiplier': 1.0,
+            'recovery_without_treatment_prob': 0.1,
+        }
+        limited_visibility_patient = {
+            'prob_infected': 0.8,
+            'benefit_value_multiplier': -1.0,
+            'failure_value_multiplier': -1.0,
+            'benefit_probability_multiplier': -1.0,
+            'failure_probability_multiplier': -1.0,
+            'recovery_without_treatment_prob': -1.0,
+        }
+
+        rewards_full = worker.compute_expected_reward(
+            patient=full_visibility_patient,
+            antibiotic_names=antibiotic_names,
+            current_amr_levels=amr_levels,
+            reward_calculator=rc,
+        )
+        rewards_limited = worker.compute_expected_reward(
+            patient=limited_visibility_patient,
+            antibiotic_names=antibiotic_names,
+            current_amr_levels=amr_levels,
+            reward_calculator=rc,
+        )
+
+        assert rewards_full.keys() == rewards_limited.keys()
+        for action_key in rewards_full:
+            assert rewards_limited[action_key] == pytest.approx(rewards_full[action_key]), (
+                f"Action '{action_key}': sentinel patient reward {rewards_limited[action_key]} "
+                f"!= full-visibility reward {rewards_full[action_key]}"
+            )
+
+    def test_r_spont_sentinel_uses_configured_default_not_one(self):
+        """r_spont = -1 must use default_recovery_prob, not 1.0.
+
+        This matters because confusing r_spont=-1 with r_spont=1.0 would make
+        no_treatment appear far more attractive than it really is.
+        """
+        default_prob = 0.15
+        worker = self._make_worker(default_recovery_prob=default_prob)
+        rc = self._make_rc()
+        antibiotic_names = ['A']
+        amr_levels = {'A': 0.0}
+
+        patient_sentinel = {
+            'prob_infected': 0.8,
+            'recovery_without_treatment_prob': -1.0,
+        }
+        patient_explicit = {
+            'prob_infected': 0.8,
+            'recovery_without_treatment_prob': default_prob,
+        }
+        patient_wrong_default = {
+            'prob_infected': 0.8,
+            'recovery_without_treatment_prob': 1.0,  # What the bug would have used
+        }
+
+        rewards_sentinel = worker.compute_expected_reward(
+            patient=patient_sentinel, antibiotic_names=antibiotic_names,
+            current_amr_levels=amr_levels, reward_calculator=rc,
+        )
+        rewards_explicit = worker.compute_expected_reward(
+            patient=patient_explicit, antibiotic_names=antibiotic_names,
+            current_amr_levels=amr_levels, reward_calculator=rc,
+        )
+        rewards_wrong = worker.compute_expected_reward(
+            patient=patient_wrong_default, antibiotic_names=antibiotic_names,
+            current_amr_levels=amr_levels, reward_calculator=rc,
+        )
+
+        assert rewards_sentinel['no_treatment'] == pytest.approx(rewards_explicit['no_treatment'])
+        assert rewards_sentinel['no_treatment'] != pytest.approx(rewards_wrong['no_treatment'])
+
+    def test_limited_visibility_patient_can_prescribe_when_threshold_allows(self):
+        """Limited-visibility patient (4 attrs = -1) can prescribe when uncertainty < threshold.
+
+        Regression test: before the fix, -1 multipliers drove pB to 0 and made vB negative,
+        producing nonsensical expected rewards that always lost to no_treatment regardless
+        of threshold. With the fix, a patient with 4 sentinel attrs and threshold=10 should
+        be evaluated using neutral defaults and can prescribe when the reward warrants it.
+        """
+        # uncertainty_threshold=10 > 4 sentinel attrs → no hard-refusal
+        worker = HeuristicWorker(
+            name='sentinel_test',
+            duration=10,
+            action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
+            uncertainty_threshold=10.0,
+            default_recovery_without_treatment_prob=0.1,
+        )
+        worker.set_observable_attributes([
+            'prob_infected',
+            'benefit_value_multiplier',
+            'failure_value_multiplier',
+            'benefit_probability_multiplier',
+            'failure_probability_multiplier',
+            'recovery_without_treatment_prob',
+        ])
+
+        rc = self._make_rc()
+        antibiotic_names = ['A']
+        # Low AMR → prescribing has high expected benefit (pS = 0.9)
+        amr_levels = {'A': 0.1}
+
+        # Mirrors the actual limited-visibility patient profile in the LPP experiments:
+        # prob_infected and recovery_without_treatment_prob are visible; the 4 multipliers
+        # are padded to -1.
+        limited_visibility_patient = {
+            'prob_infected': 0.9,
+            'benefit_value_multiplier': -1.0,
+            'failure_value_multiplier': -1.0,
+            'benefit_probability_multiplier': -1.0,
+            'failure_probability_multiplier': -1.0,
+            'recovery_without_treatment_prob': 0.1,
+        }
+
+        # Verify uncertainty score is 4 (the 4 multiplier attrs are -1)
+        uncertainty = worker.compute_relative_uncertainty_score(patient=limited_visibility_patient)
+        assert uncertainty == 4
+
+        rewards = worker.compute_expected_reward(
+            patient=limited_visibility_patient,
+            antibiotic_names=antibiotic_names,
+            current_amr_levels=amr_levels,
+            reward_calculator=rc,
+        )
+
+        # With the fix: prescribe_A = pI * pS * RB = 0.9 * 0.9 * 1.0 = 0.81 > threshold 0.5
+        assert rewards['prescribe_A'] > 0.5, (
+            f"Expected prescribe_A reward > 0.5 with neutral sentinel defaults, got {rewards['prescribe_A']}"
+        )
+
+    def test_valid_small_positive_values_are_not_replaced(self):
+        """Verify that small but valid positive attribute values are not treated as sentinels."""
+        worker = self._make_worker(default_recovery_prob=0.1)
+        rc = self._make_rc()
+        antibiotic_names = ['A']
+        amr_levels = {'A': 0.0}
+
+        # Values very close to 0 but positive are valid; they must NOT be replaced with 1.0
+        patient_small_positive = {
+            'prob_infected': 0.8,
+            'benefit_value_multiplier': 0.01,
+            'failure_value_multiplier': 0.01,
+            'benefit_probability_multiplier': 0.01,
+            'failure_probability_multiplier': 0.01,
+            'recovery_without_treatment_prob': 0.01,
+        }
+        patient_neutral = {
+            'prob_infected': 0.8,
+            'benefit_value_multiplier': 1.0,
+            'failure_value_multiplier': 1.0,
+            'benefit_probability_multiplier': 1.0,
+            'failure_probability_multiplier': 1.0,
+            'recovery_without_treatment_prob': 0.1,
+        }
+
+        rewards_small = worker.compute_expected_reward(
+            patient=patient_small_positive, antibiotic_names=antibiotic_names,
+            current_amr_levels=amr_levels, reward_calculator=rc,
+        )
+        rewards_neutral = worker.compute_expected_reward(
+            patient=patient_neutral, antibiotic_names=antibiotic_names,
+            current_amr_levels=amr_levels, reward_calculator=rc,
+        )
+
+        # Small positive values should produce meaningfully different rewards than neutral 1.0
+        assert rewards_small['prescribe_A'] != pytest.approx(rewards_neutral['prescribe_A'])
 
 
 class TestHeuristicOptionLoader:

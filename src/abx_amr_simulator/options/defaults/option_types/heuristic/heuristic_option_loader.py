@@ -44,11 +44,11 @@ class HeuristicWorker(OptionBase):
         name: str,
         duration: int,
         action_thresholds: Dict[str, float],
+        default_recovery_without_treatment_prob: float,
         uncertainty_threshold: float = 2.0,
-        default_recovery_without_treatment_prob: float = 0.1,
     ):
         """Initialize heuristic worker.
-        
+
         Args:
             name: Unique identifier (e.g., 'HEURISTIC_aggressive_10')
             duration: Fixed duration in steps (k)
@@ -58,8 +58,11 @@ class HeuristicWorker(OptionBase):
                 Example: {'prescribe_A': 0.7, 'prescribe_B': 0.5, 'no_treatment': 0.0}
             uncertainty_threshold: Threshold for refusing to prescribe due to missing data
                 Interpretation depends on logic (e.g., refuse if uncertainty > threshold)
-            default_recovery_without_treatment_prob: Default value for spontaneous recovery probability
-                when recovery_without_treatment_prob is not visible in patient observation (default: 0.1)
+            default_recovery_without_treatment_prob: Fallback spontaneous recovery probability
+                used when recovery_without_treatment_prob is not visible (sentinel -1) in the
+                patient observation. Must be set explicitly — no default provided. Set this to
+                the population mean of recovery_without_treatment_prob from the patient generator
+                config so that masked patients are evaluated with a clinically plausible estimate.
         """
         super().__init__(name=name, k=duration)
         self.action_thresholds = action_thresholds
@@ -154,6 +157,8 @@ class HeuristicWorker(OptionBase):
             - r = recovery_without_treatment_prob (observed)
         
         NOTE: Does NOT include a marginal-AMR shaping penalty to avoid leaking counterfactual AMR dynamics.
+        NOTE: -1 sentinel values (padded/missing attributes) are replaced with neutral defaults
+            before computing rewards, so limited-visibility patients are handled correctly.
         
         Args:
             patient: Dict with observed patient attributes
@@ -180,12 +185,21 @@ class HeuristicWorker(OptionBase):
             )
         pI = float(patient['prob_infected'])
         
-        # Extract optional attributes with defaults
-        vB = float(patient.get('benefit_value_multiplier', 1.0))
-        vF = float(patient.get('failure_value_multiplier', 1.0))
-        benefit_prob_mult = float(patient.get('benefit_probability_multiplier', 1.0))
-        failure_prob_mult = float(patient.get('failure_probability_multiplier', 1.0))
-        r_spont = float(patient.get('recovery_without_treatment_prob', self.default_recovery_prob))
+        # Extract optional attributes with defaults.
+        # -1 is the sentinel for "not observed / padded"; treat it the same as absent.
+        # Multiplier attributes default to 1.0 (no adjustment); recovery prob defaults to
+        # self.default_recovery_prob. dict.get() alone does not catch -1 because the key
+        # is present, so we add an explicit negative-value check.
+        _vB_raw = float(patient.get('benefit_value_multiplier', 1.0))
+        vB = 1.0 if _vB_raw < 0 else _vB_raw
+        _vF_raw = float(patient.get('failure_value_multiplier', 1.0))
+        vF = 1.0 if _vF_raw < 0 else _vF_raw
+        _bp_raw = float(patient.get('benefit_probability_multiplier', 1.0))
+        benefit_prob_mult = 1.0 if _bp_raw < 0 else _bp_raw
+        _fp_raw = float(patient.get('failure_probability_multiplier', 1.0))
+        failure_prob_mult = 1.0 if _fp_raw < 0 else _fp_raw
+        _rs_raw = float(patient.get('recovery_without_treatment_prob', self.default_recovery_prob))
+        r_spont = self.default_recovery_prob if _rs_raw < 0 else _rs_raw
         
         # Get clinical parameters from reward_calculator
         clinical_params = reward_calculator.abx_clinical_reward_penalties_info_dict
