@@ -429,8 +429,9 @@ class ABXAMREnv(gym.Env):
             n_patients=self.num_patients_per_time_step,
             true_amr_levels=true_amr_levels,
             rng=self.np_random,
+            observed_amr_levels=self.visible_amr_levels,
         )
-        
+
         # Construct initial observation from patients and AMR levels
         obs = self._construct_observation_from_patients(self.current_patients)
         if self.include_steps_since_amr_update_in_obs:
@@ -823,8 +824,9 @@ class ABXAMREnv(gym.Env):
             n_patients=self.num_patients_per_time_step,
             true_amr_levels=true_amr_levels,
             rng=self.np_random,
+            observed_amr_levels=self.visible_amr_levels,
         )
-        
+
         # Construct next observation from new patients and updated AMR levels
         obs = self._construct_observation_from_patients(self.current_patients)
         if self.include_steps_since_amr_update_in_obs:

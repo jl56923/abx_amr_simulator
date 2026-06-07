@@ -291,6 +291,7 @@ class ABXAMRParallelEnv(ParallelEnv):
                 n_patients=self._agent_n_patients[aid],
                 true_amr_levels=true_amr,
                 rng=self.np_random,
+                observed_amr_levels=self.visible_amr_levels,
             )
 
         obs_dict = {aid: self._build_obs(aid) for aid in self.agents}
@@ -417,6 +418,7 @@ class ABXAMRParallelEnv(ParallelEnv):
                 n_patients=self._agent_n_patients[aid],
                 true_amr_levels=true_amr,
                 rng=self.np_random,
+                observed_amr_levels=self.visible_amr_levels,
             )
 
             obs[aid] = self._build_obs(aid)

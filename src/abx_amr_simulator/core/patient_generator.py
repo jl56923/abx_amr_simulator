@@ -447,15 +447,16 @@ class PatientGenerator(PatientGeneratorBase):
         n_patients: int,
         true_amr_levels: Dict[str, float],
         rng: Optional[np.random.Generator] = None,
+        observed_amr_levels: Optional[Dict[str, float]] = None,
     ) -> List[Patient]:
         """Sample n_patients from configured distributions with observation noise/bias.
-        
+
         Generates heterogeneous patient population by sampling true attribute values from
         configured distributions (constant or gaussian), then applies observation bias and
         noise to simulate imperfect risk assessment. Each Patient dataclass contains both
         true values (used internally for reward calculation) and observed values (used for
         agent observation).
-        
+
         Args:
             n_patients (int): Number of patients to sample. Typically equals
                 environment's num_patients_per_time_step.
@@ -464,16 +465,21 @@ class PatientGenerator(PatientGeneratorBase):
             rng (np.random.Generator): NumPy random generator for reproducible sampling.
                 Should be the shared RNG from environment/reward_calculator to maintain
                 synchronized stochastic draws across components.
-        
+            observed_amr_levels (Dict[str, float], optional): Agent-visible (noisy, biased,
+                lagged) AMR levels. Accepted here for API compatibility with subclasses that
+                use observed AMR as a prediction calibration target (e.g.
+                PersonalizedPredPatientGenerator). The base PatientGenerator ignores this
+                parameter — it does not generate predictions.
+
         Returns:
             List[Patient]: List of Patient dataclass instances, each containing:
                 - True attributes (prob_infected, benefit_value_multiplier, etc.)
                 - Observed attributes (*_obs versions) with bias/noise applied
                 - Optional tracking fields (patient_id, etc., unused in single-agent mode)
-        
+
         Raises:
             ValueError: If n_patients <= 0 or true_amr_levels is missing/empty.
-        
+
         Example:
             >>> from abx_amr_simulator.core import PatientGenerator
             >>> import numpy as np
@@ -1067,18 +1073,23 @@ class PatientGeneratorMixer(PatientGenerator):
         n_patients: int,
         true_amr_levels: Dict[str, float],
         rng: np.random.Generator = None,
+        observed_amr_levels: Optional[Dict[str, float]] = None,
     ) -> List[Patient]:
         """
         Sample a mixed cohort of patients from all generators according to proportions.
-        
+
         Args:
             n_patients: Total number of patients to sample
             true_amr_levels: Ground-truth AMR levels per antibiotic (used for sensitivity sampling)
             rng: NumPy random generator for reproducibility (optional, will use self.rng if not provided)
-            
+            observed_amr_levels: Agent-visible (noisy, biased, lagged) AMR levels. Passed
+                through to each child generator's sample() call so that subclasses such as
+                PersonalizedPredPatientGenerator can use observed AMR as a calibration target.
+                Child generators that do not use this parameter accept and ignore it.
+
         Returns:
             List of Patient instances, shuffled to avoid ordering bias
-            
+
         Raises:
             ValueError: If n_patients <= 0
         """
@@ -1114,6 +1125,7 @@ class PatientGeneratorMixer(PatientGenerator):
                     n_patients=int(n),
                     true_amr_levels=true_amr_levels,
                     rng=gen_rng,
+                    observed_amr_levels=observed_amr_levels,
                 )
                 mixed_patients.extend(patients)
 

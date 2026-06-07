@@ -6,7 +6,7 @@ including required methods and attribute declarations.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, ClassVar, Any, Dict
+from typing import List, ClassVar, Any, Dict, Optional
 import numpy as np
 
 
@@ -26,7 +26,7 @@ class PatientGeneratorBase(ABC):
     visible_patient_attributes: List[str]
     
     @abstractmethod
-    def sample(self, n: int, true_amr_levels: Dict[str, float], rng: np.random.Generator) -> List[Any]:
+    def sample(self, n: int, true_amr_levels: Dict[str, float], rng: np.random.Generator, observed_amr_levels: Optional[Dict[str, float]] = None) -> List[Any]:
         """
         Generate n patient objects with heterogeneous attributes.
         
