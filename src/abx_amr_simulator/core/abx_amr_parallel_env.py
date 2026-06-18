@@ -14,6 +14,7 @@ routes observations back per locale).
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -590,6 +591,15 @@ class ABXAMRParallelEnv(ParallelEnv):
         pg = self._patient_generators[agent_id]
         export_fn = getattr(pg, "export_patient_attributes_for_logging", None)
         if callable(export_fn):
+            # This method is only called under save_granular_trajectories (the granular
+            # eval context), which is exactly where the equity / granular analysis needs
+            # the per-patient coverage flag (`has_personalized_prediction`) and the
+            # personalized prediction attributes. Request the analysis-only attributes so
+            # the covered-vs-uncovered split can be recovered downstream. (The single-agent
+            # ABXAMREnv does the same, gated on log_personalized_patient_attributes.)
+            export_signature = inspect.signature(export_fn)
+            if 'include_analysis_only_attributes' in export_signature.parameters:
+                return export_fn(patients=patients, include_analysis_only_attributes=True)
             return export_fn(patients=patients)
 
         # Fallback: extract the standard Patient attributes directly.
