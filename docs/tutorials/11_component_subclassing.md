@@ -1,6 +1,6 @@
 # Tutorial 11: Component Subclassing
 
-**Goal**: Learn how to subclass core components (RewardCalculator, PatientGenerator, Environment) to implement custom behavior beyond what's achievable via configuration alone.
+**Goal**: Learn how to subclass core components (`RewardCalculator`, `PatientGenerator`, `AMRDynamicsBase`, and `ABXAMREnv`) to implement custom behavior beyond what's achievable via configuration alone.
 
 **Prerequisites**: Completed Tutorials 1-3, strong Python skills, familiarity with the package architecture
 
@@ -14,8 +14,11 @@ The `abx_amr_simulator` package is designed to be highly configurable via YAML f
 
 1. **When to subclass** vs when to configure
 2. **RewardCalculator + PatientGenerator coupling** — Why these must be subclassed together
-3. **Environment subclassing** — Extending ABXAMREnv for novel dynamics
-4. **Integration patterns** — Registering custom components with the training pipeline
+3. **AMRDynamicsBase** — Replacing the per-antibiotic resistance dynamics model
+4. **ABXAMREnv subclassing** — Extending the environment for structural changes
+5. **Integration patterns** — Wiring custom components with the training pipeline
+
+> **See also**: This tutorial focuses on writing the Python subclass. If you want to wire your custom component into the config-driven training pipeline (`train.py` / `tune.py`) without modifying any script files, the [Plugin Seam Guide](plugin_seam_guide.md) explains the YAML-driven loader mechanism, path resolution, and troubleshooting.
 
 ---
 
@@ -29,7 +32,7 @@ The `abx_amr_simulator` package is designed to be highly configurable via YAML f
 ### Subclass When:
 - Implementing a novel reward function (beyond weighted clinical + community AMR)
 - Creating new patient attributes (beyond the 6 standard attributes)
-- Modifying environment dynamics (beyond leaky balloon AMR)
+- Replacing the AMR dynamics model (beyond the leaky balloon)
 - Adding custom observation transformations or action spaces
 
 **Rule of thumb**: If your change can be expressed as "use this number instead of that number", use configs. If it's "do this fundamentally different thing", subclass.
@@ -298,7 +301,7 @@ def create_severity_reward_calculator(config: dict, seed: int = None) -> Severit
 
 #### Step 4: Integrate with Training Pipeline
 
-Modify your training script to use custom components:
+For one-off scripts, instantiate your components directly and pass them to the environment:
 
 ```python
 # my_first_project/train_with_custom_components.py
@@ -328,54 +331,192 @@ model = PPO("MlpPolicy", env, verbose=1)
 model.learn(total_timesteps=10000)
 ```
 
+> For config-driven pipelines (`train.py` / `tune.py`), use the `patient_generator.plugin` and `reward_calculator.plugin` YAML keys instead of modifying scripts. See [Plugin Seam Guide §4–5](plugin_seam_guide.md).
+
+---
+
+## Subclassing AMRDynamicsBase
+
+`AMRDynamicsBase` is the extension point for replacing the per-antibiotic resistance dynamics model. The environment holds one dynamics instance per antibiotic (a `Dict[str, AMRDynamicsBase]`); each instance encapsulates how resistance evolves under prescribing pressure for that antibiotic. The default implementation is `AMR_LeakyBalloon`.
+
+Subclass `AMRDynamicsBase` when you want to replace the *mathematical model* of how resistance rises and falls. This is the right level of abstraction for most dynamics customizations — you get a clean, isolated unit that the rest of the environment doesn't need to know about.
+
+### Required contract
+
+```python
+from abx_amr_simulator.core import AMRDynamicsBase
+```
+
+Implement:
+- `step(doses: float) -> float` — advance resistance by one timestep given antibiotic exposure; return the new AMR level
+- `reset(initial_level: float) -> None` — restore to a given resistance level at episode start
+
+Set:
+- `NAME: str` — a string identifier for this dynamics model
+
+### Example: Exponential Decay Model
+
+The leaky balloon uses a logistic pressure function. Here's a simpler alternative: resistance grows proportionally to antibiotic dose and decays exponentially when pressure is removed.
+
+```python
+# my_first_project/custom_components/exponential_decay_amr.py
+
+import numpy as np
+from typing import Any, Dict
+from abx_amr_simulator.core import AMRDynamicsBase
+
+
+class ExponentialDecayAMR(AMRDynamicsBase):
+    """AMR dynamics where resistance decays exponentially without antibiotic pressure.
+
+    AMR level evolves as:
+        level_{t+1} = level_t * exp(-decay_rate) + pressure_factor * doses
+    clamped to [0, 1].
+    """
+
+    NAME = "exponential_decay"
+
+    def __init__(self, decay_rate: float, pressure_factor: float, initial_amr_level: float = 0.0):
+        self._decay_rate = decay_rate
+        self._pressure_factor = pressure_factor
+        self._level = float(np.clip(initial_amr_level, 0.0, 1.0))
+
+    def step(self, doses: float) -> float:
+        """Advance AMR by one timestep under the given antibiotic dose."""
+        self._level = self._level * np.exp(-self._decay_rate) + self._pressure_factor * doses
+        self._level = float(np.clip(self._level, 0.0, 1.0))
+        return self._level
+
+    def reset(self, initial_level: float) -> None:
+        """Reset resistance to the given level at episode start."""
+        self._level = float(np.clip(initial_level, 0.0, 1.0))
+```
+
+### Instantiating one per antibiotic
+
+The environment expects a `Dict[str, AMRDynamicsBase]`, one entry per antibiotic name. For direct Python usage:
+
+```python
+# my_first_project/train_with_custom_amr.py
+
+from abx_amr_simulator.utils import load_config
+from abx_amr_simulator.core import ABXAMREnv
+from custom_components.exponential_decay_amr import ExponentialDecayAMR
+
+config = load_config('experiments/configs/umbrella_configs/base_experiment.yaml')
+
+amr_dynamics = {
+    antibiotic_name: ExponentialDecayAMR(
+        decay_rate=params["decay_rate"],
+        pressure_factor=params["pressure_factor"],
+        initial_amr_level=params.get("initial_amr_level", 0.0),
+    )
+    for antibiotic_name, params in config["environment"]["antibiotics_AMR_dict"].items()
+}
+
+env = ABXAMREnv(
+    amr_dynamics=amr_dynamics,
+    # ... other standard env params from config
+)
+```
+
+> For config-driven pipelines, use the `amr_dynamics.plugin` YAML key. See [Plugin Seam Guide §6](plugin_seam_guide.md).
+
+### Testing your dynamics
+
+```python
+# tests/custom/test_exponential_decay_amr.py
+
+from custom_components.exponential_decay_amr import ExponentialDecayAMR
+
+
+def test_exponential_decay_amr_rises_under_pressure():
+    amr = ExponentialDecayAMR(decay_rate=0.1, pressure_factor=0.3, initial_amr_level=0.0)
+    level = amr.step(doses=1.0)
+    assert level > 0.0
+
+
+def test_exponential_decay_amr_decays_without_pressure():
+    amr = ExponentialDecayAMR(decay_rate=0.1, pressure_factor=0.3, initial_amr_level=0.8)
+    level = amr.step(doses=0.0)
+    assert level < 0.8
+
+
+def test_exponential_decay_amr_reset():
+    amr = ExponentialDecayAMR(decay_rate=0.1, pressure_factor=0.3, initial_amr_level=0.8)
+    amr.step(doses=1.0)
+    amr.reset(initial_level=0.3)
+    assert abs(amr._level - 0.3) < 1e-6
+
+
+def test_exponential_decay_amr_clamps_to_unit_interval():
+    amr = ExponentialDecayAMR(decay_rate=0.0, pressure_factor=1.0, initial_amr_level=0.9)
+    level = amr.step(doses=10.0)
+    assert 0.0 <= level <= 1.0
+```
+
 ---
 
 ## Subclassing ABXAMREnv
 
-For even deeper customization (e.g., novel AMR dynamics beyond leaky balloon), subclass `ABXAMREnv`.
+Subclass `ABXAMREnv` when you need **structural changes to the environment itself** — changes that cut across components and can't be handled by swapping a single component:
 
-### Example: Multi-Compartment AMR Model
+- Modifying the **observation space** (e.g., adding new observation dimensions beyond patients and AMR levels)
+- Modifying the **action space** (e.g., combination therapy actions)
+- Adding **env-level state** that persists across timesteps and doesn't belong to a single component (e.g., outbreak tracking, seasonal pressure effects)
+- Changing the **episode step or reset logic** in ways that span multiple components
+
+If your goal is custom AMR dynamics, use `AMRDynamicsBase` instead — it's the correct, isolated extension point for that and avoids coupling to private environment internals.
+
+### Example: Adding Outbreak Tracking to the Observation
+
+Suppose you want the agent to observe a normalised cumulative treatment failure count that resets each episode. This is env-level state — it aggregates information across all patients and timesteps — so it belongs in `ABXAMREnv`:
 
 ```python
-# my_first_project/custom_components/compartment_env.py
+# my_first_project/custom_components/outbreak_tracking_env.py
 
+import numpy as np
+from gymnasium import spaces
 from abx_amr_simulator.core import ABXAMREnv
 
 
-class CompartmentAMREnv(ABXAMREnv):
-    """Environment with multi-compartment AMR dynamics (hospital, community, farm)."""
-    
-    def __init__(self, compartment_transfer_rates: dict, **kwargs):
+class OutbreakTrackingEnv(ABXAMREnv):
+    """Environment that appends a normalised cumulative failure count to the observation."""
+
+    def __init__(self, max_steps: int, **kwargs):
         super().__init__(**kwargs)
-        self.transfer_rates = compartment_transfer_rates
-        # Initialize compartment-specific AMR levels
-        self.hospital_AMR = np.zeros(self.num_abx)
-        self.community_AMR = np.zeros(self.num_abx)
-        self.farm_AMR = np.zeros(self.num_abx)
-    
-    def _update_AMR_levels(self, new_prescriptions: np.ndarray):
-        """Custom AMR update with compartment transfer."""
-        # Standard leaky balloon update for hospital compartment
-        super()._update_AMR_levels(new_prescriptions)
-        
-        # Transfer between compartments
-        hospital_to_community = self.AMR_levels * self.transfer_rates['hospital_to_community']
-        community_to_hospital = self.community_AMR * self.transfer_rates['community_to_hospital']
-        
-        # Update compartments
-        self.hospital_AMR = self.AMR_levels.copy()
-        self.community_AMR += hospital_to_community - community_to_hospital
-        self.community_AMR = np.clip(self.community_AMR, 0.0, 1.0)
-        
-        # Patients sample from community reservoir
-        self.AMR_levels = 0.7 * self.hospital_AMR + 0.3 * self.community_AMR
+        self._max_steps = max_steps
+        self._cumulative_failures = 0
+
+        # Extend the observation space by one dimension
+        base_low = self.observation_space.low
+        base_high = self.observation_space.high
+        self.observation_space = spaces.Box(
+            low=np.append(base_low, 0.0),
+            high=np.append(base_high, 1.0),
+            dtype=np.float32,
+        )
+
+    def _augment_obs(self, obs: np.ndarray) -> np.ndarray:
+        failure_rate = self._cumulative_failures / self._max_steps
+        return np.append(obs, float(np.clip(failure_rate, 0.0, 1.0)))
+
+    def step(self, action):
+        obs, reward, done, truncated, info = super().step(action)
+        self._cumulative_failures += info.get("num_clinical_failures", 0)
+        return self._augment_obs(obs), reward, done, truncated, info
+
+    def reset(self, **kwargs):
+        self._cumulative_failures = 0
+        obs, info = super().reset(**kwargs)
+        return self._augment_obs(obs), info
 ```
 
 ---
 
 ## Testing Custom Components
 
-Always write unit tests for custom components:
+Always write unit tests for custom components. Test each component in isolation before testing the full environment:
 
 ```python
 # tests/custom/test_severity_components.py
@@ -407,7 +548,6 @@ def test_severity_reward_calculator():
         seed=42,
     )
     
-    # Create mock patients with severity
     from custom_components.severity_patient_generator import PatientWithSeverity
     patients = [
         PatientWithSeverity(
@@ -418,7 +558,6 @@ def test_severity_reward_calculator():
         )
     ]
     
-    # Test reward calculation
     actions = np.array([[1, 0]])  # Prescribe antibiotic A
     rewards = rc.calculate_individual_patient_rewards(
         patients, actions, current_AMR_levels=np.array([0.2, 0.3]), delta_AMR_levels=np.array([0.01, 0.0])
@@ -445,6 +584,7 @@ def test_severity_reward_calculator():
 ✅ You've learned to subclass core components!
 
 For advanced topics:
+- **Config-driven wiring**: See the [Plugin Seam Guide](plugin_seam_guide.md) to register custom components in YAML without modifying training scripts. It also covers the design pattern for components that require non-serializable constructor arguments (callables, nested objects).
 - Study the source code in `src/abx_amr_simulator/core/`
 - Review existing subclassing examples in `tests/unit/core/`
 - Consult the architecture diagrams in `.github/copilot-instructions.md`
@@ -455,6 +595,8 @@ For advanced topics:
 
 1. **Config first**: Only subclass when configuration isn't sufficient
 2. **RewardCalculator + PatientGenerator are coupled**: Must be subclassed together
-3. **Declare required attributes**: Use `REQUIRED_PATIENT_ATTRS` for validation
-4. **Factory pattern**: Use factory functions for clean instantiation
-5. **Test rigorously**: Custom components need thorough unit tests
+3. **`AMRDynamicsBase` for dynamics**: One instance per antibiotic; implement `step()` and `reset()`
+4. **`ABXAMREnv` for structural changes**: Observation/action space, env-level state, episode logic — not for per-antibiotic dynamics
+5. **Declare required attributes**: Use `REQUIRED_PATIENT_ATTRS` for RC validation
+6. **Plugin seam for config pipelines**: See [Plugin Seam Guide](plugin_seam_guide.md) to wire components via YAML
+7. **Test rigorously**: Custom components need thorough unit tests
