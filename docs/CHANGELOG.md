@@ -6,6 +6,36 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+#### FP MARL evaluator now emits the full trained-MARL primitive schema (July 19, 2026)
+
+- **`analysis/eval_fixed_prescribing_marl.py`** now writes the same per-agent granular
+  NPZ schema as the trained-MARL granular eval (`run_granular_eval_best_models_marl.py`),
+  so the FP baselines can be analyzed by the identical standard/equity pipelines. Added
+  per episode:
+  - `primitive_sensitive_infection_treated/{abx}` and
+    `primitive_resistant_infection_treated/{abx}` — per-antibiotic ground-truth treated
+    counts, patient-summed per substep, shape `(macro_steps, max_substeps)`.
+  - `primitive_actual_amr_levels` / `primitive_visible_amr_levels` — shared AMR series,
+    shape `(macro_steps, max_substeps, num_abx)`, ordered by `antibiotic_names`.
+  - Per-substep scalar reward/outcome fields (shape `(macro_steps, max_substeps)`):
+    `total_reward`, `overall_individual_reward_component`, `normalized_individual_reward`,
+    `overall_community_reward_component`, `normalized_community_reward`,
+    `count_clinical_benefits`, `count_clinical_failures`, `count_adverse_events`,
+    `not_infected_no_treatment`, `not_infected_treated`, `infected_no_treatment`.
+  - **Why**: the DS-effective equity metric needs the treated-infection counts for BOTH
+    covered and uncovered agents, and `evaluative_plots_marl` (the standard analysis)
+    requires the AMR series and scalar reward/outcome fields. Previously the FP evaluator
+    logged only 7 primitives, so neither analysis could run on FP output — blocking
+    analysis parity between FP and trained-MARL results.
+  - All values are sourced from each agent's existing step info (`reward_info`,
+    `outcomes_breakdown`, and the env's `actual/visible_amr_levels`), so no env/reward
+    changes were needed.
+  - Added `tests/unit/analysis/test_eval_fixed_prescribing_marl.py` (real-instance tests
+    over the minimal two-agent fixture) asserting the new keys, their shapes, finiteness,
+    and that treated counts never exceed the infected-patient count.
+  - **Downstream impact**: existing FP granular NPZs lack these keys and must be
+    regenerated before running the standard/equity analyses.
+
 #### Patient Infection/Sensitivity Architecture Refactoring (January 31, 2026)
 
 - **Moved infection status and antibiotic sensitivity determination from RewardCalculator to PatientGenerator**
