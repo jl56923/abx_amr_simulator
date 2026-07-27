@@ -4,6 +4,51 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### Option-selection logging in the MARL granular eval (July 26, 2026)
+
+- **`analysis/run_granular_eval_best_models_marl.py`** now records which option the manager
+  selected for each macro step:
+  - `episode_{N}/selected_option_ids` — `(macro_steps,)` int32, indexing into
+    `OptionLibrary.list_options()` for that agent (same order as `get_option()`).
+  - `option_names` — top-level `(num_options,)` str array, the agent's library in
+    manager-action order.
+- **Why**: option identity was previously logged nowhere, so option-usage questions could
+  not be asked of completed experiments without retraining. This was needed to audit
+  whether Agent P in the LPP `aux_1abx` family shifts toward more aggressive prescribing
+  options as prediction quality rises.
+- Backward compatible: `option_names` is optional in `_save_agent_npz()`, and NPZs written
+  before this change simply lack both keys.
+
+### Fixed
+
+#### Optuna sampler seed is now unique per study, not just per worker (July 26, 2026)
+
+- **`training/tune_marl_agent.py`**: the sampler seed was `seed + worker_id`. The
+  worker offset (added earlier to stop parallel workers within one study from
+  duplicating each other) left every *study* starting from the same base seed, so
+  two studies sharing a search space drew the **identical sequence of TPE startup
+  candidates**. They could then differ only in which of those shared candidates
+  won — which makes tuned values from different studies non-comparable, and makes
+  agreement between them uninformative about the environments.
+- New `derive_sampler_seed(base_seed, run_name, worker_id)` mixes a SHA-256 digest
+  of the study `run_name` into the seed. Each study gets its own region of the
+  search space; each study remains individually reproducible; workers within a
+  study stay separated. `hashlib` rather than the builtin `hash()`, which is
+  salted per process for `str` and would not reproduce across runs.
+- **Provenance**: `study_summary.json` now records `sampler_seed` and
+  `best_trial_number`, so identical tuned values across studies can be attributed
+  to a shared candidate sequence vs. genuine agreement. The `skip_if_exists`
+  short-circuit now states explicitly that it is **adopting** a pre-existing
+  `best_params.json` without running a study.
+- **Tests**: `TestDeriveSamplerSeed` in `tests/unit/training/test_tune_marl_agent.py`
+  (5 tests, real Optuna studies) — reproducibility, per-study and per-worker
+  distinctness, valid seed range, and the consequence that two studies' startup
+  candidate sets no longer intersect.
+- **Impact on existing results**: does not change any completed study. Affects only
+  studies created from now on.
+
 ### Changed
 
 #### FP MARL evaluator now emits the full trained-MARL primitive schema (July 19, 2026)

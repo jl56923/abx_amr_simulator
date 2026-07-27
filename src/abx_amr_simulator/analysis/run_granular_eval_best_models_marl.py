@@ -11,7 +11,14 @@ For each seed folder in --results-dir, this script:
 
 NPZ schema (per agent):
     antibiotic_names                        : (num_abx,) str array
+    option_names                            : (num_options,) str array — this agent's
+                                              option library in manager-action order;
+                                              index i is the option chosen by action i
     num_episodes                            : scalar
+    episode_{N}/selected_option_ids         : (macro_steps,) int32 — the option the
+                                              manager selected for each macro step,
+                                              indexing into option_names. Enables
+                                              option-usage audits without retraining.
     episode_{N}/primitive_patient_true      : (macro_steps, max_substeps, patients, attrs)
     episode_{N}/primitive_patient_observed  : (macro_steps, max_substeps, patients, attrs)
     episode_{N}/primitive_patient_attrs     : (num_attrs,) str array
@@ -206,6 +213,11 @@ def _collect_eval_trajectories(
                 per_agent_macro_steps[aid].append({
                     "primitive_infos": info.get("primitive_infos", []),
                     "primitive_actions": info.get("primitive_actions", []),
+                    # Which option the manager chose for this macro step. Indexes
+                    # into OptionLibrary.list_options() for this agent, matching
+                    # OptionLibrary.get_option(). Recorded so that option-usage
+                    # can be audited without re-running training.
+                    "selected_option_id": pending.get(aid, -1),
                 })
                 last_obs[aid] = m_obs[aid]
 
@@ -516,6 +528,9 @@ def _add_episode_arrays(
         substep_counts, dtype=np.int32
     )
     save_dict[f"{ep_prefix}/primitive_actions"] = actions_obj
+    save_dict[f"{ep_prefix}/selected_option_ids"] = np.array(
+        [ms.get("selected_option_id", -1) for ms in macro_steps], dtype=np.int32
+    )
     save_dict[f"{ep_prefix}/primitive_actual_amr_levels"] = actual_amr_arr
     save_dict[f"{ep_prefix}/primitive_visible_amr_levels"] = visible_amr_arr
 
@@ -539,6 +554,7 @@ def _save_agent_npz(
     agent_episodes: List[List[Dict]],
     output_path: Path,
     antibiotic_names: List[str],
+    option_names: Optional[List[str]] = None,
 ) -> None:
     """Assemble and save the per-agent granular trajectory NPZ.
 
@@ -547,11 +563,16 @@ def _save_agent_npz(
                         of macro-step dicts from _collect_eval_trajectories.
         output_path: Destination .npz path (parent directory will be created).
         antibiotic_names: Antibiotic names from the parallel env.
+        option_names: Ordered option names for this agent's library, so the
+                      per-macro-step ``selected_option_ids`` can be resolved to
+                      names. Index i corresponds to option id i.
     """
     save_dict: Dict = {
         "antibiotic_names": np.array(antibiotic_names, dtype=object),
         "num_episodes": len(agent_episodes),
     }
+    if option_names is not None:
+        save_dict["option_names"] = np.array(option_names, dtype=object)
 
     for ep_idx, macro_steps in enumerate(agent_episodes):
         _add_episode_arrays(
@@ -656,6 +677,7 @@ def run_granular_eval_for_marl_seed(
             agent_episodes=agent_episodes[aid],
             output_path=output_paths[aid],
             antibiotic_names=antibiotic_names,
+            option_names=wrapper.option_libraries[aid].list_options(),
         )
 
     return "done"

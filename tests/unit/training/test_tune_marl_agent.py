@@ -23,6 +23,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 from abx_amr_simulator.training.tune_marl_agent import (
     build_single_agent_env_from_marl_config,
     build_single_agent_wrapper_from_marl_config,
+    derive_sampler_seed,
     run_marl_agent_tuning,
     _build_tuning_agent,
     _compute_distributed_worker_quota,
@@ -83,6 +84,70 @@ class TestResolveBatchSizeForNSteps:
             requested_batch_size=64,
         )
         assert resolved == 32
+
+
+class TestDeriveSamplerSeed:
+    """Sampler seeds must be unique per (study, worker) yet reproducible.
+
+    Regression guard: previously the seed was ``base_seed + worker_id``, so every
+    study shared one base and therefore drew an identical sequence of TPE startup
+    candidates. That made tuned values from two different studies non-comparable.
+    """
+
+    _STUDY_A = "exp_aux_1abx_cov50_auroc50_ppo__marl_mlax1c50__tuning/agent_p"
+    _STUDY_B = "exp_aux_highvol_cov50_auroc50_ppo__marl_mlaxhc50__tuning/agent_p"
+
+    def test_reproducible_for_same_inputs(self):
+        first = derive_sampler_seed(base_seed=42, run_name=self._STUDY_A, worker_id=0)
+        second = derive_sampler_seed(base_seed=42, run_name=self._STUDY_A, worker_id=0)
+        assert first == second
+
+    def test_distinct_across_studies(self):
+        seed_a = derive_sampler_seed(base_seed=42, run_name=self._STUDY_A, worker_id=0)
+        seed_b = derive_sampler_seed(base_seed=42, run_name=self._STUDY_B, worker_id=0)
+        assert seed_a != seed_b
+
+    def test_distinct_across_workers_within_a_study(self):
+        seeds = {
+            derive_sampler_seed(base_seed=42, run_name=self._STUDY_A, worker_id=w)
+            for w in range(4)
+        }
+        assert len(seeds) == 4
+
+    def test_seed_is_valid_for_numpy_rng(self):
+        seed = derive_sampler_seed(base_seed=42, run_name=self._STUDY_A, worker_id=0)
+        assert 0 <= seed < 2**31 - 1
+
+    def test_two_studies_explore_different_candidates(self):
+        """The consequence that matters: candidate sequences must not coincide."""
+        search_space = _MINIMAL_TUNING_CONFIG["search_space"]
+
+        def first_candidates(seed: int, n_trials: int = 5) -> set:
+            study = optuna.create_study(
+                direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed)
+            )
+            candidates = set()
+            for _ in range(n_trials):
+                trial = study.ask()
+                params = {}
+                for name, spec in search_space.items():
+                    if spec["type"] == "float":
+                        params[name] = trial.suggest_float(
+                            name, spec["low"], spec["high"], log=spec.get("log", False)
+                        )
+                    elif spec["type"] == "int":
+                        params[name] = trial.suggest_int(
+                            name, spec["low"], spec["high"], step=spec.get("step", 1)
+                        )
+                    else:
+                        params[name] = trial.suggest_categorical(name, spec["choices"])
+                candidates.add(tuple(sorted(params.items())))
+                study.tell(trial, 0.0)
+            return candidates
+
+        seed_a = derive_sampler_seed(base_seed=42, run_name=self._STUDY_A, worker_id=0)
+        seed_b = derive_sampler_seed(base_seed=42, run_name=self._STUDY_B, worker_id=0)
+        assert not (first_candidates(seed_a) & first_candidates(seed_b))
 
 
 class TestComputeDistributedWorkerQuota:

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -513,6 +514,36 @@ def _make_objective(
     return objective
 
 
+def derive_sampler_seed(base_seed: int, run_name: str, worker_id: int) -> int:
+    """Return a sampler seed unique to (study, worker) but reproducible.
+
+    Why this is not just ``base_seed + worker_id``: the worker offset alone
+    separates parallel workers *within* one study, but every study then starts
+    from the same base seed. Two studies with the same search space therefore
+    draw the *identical* sequence of TPE startup candidates, so they can only
+    differ in which of those shared candidates wins. That makes cross-study
+    comparisons of tuned values uninterpretable — agreement between two studies
+    may reflect a shared candidate sequence rather than agreement about the
+    environment.
+
+    Mixing the study's ``run_name`` into the seed gives each study its own
+    region of the search space while keeping any single study reproducible.
+    ``hashlib`` is used rather than the builtin ``hash()`` because the latter is
+    salted per process for str inputs and would not be reproducible.
+
+    Args:
+        base_seed: Base seed passed to the tuning run.
+        run_name: Study identifier (unique per experiment + agent).
+        worker_id: Worker index for distributed tuning (0-indexed).
+
+    Returns:
+        A non-negative int32-safe seed for the Optuna sampler.
+    """
+    digest = hashlib.sha256(run_name.encode("utf-8")).hexdigest()
+    study_offset = int(digest[:8], 16)
+    return (base_seed + study_offset + worker_id) % (2**31 - 1)
+
+
 def _suggest_hyperparameters(
     trial: optuna.Trial,
     search_space: Dict[str, Any],
@@ -649,7 +680,12 @@ def run_marl_agent_tuning(
         )
 
     if skip_if_exists and best_params_path.exists():
-        print(f"Skipping tuning for {run_name}: best_params.json already exists.")
+        # Loud, because the returned values did not come from a study run now:
+        # they are whatever was already on disk at this path.
+        print(
+            f"Skipping tuning for {run_name}: ADOPTING pre-existing "
+            f"best_params.json without running a study ({best_params_path})."
+        )
         with open(best_params_path) as f:
             return json.load(f)
 
@@ -674,11 +710,14 @@ def run_marl_agent_tuning(
 
     storage_url = f"sqlite:///{db_path}"
     sampler_name = opt_config.get("sampler", "TPE")
-    # Each distributed worker must use a unique sampler seed so that the
-    # TPE startup random-sampling phase explores different regions of the
-    # search space.  Without this, all workers create identical samplers
-    # and suggest the same hyperparameters (see Task 11 in CLAUDE_TODO).
-    sampler_seed = seed + worker_id
+    # The sampler seed must be unique per (study, worker), not just per worker.
+    # Per-worker uniqueness stops parallel workers within one study from
+    # suggesting the same hyperparameters; mixing in run_name additionally stops
+    # two *different* studies from sharing an identical candidate sequence, which
+    # would make their tuned values non-comparable. See derive_sampler_seed().
+    sampler_seed = derive_sampler_seed(
+        base_seed=seed, run_name=run_name, worker_id=worker_id
+    )
     sampler = (
         optuna.samplers.TPESampler(seed=sampler_seed)
         if sampler_name == "TPE"
@@ -777,6 +816,10 @@ def run_marl_agent_tuning(
     study_summary = {
         "run_name": run_name,
         "agent_id": agent_id,
+        # Recorded so that identical tuned values across studies can later be
+        # attributed to a shared candidate sequence vs. genuine agreement.
+        "sampler_seed": sampler_seed,
+        "best_trial_number": study.best_trial.number,
         "n_trials_completed": len([
             t for t in study.trials
             if t.state == optuna.trial.TrialState.COMPLETE
