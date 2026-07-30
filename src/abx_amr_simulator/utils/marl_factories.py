@@ -406,6 +406,15 @@ def build_marl_managers_from_config(
     training config and is NOT overridden by per-agent params (it is not
     included in ``best_params.json``).
 
+    The manager's discount factor is read from ``training.manager_gamma``,
+    falling back to ``training.option_gamma`` and then to 0.99.  These are
+    two different horizons: ``option_gamma`` discounts primitive rewards
+    *within* an option as the wrapper aggregates them, while
+    ``manager_gamma`` discounts *across* options and therefore governs
+    whether long-run consequences enter the manager's objective at all.
+    Set ``manager_gamma`` to control the manager without also changing how
+    the wrapper aggregates option returns.
+
     Args:
         config: MARL config dict as returned by ``load_marl_config``.
         wrapper: Pre-built MARLOptionsWrapper (from
@@ -436,12 +445,37 @@ def build_marl_managers_from_config(
     )
 
     # Shared defaults from training section.
+    #
+    # `manager_gamma` vs `option_gamma` are two DIFFERENT discounts and only coincide
+    # by historical accident:
+    #
+    #   option_gamma   discounts primitive rewards WITHIN one option, as the wrapper
+    #                  aggregates them into that option's return. Over an option of ~20
+    #                  primitive steps its influence is mild, and the option runs a fixed
+    #                  heuristic policy that is not being optimised.
+    #   manager_gamma  discounts ACROSS options, i.e. the manager's own horizon over the
+    #                  episode. This is what decides whether long-run consequences (in this
+    #                  simulator, AMR depletion) enter the objective at all.
+    #
+    # The single-agent path has always kept them apart — `hrl.option_gamma` feeds
+    # OptionsWrapper while `agent_algorithm.ppo.gamma` feeds the PPO manager (see
+    # utils/factories.py). The MARL path previously read `option_gamma` for both, leaving
+    # the more consequential of the two with no config key of its own and settable only
+    # through tuned per-agent hyperparameters.
+    #
+    # `manager_gamma` now takes precedence and falls back to `option_gamma`, so configs
+    # written before this key existed resolve exactly as they did. Per-agent tuned
+    # hyperparameters still override it, as they always have.
     shared_ppo_kwargs: Dict[str, Any] = {
         "n_steps": int(training_config.get("n_steps", 256)),
         "batch_size": int(training_config.get("batch_size", 64)),
         "n_epochs": int(training_config.get("n_epochs", 10)),
         "learning_rate": float(training_config.get("learning_rate", 3e-4)),
-        "gamma": float(training_config.get("option_gamma", 0.99)),
+        "gamma": float(
+            training_config.get(
+                "manager_gamma", training_config.get("option_gamma", 0.99)
+            )
+        ),
         "seed": training_config.get("seed", None),
     }
 

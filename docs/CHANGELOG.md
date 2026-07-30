@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### MARL manager discount is now settable independently of option_gamma (July 30, 2026)
+
+- **`utils/marl_factories.py`**: `build_marl_managers_from_config` resolved the manager's PPO
+  `gamma` from `training.option_gamma`, so a single key fed two different horizons — the
+  wrapper's within-option reward aggregation AND the manager's discount across options.
+- **This was a MARL-specific regression, not a design choice.** The single-agent path has
+  always kept them apart: `hrl.option_gamma` feeds `OptionsWrapper` (`utils/factories.py:608`)
+  while `agent_algorithm.ppo.gamma` feeds the PPO manager (`utils/factories.py:702`) — two
+  distinct keys in two distinct config files. The MARL factory collapsed them, leaving the
+  more consequential horizon with no config key of its own and settable only through tuned
+  per-agent hyperparameters.
+- **Why it matters**: `option_gamma` discounts ~20 primitive steps of a *fixed heuristic*
+  policy that is not being optimised, so it only mildly reweights an option's credit.
+  The manager's gamma discounts across ~25 macro-steps — the whole episode — and in this
+  simulator (with `lambda_weight = 0`) it is the only channel through which AMR depletion
+  enters the objective at all.
+- **Fix**: `training.manager_gamma` now takes precedence, falling back to
+  `training.option_gamma` and then 0.99. Backward compatible — configs written before this
+  key existed resolve exactly as they did, and per-agent tuned hyperparameters still override
+  it as they always have. No completed run's behaviour changes.
+- **Tests**: five in `TestBuildMarlManagersFromConfig` covering precedence, both fallbacks,
+  per-agent override, and that `manager_gamma` leaves the wrapper's within-option discount
+  untouched. Three fail against the pre-fix code. Full `utils`/`training`/`hrl` suites: 587
+  passed.
+
 ### Added
 
 #### Option-selection logging in the MARL granular eval (July 26, 2026)

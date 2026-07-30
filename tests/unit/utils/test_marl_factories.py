@@ -298,6 +298,79 @@ class TestBuildMarlManagersFromConfig:
         with pytest.raises(ValueError, match="unsupported algorithm"):
             build_marl_managers_from_config(config, wrapper)
 
+    # --- manager_gamma vs option_gamma -------------------------------------- #
+    #
+    # These are two different horizons. option_gamma discounts primitive rewards
+    # WITHIN an option as the wrapper aggregates them; manager_gamma discounts
+    # ACROSS options and governs whether long-run consequences reach the manager's
+    # objective. The MARL path used to read option_gamma for both, so the manager's
+    # horizon had no config key of its own. manager_gamma now takes precedence and
+    # falls back to option_gamma, keeping pre-existing configs bit-identical.
+
+    def test_manager_gamma_takes_precedence_over_option_gamma(self):
+        config, wrapper = self._make_wrapper()
+        config["training"]["option_gamma"] = 0.99
+        config["training"]["manager_gamma"] = 0.5
+        agents = build_marl_managers_from_config(config, wrapper)
+        for aid, agent in agents.items():
+            assert agent.gamma == pytest.approx(0.5), (
+                f"Agent '{aid}': manager_gamma should win over option_gamma"
+            )
+
+    def test_falls_back_to_option_gamma_when_manager_gamma_absent(self):
+        """Backward compatibility: configs written before manager_gamma existed."""
+        config, wrapper = self._make_wrapper()
+        config["training"].pop("manager_gamma", None)
+        config["training"]["option_gamma"] = 0.77
+        agents = build_marl_managers_from_config(config, wrapper)
+        for aid, agent in agents.items():
+            assert agent.gamma == pytest.approx(0.77), (
+                f"Agent '{aid}': should fall back to option_gamma"
+            )
+
+    def test_falls_back_to_default_when_neither_specified(self):
+        config, wrapper = self._make_wrapper()
+        config["training"].pop("manager_gamma", None)
+        config["training"].pop("option_gamma", None)
+        agents = build_marl_managers_from_config(config, wrapper)
+        for agent in agents.values():
+            assert agent.gamma == pytest.approx(0.99)
+
+    def test_per_agent_hyperparams_still_override_manager_gamma(self):
+        """Tuned per-agent params outrank the shared default, as they always have.
+
+        This is what the LPP gamma diagnostic sweep relies on: it pins each cell's
+        manager gamma through a reused best_params.json regardless of what the
+        config-level fallback resolves to.
+        """
+        config, wrapper = self._make_wrapper()
+        config["training"]["manager_gamma"] = 0.5
+        target = sorted(wrapper.base_env.possible_agents)[0]
+        agents = build_marl_managers_from_config(
+            config, wrapper, agent_hyperparams={target: {"gamma": 0.123}}
+        )
+        assert agents[target].gamma == pytest.approx(0.123)
+        for aid, agent in agents.items():
+            if aid != target:
+                assert agent.gamma == pytest.approx(0.5), (
+                    f"Agent '{aid}' had no per-agent params and should keep manager_gamma"
+                )
+
+    def test_manager_gamma_does_not_change_wrapper_option_discount(self):
+        """The two horizons must move independently — that is the point of the key."""
+        config = _load()
+        config["training"]["option_gamma"] = 0.99
+        config["training"]["manager_gamma"] = 0.25
+        env = build_marl_env_from_config(config)
+        wrapper = build_marl_wrapper_from_config(config, env)
+        agents = build_marl_managers_from_config(config, wrapper)
+
+        assert wrapper.gamma == pytest.approx(0.99), (
+            "wrapper's within-option discount must still come from option_gamma"
+        )
+        for agent in agents.values():
+            assert agent.gamma == pytest.approx(0.25)
+
     def test_hrl_ppo_algorithm_key_accepted(self):
         """Explicitly setting algorithm: HRL_PPO should not raise."""
         config, wrapper = self._make_wrapper()
