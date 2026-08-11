@@ -4,6 +4,58 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### `leak` upper bound removed — it is a dose rate, not a fraction (August 10, 2026)
+
+- **`core/leaky_balloon.py`**: validation relaxed from `0.0 < leak < 1.0` to `leak > 0.0`.
+- **Why the old bound was wrong.** `leak` is subtracted from `pressure`, which is unbounded
+  above; *volume* is the sigmoid image of pressure and stays in `[residual, 1.0]` regardless.
+  One dose adds exactly one unit of pressure, so `leak` is the **sustainable dose rate per
+  step**, and its meaningful scale is set by `flatness_parameter` (only `pressure/flatness`
+  reaches the sigmoid). At flatness 40, `leak=2.0` drains about 1% of the useful range per
+  step. The `< 1` ceiling appears to be a holdover from a proportional-decay formulation
+  (`pressure *= (1 - leak)`), where it is required.
+- **What it blocked.** With `num_patients_per_time_step = n`, a sustainable treated fraction
+  `f` requires `leak = f*n`. Capping `leak` below 1 made it impossible to hold the per-capita
+  dose budget constant while scaling patient volume, so any sweep over `n` silently also made
+  the community more fragile per capita.
+- **New tests** (`TestLeakAboveOne`): acceptance of `leak` ≥ 1; volume stays within
+  `[residual, 1.0]` under a large leak and rests exactly on the residual once pressure floors;
+  `doses == leak` equilibrium holds at scale; and **trajectory invariance under joint
+  (doses, leak, flatness) scaling** by 5×/10×/20×.
+- Backward compatible: every existing config uses `leak` ≤ 0.99.
+
+### Added
+
+#### Checkpoint provenance stamped on every evaluation artifact (August 10, 2026)
+
+A training run emits evaluation artifacts from three different policies, and nothing recorded
+which was which. An analysis joined best-model outcomes to **mid-training** option selections
+and reported a share that was wrong by roughly 7×.
+
+- **`utils/metrics.py`**: new `infer_checkpoint_label()`; `overall_outcomes_summary.json` now
+  carries a `checkpoint` field (`"best"` / `"final"` / `"unknown:<basename>"` — unrecognised
+  folders are recorded verbatim, never guessed).
+- **`analysis/evaluative_plots.py`**: `hrl_stats_seed_*.json` and `hrl_stats_summary.json`
+  stamped `"best"` (the module loads `checkpoints/best_model.zip` throughout).
+- **`analysis/granular_logging.py`**: granular npz stamped `"best"`.
+- **`callbacks/__init__.py`**: `eval_logs/*.npz` stamped `training_step_<N>`, making explicit
+  that these are periodic **mid-training** snapshots and not the trained policy.
+
+An analysis joining two artifacts can now assert they describe the same policy.
+
+#### Test coverage for the single-agent HRL granular logging branch (August 10, 2026)
+
+- **`tests/unit/analysis/test_granular_logging.py`** (new, 11 tests, real instances only).
+  `analysis/granular_logging.py` had **no test coverage** and, being reachable only via
+  `evaluative_plots.py --granular-logging`, had never been exercised on real data.
+- Covers: one npz per seed with every documented key; `option_ids` indexing only into the
+  run's real option library; row alignment across all per-step arrays; primitive indices
+  restarting within each macro-step; **per-option macro-step counts recoverable from the
+  granular log** (the property the section 20c correction relied on); a failing seed being
+  skipped rather than aborting the branch; and the new provenance stamps.
+
 ### Fixed
 
 #### MARL manager discount is now settable independently of option_gamma (July 30, 2026)

@@ -245,6 +245,13 @@ def save_granular_rollout_npz(
     if abx_names:
         save_dict['antibiotic_names'] = np.array(abx_names, dtype=object)
 
+    # Which policy produced this log. The branch is driven from
+    # evaluative_plots.load_best_model_from_run(), i.e. checkpoints/best_model.zip, so this is
+    # the same policy as figures_best_agent/ and hrl_stats/. Stamped so an analysis joining
+    # this to another artifact can assert the two describe the same policy -- the check that
+    # would have caught the section 20c eval_logs/ mix-up immediately.
+    save_dict['checkpoint'] = np.array('best', dtype=object)
+
     np.savez_compressed(output_path, **save_dict)
 
 

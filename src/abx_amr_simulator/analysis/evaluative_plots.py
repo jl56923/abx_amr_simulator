@@ -326,6 +326,11 @@ def compute_hrl_option_stats(eval_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     return {
+        # Everything in this module is derived from load_best_model_from_run(), which loads
+        # checkpoints/best_model.zip -- so these stats describe the BEST model, the same
+        # policy behind figures_best_agent/. Recorded explicitly so a downstream analysis
+        # can assert it is not mixing this with a differently-sourced artifact.
+        "checkpoint": "best",
         "option_counts": {str(k): v for k, v in option_counts.items()},
         "option_frequencies": {str(k): v for k, v in option_frequencies.items()},
         "option_reward_stats": {str(k): v for k, v in option_reward_stats.items()},
@@ -456,6 +461,7 @@ def run_hrl_diagnostics(
 
     # Aggregate across seeds
     aggregated = aggregate_hrl_option_stats(per_seed_stats=per_seed_stats)
+    aggregated["checkpoint"] = "best"
     aggregated["prefix_seed_labels"] = succeeded_labels
     aggregated["failed_seeds"] = failed_labels
 

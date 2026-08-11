@@ -17,6 +17,28 @@ from gymnasium import spaces
 
 from abx_amr_simulator.core import AMR_LeakyBalloon
 
+
+def infer_checkpoint_label(experiment_figures_folder: str) -> str:
+    """Name the model checkpoint an evaluation artifact came from.
+
+    Every evaluation artifact should record which policy produced it, so that an analysis
+    joining two artifacts can assert they describe the SAME policy. A section 20c analysis
+    silently joined best-model outcomes to mid-training option selections and reported a
+    figure that was wrong by roughly 7x; this stamp makes that mismatch detectable.
+
+    Returns one of:
+        "best"                 -- highest eval reward during training (figures_best_agent/)
+        "final"                -- the agent in memory at end of training (figures_final_agent/)
+        "unknown:<basename>"   -- anything else, recorded verbatim rather than guessed
+    """
+    basename = os.path.basename(os.path.normpath(experiment_figures_folder))
+    if basename == "figures_best_agent":
+        return "best"
+    if basename == "figures_final_agent":
+        return "final"
+    return f"unknown:{basename}"
+
+
 # Convert numpy types to native Python types recursively
 def convert_to_native_types(obj):
     """Recursively convert numpy types to native Python types for JSON serialization."""
@@ -1271,7 +1293,10 @@ def plot_metrics_trained_agent(model, env, experiment_folder, deterministic=True
             raise ValueError(f"Episode for antibiotic {abx_name} has zero length (no primitive steps recorded)")
     
     overall_outcomes_summary_dict['final_visible_amr_levels'] = final_visible_amr_levels
-     
+
+    # Record which policy produced this artifact (see infer_checkpoint_label).
+    overall_outcomes_summary_dict['checkpoint'] = infer_checkpoint_label(experiment_figures_folder)
+
     # Save as json file:
     with open(os.path.join(experiment_figures_folder, "overall_outcomes_summary.json"), 'w') as f:
         json.dump(overall_outcomes_summary_dict, f, indent=4)
@@ -1684,7 +1709,10 @@ def plot_metrics_from_trajectory(trajectory, env, experiment_folder, figures_fol
             raise ValueError(f"Episode for antibiotic {antibiotic_name} has zero length (no primitive steps recorded)")
     
     overall_outcomes_summary_dict['final_visible_amr_levels'] = final_visible_amr_levels
-    
+
+    # Record which policy produced this artifact (see infer_checkpoint_label).
+    overall_outcomes_summary_dict['checkpoint'] = infer_checkpoint_label(experiment_figures_folder)
+
     # Save as json file:
     with open(os.path.join(experiment_figures_folder, "overall_outcomes_summary.json"), 'w') as f:
         json.dump(overall_outcomes_summary_dict, f, indent=4)

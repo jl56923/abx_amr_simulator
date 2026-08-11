@@ -709,6 +709,12 @@ class DetailedEvalCallback(EvalCallback):
             'episode_lengths': np.array(episode_lengths),
             'num_episodes': len(trajectories),
             'timestep': self.num_timesteps,
+            # These are periodic evaluations taken DURING training -- the policy here is a
+            # mid-training snapshot, NOT the best or final model. Stamped explicitly because
+            # an analysis once took the last eval_logs file as "the final model" and joined it
+            # to best-model outcomes. For best-model behaviour use figures_best_agent/,
+            # hrl_stats/ or granular_logs/ instead.
+            'checkpoint': np.array(f'training_step_{self.num_timesteps}', dtype=object),
         }
 
         if antibiotic_names:
