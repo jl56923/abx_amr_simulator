@@ -228,23 +228,15 @@ class TestParameterValidation:
     """Comprehensive parameter validation tests."""
     
     def test_invalid_leak_boundaries(self):
-        """Test leak parameter at all invalid boundaries."""
+        """Test leak parameter at its only invalid boundary: non-positive."""
         # Below lower bound
         with pytest.raises(ValueError):
             AMR_LeakyBalloon(leak=-0.001)
-        
+
         # At lower bound
         with pytest.raises(ValueError):
             AMR_LeakyBalloon(leak=0.0)
-        
-        # At upper bound
-        with pytest.raises(ValueError):
-            AMR_LeakyBalloon(leak=1.0)
-        
-        # Above upper bound
-        with pytest.raises(ValueError):
-            AMR_LeakyBalloon(leak=1.001)
-    
+
     def test_invalid_flatness_parameter_boundaries(self):
         """Test flatness_parameter at boundaries."""
         with pytest.raises(ValueError):
@@ -286,13 +278,71 @@ class TestParameterValidation:
         balloon = AMR_LeakyBalloon(initial_amr_level=1.0)
         assert balloon.pressure > 0.0
         
-        # Valid: leak at upper bound (0.999)
+        # Valid: leak at the former upper bound (0.999)
         balloon = AMR_LeakyBalloon(leak=0.999)
         assert balloon.leak == 0.999
-        
+
         # Valid: very small leak
         balloon = AMR_LeakyBalloon(leak=0.001)
         assert balloon.leak == 0.001
+
+
+class TestLeakAboveOne:
+    """`leak` is a dose rate, not a fraction, so values >= 1 are legitimate.
+
+    Required for holding the per-capita dose budget constant while scaling
+    `num_patients_per_time_step`: one dose adds one unit of pressure, so a cohort of n
+    patients treated at fraction f needs leak = f*n to sit at equilibrium.
+    """
+
+    def test_leak_at_and_above_one_is_accepted(self):
+        for leak in (1.0, 2.0, 4.0, 50.0):
+            balloon = AMR_LeakyBalloon(leak=leak)
+            assert balloon.leak == leak
+
+    def test_volume_stays_bounded_with_large_leak(self):
+        """Large leak must not push volume below the residual floor or out of [0, 1]."""
+        balloon = AMR_LeakyBalloon(
+            leak=4.0, flatness_parameter=800, permanent_residual_volume=0.2,
+            initial_amr_level=0.6,
+        )
+        # Initial pressure here is ~879 (flatness 800 at volume 0.6), so drain well past it.
+        for _ in range(400):
+            volume = balloon.step(doses=0.0)
+            assert 0.2 - 1e-9 <= volume <= 1.0
+        # Pressure is floored at zero, so the balloon rests exactly on the residual.
+        assert balloon.pressure == pytest.approx(0.0, abs=1e-9)
+        assert balloon.get_volume() == pytest.approx(0.2, abs=1e-9)
+
+    def test_equilibrium_holds_when_doses_match_leak(self):
+        """doses == leak is the equilibrium condition at any scale."""
+        balloon = AMR_LeakyBalloon(
+            leak=2.0, flatness_parameter=400, initial_amr_level=0.4,
+        )
+        starting_volume = balloon.get_volume()
+        for _ in range(100):
+            balloon.step(doses=2.0)
+        assert balloon.get_volume() == pytest.approx(starting_volume, abs=1e-9)
+
+    def test_trajectory_is_invariant_under_joint_scaling(self):
+        """Scaling (doses, leak, flatness) by k leaves the volume trajectory unchanged.
+
+        Only pressure/flatness reaches the sigmoid, so the normalized drift
+        (doses - leak)/flatness is invariant. This is what makes a patient-volume sweep
+        at constant per-capita dose budget a clean experiment.
+        """
+        dose_sequence = [3.0, 0.0, 1.0, 5.0, 2.0, 0.0, 4.0]
+
+        def trajectory(scale):
+            balloon = AMR_LeakyBalloon(
+                leak=0.2 * scale, flatness_parameter=40 * scale, initial_amr_level=0.3,
+            )
+            return [balloon.step(doses=d * scale) for d in dose_sequence]
+
+        baseline = trajectory(1)
+        for scale in (5, 10, 20):
+            for scaled_value, base_value in zip(trajectory(scale), baseline):
+                assert scaled_value == pytest.approx(base_value, abs=1e-9)
 
 
 class TestVolumeMappingComprehensive:

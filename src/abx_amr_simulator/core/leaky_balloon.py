@@ -39,11 +39,27 @@ class AMR_LeakyBalloon(AMRDynamicsBase):
         with stable long-term behavior (decays to residual floor without prescribing).
         
         Args:
-            leak (float): Fixed pressure reduction applied per timestep. Must be in (0, 1).
+            leak (float): Fixed pressure reduction applied per timestep. Must be > 0.
                 At each step, `leak` is subtracted from pressure after doses are added, floored
                 at zero. Higher values → faster decay (e.g., 0.1 = 0.1 units of pressure lost
                 per step regardless of current pressure level). Represents natural resistance
                 loss due to bacterial turnover, selective pressure relaxation, etc. Default: 0.1.
+
+                `leak` is denominated in DOSES, not in volume: one dose adds exactly one unit
+                of pressure, so `leak` is the sustainable dose rate per step. It is NOT bounded
+                by 1 -- the meaningful scale is set by `flatness_parameter`, since only the
+                ratio pressure/flatness reaches the sigmoid. With flatness=40, pressure ~40 maps
+                to AMR ~0.46 and the useful range is roughly 0-150, so leak=2.0 drains about 1%
+                of that range per step. Values above 1 are required whenever many patients are
+                treated per timestep (e.g. `num_patients_per_time_step=10` with a sustainable
+                treated fraction of 0.2 needs leak=2.0).
+
+                NOTE: an earlier version restricted `leak` to (0, 1). That bound was a holdover
+                from a proportional-decay formulation (`pressure *= (1 - leak)`), where it is
+                required; for a fixed absolute drain it constrains nothing physical and made
+                per-capita dose budgets impossible to hold constant while scaling patient
+                volume. Volume remains bounded in [residual, 1.0] regardless, because it is the
+                sigmoid image of pressure and pressure is floored at zero.
             flatness_parameter (float): Controls steepness of sigmoid mapping from pressure to
                 volume. Must be > 0. Smaller values → steeper sigmoid → more abrupt AMR changes.
                 Larger values → flatter sigmoid → gradual AMR accumulation. Default: 1.0.
@@ -69,8 +85,10 @@ class AMR_LeakyBalloon(AMRDynamicsBase):
         """
         
         # Do some basic validation
-        if not (0.0 < leak < 1.0):
-            raise ValueError("leak must be in (0, 1)")
+        # `leak` is a dose rate, not a fraction: it is subtracted from unbounded pressure, and
+        # the scale is set by flatness_parameter. Only positivity is physically required.
+        if leak <= 0.0:
+            raise ValueError("leak must be > 0")
         if flatness_parameter <= 0.0:
             raise ValueError("flatness_parameter must be > 0")
         if not (0.0 <= permanent_residual_volume < 1.0):
