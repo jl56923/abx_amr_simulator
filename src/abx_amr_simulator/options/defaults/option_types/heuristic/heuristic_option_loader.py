@@ -46,6 +46,7 @@ class HeuristicWorker(OptionBase):
         action_thresholds: Dict[str, float],
         default_recovery_without_treatment_prob: float,
         uncertainty_threshold: float = 2.0,
+        compare_against_no_treatment: bool = True,
     ):
         """Initialize heuristic worker.
 
@@ -56,8 +57,22 @@ class HeuristicWorker(OptionBase):
                 Keys: 'prescribe_{abx}' for each antibiotic, 'no_treatment'
                 Values: Minimum expected reward to select that action
                 Example: {'prescribe_A': 0.7, 'prescribe_B': 0.5, 'no_treatment': 0.0}
-            uncertainty_threshold: Threshold for refusing to prescribe due to missing data
-                Interpretation depends on logic (e.g., refuse if uncertainty > threshold)
+            uncertainty_threshold: Refuse to prescribe when the uncertainty SCORE EXCEEDS this
+                value. The score is a COUNT of missing attributes, so LOWER IS STRICTER: 0 refuses
+                whenever any checked attribute is missing, and a value at or above the number of
+                checked attributes never refuses. (Several shipped option libraries describe this
+                backwards in their comments -- see the note in EoID's status document.)
+            compare_against_no_treatment: What an antibiotic must beat to be prescribed.
+                True (default, and the historical behaviour): an antibiotic must beat the expected
+                    reward of NOT treating, so a patient likely to recover unaided is left alone
+                    even when treating them carries positive expected value.
+                False: 'no_treatment' is a FALLBACK only and never a competitor, which is the
+                    locked semantics of the `expected_reward_greedy` fixed-prescribing comparator
+                    (`policies/fixed_prescribing_rules.py`). This exists so that an option library
+                    can contain an option AS PERMISSIVE AS the comparator it is measured against.
+                    Without it no threshold suffices, because the two rules differ structurally
+                    rather than by degree -- and an HRL agent that cannot express the comparator's
+                    permissiveness cannot be said to have CHOSEN restraint.
             default_recovery_without_treatment_prob: Fallback spontaneous recovery probability
                 used when recovery_without_treatment_prob is not visible (sentinel -1) in the
                 patient observation. Must be set explicitly — no default provided. Set this to
@@ -67,6 +82,7 @@ class HeuristicWorker(OptionBase):
         super().__init__(name=name, k=duration)
         self.action_thresholds = action_thresholds
         self.uncertainty_threshold = uncertainty_threshold
+        self.compare_against_no_treatment = compare_against_no_treatment
         self.default_recovery_prob = default_recovery_without_treatment_prob
         # Will be set by OptionsWrapper during initialization
         self._observable_patient_attributes: List[str] = []
@@ -415,9 +431,16 @@ class HeuristicWorker(OptionBase):
             # Too much missing data—default to no treatment
             return 'no_treatment'
         
-        # Find best action exceeding its threshold
+        # Find best action exceeding its threshold.
+        #
+        # `best_value` is the bar an antibiotic has to clear, and which bar is used is the whole
+        # difference between this worker and the `expected_reward_greedy` comparator. See
+        # `compare_against_no_treatment` in __init__.
         best_action = 'no_treatment'  # default to no_treatment
-        best_value = expected_rewards.get('no_treatment', -np.inf)
+        if self.compare_against_no_treatment:
+            best_value = expected_rewards.get('no_treatment', -np.inf)
+        else:
+            best_value = -np.inf
         
         for abx in antibiotic_names:
             action_key = f'prescribe_{abx}'
@@ -455,7 +478,11 @@ def load_heuristic_option(config: Dict[str, Any]) -> OptionBase:
         - duration (int): Fixed duration in steps (required)
         - action_thresholds (dict): Mapping action keys → reward thresholds (required)
             Example: {'prescribe_A': 0.7, 'prescribe_B': 0.5, 'no_treatment': 0.0}
-        - uncertainty_threshold (float): Threshold for refusing to prescribe (default 2.0)
+        - uncertainty_threshold (float): Refuse to prescribe when the missing-attribute COUNT
+            exceeds this (default 2.0). Lower is stricter; 0 refuses on any missing attribute.
+        - compare_against_no_treatment (bool): If False, 'no_treatment' is a fallback rather than
+            a competitor, matching `expected_reward_greedy` (default True, the historical
+            behaviour). See HeuristicWorker.__init__.
         - default_recovery_without_treatment_prob (float): Default spontaneous recovery probability (default 0.1)
     
     Args:
@@ -488,7 +515,14 @@ def load_heuristic_option(config: Dict[str, Any]) -> OptionBase:
     duration = config['duration']
     action_thresholds = config['action_thresholds']
     uncertainty_threshold = config.get('uncertainty_threshold', 2.0)
+    compare_against_no_treatment = config.get('compare_against_no_treatment', True)
     default_recovery_prob = config.get('default_recovery_without_treatment_prob', 0.1)
+
+    if not isinstance(compare_against_no_treatment, bool):
+        raise ValueError(
+            f"HeuristicWorker '{name}': 'compare_against_no_treatment' must be a bool, got "
+            f"{compare_against_no_treatment!r} ({type(compare_against_no_treatment).__name__})"
+        )
     
     # Validate duration
     if not isinstance(duration, int) or duration < 1:
@@ -541,5 +575,6 @@ def load_heuristic_option(config: Dict[str, Any]) -> OptionBase:
         duration=duration,
         action_thresholds=action_thresholds,
         uncertainty_threshold=uncertainty_threshold,
+        compare_against_no_treatment=compare_against_no_treatment,
         default_recovery_without_treatment_prob=default_recovery_prob,
     )

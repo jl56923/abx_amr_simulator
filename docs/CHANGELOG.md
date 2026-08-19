@@ -28,6 +28,51 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+#### `compare_against_no_treatment` — let a heuristic option match the greedy comparator (August 19, 2026)
+
+`HeuristicWorker` and the `expected_reward_greedy` fixed-prescribing comparator differ
+**structurally**, not by degree:
+
+| | `expected_reward_greedy` | `HeuristicWorker` |
+|---|---|---|
+| rule | prescribe argmax abx iff `E[R]_abx > 0` | prescribe argmax abx iff `E[R]_abx >= threshold` **and** `E[R]_abx > E[R]_no_treatment` |
+| `no_treatment` | fallback only, never a competitor | **initialises the value to beat** |
+
+For a patient with `E[R]_no_treatment = 5` and `E[R]_abx = 1`, greedy prescribes and the heuristic
+worker does not — **at any threshold**. So no option library could contain an option as permissive
+as the comparator its agent is measured against, and "the HRL agent showed restraint" could not be
+distinguished from "the HRL agent was never able to be permissive."
+
+- **`options/defaults/option_types/heuristic/heuristic_option_loader.py`**:
+  `HeuristicWorker.__init__` gains `compare_against_no_treatment: bool = True`. When `False`, the
+  value an antibiotic must beat is initialised to `-inf` rather than `E[R]_no_treatment`, giving
+  greedy's locked semantics. `load_heuristic_option` reads the key, rejects non-bool values
+  (so a YAML `"false"` cannot read as truthy), and passes it through.
+- **Backward compatible.** The default `True` is the historical behaviour, so existing option
+  libraries — including all of LPP's and VOI's — are unaffected until they opt in.
+- **New tests** (`tests/hrl/test_heuristic_compare_against_no_treatment.py`, real
+  `RewardCalculator` / `PatientGenerator` / `HeuristicWorker` / `ExpectedRewardGreedyPolicy`, no
+  mocks): the motivating patient's reward ordering is pinned before it is relied on; the default
+  refuses that patient and `False` prescribes it; **no threshold** — down to `-inf` — recovers
+  permissiveness while `True`, which is what makes the flag necessary rather than convenient; a
+  threshold-0.0 option with the flag off **reproduces the real comparator's decisions patient for
+  patient** across a 200-patient sampled population; and the default worker's treated set is a
+  **strict subset** of the comparator's, which is the option-library critique stated mechanically.
+
+#### Documentation fix — the uncertainty threshold was documented backwards (August 19, 2026)
+
+`compute_relative_uncertainty_score` returns a **count** of missing attributes and the gate is
+`refuse if uncertainty > threshold`, so `uncertainty_threshold: 0` is the **strictest** setting and
+a value at or above the number of checked attributes never refuses. The constructor and loader
+docstrings said the opposite, as do several shipped option libraries.
+
+> **Known limitation, not fixed here.** `OptionLibrary` injects
+> `patient_generator.visible_patient_attributes` into every worker, but an attribute that is
+> *visible* is by construction *not masked*, so the counted list can contain no `-1` sentinels and
+> the gate never fires at any threshold. This affects every group using the uncertainty axis,
+> notably LPP's limited-visibility populations, and changing it would alter agent behaviour in any
+> run with masked attributes — so it is recorded rather than silently patched.
+
 #### Checkpoint provenance stamped on every evaluation artifact (August 10, 2026)
 
 A training run emits evaluation artifacts from three different policies, and nothing recorded
