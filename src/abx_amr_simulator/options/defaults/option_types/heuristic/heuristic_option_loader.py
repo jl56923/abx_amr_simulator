@@ -30,7 +30,8 @@ class HeuristicWorker(OptionBase):
         action_thresholds: Dict mapping action keys to reward thresholds
             Example: {'prescribe_A': 0.7, 'prescribe_B': 0.5, 'no_treatment': 0.0}
         uncertainty_threshold: Threshold for uncertainty score (interpretation varies by logic)
-        use_relative_uncertainty: If True, count -1s; if False, count missing from total observable
+        use_relative_uncertainty: If True, count unobserved (absent or -1) among the injected
+            attributes; if False, count missing from total observable
     """
     
     # Required by OptionBase protocol: declare minimal dependencies
@@ -278,26 +279,42 @@ class HeuristicWorker(OptionBase):
         self,
         patient: Dict[str, float],
     ) -> int:
-        """Count number of padded (missing) patient attributes relative to what's observed.
-        
-        This is uncertainty "relative to what we can see": if we observe some attributes,
-        how many are padded (-1)? This captures missing subset of the patient profile.
-        
+        """Count how many of the injected observable attributes are UNOBSERVED for this patient.
+
+        An attribute counts as unobserved if it is **absent** from the patient dict OR present
+        with the padded sentinel ``-1.0``. The injected list (``_observable_patient_attributes``,
+        set by ``OptionLibrary`` to the population's configured attributes) is a superset of the
+        visible attributes, so the ones it contains that are missing from a given patient's
+        observation are exactly that patient's masked attributes -- the uncertainty the gate
+        measures.
+
+        eng_2 (uncertainty-gate-injection): the previous version only counted explicit ``-1.0``
+        values. But the runtime patient dict built by ``OptionsWrapper._extract_patients_from_obs``
+        contains only the *visible* attributes (with real values) and drops the masked ones
+        entirely -- it never pads with ``-1`` -- so the old check scored 0 in every real run.
+        Treating an *absent* attribute as unobserved is what makes the gate fire. An explicit
+        ``-1.0`` still counts (``dict.get`` returns it), so hand-built ``-1``-padded inputs are
+        unchanged.
+
         Args:
             patient: Dict with observed patient attributes
-        
+
         Returns:
-            Count of attributes with value -1 (indicates padding/missing data)
-        
-        Example:
-            - Patient sees {'prob_infected': 0.7, 'benefit_multiplier': -1, 'failure_multiplier': -1, ...} → score = 4
-            - Patient sees {'prob_infected': 0.7} (only 1 attribute visible, no padding) → score = 0
+            Count of injected attributes that are absent from ``patient`` or equal to ``-1.0``.
+
+        Example (injected list = all 6 configured attributes):
+            - Patient dict {'prob_infected': 0.7} (5 attrs absent) → score = 5
+            - Patient dict with all 6 attributes present at real values → score = 0
+            - Patient dict {'prob_infected': 0.7, 'benefit_value_multiplier': -1.0, ...} → the -1
+              still counts alongside any absent attributes
         """
         uncertainty = 0
         # Use injected observable attributes list, fall back to minimal requirements if not set
         check_attrs = self._observable_patient_attributes or self.REQUIRES_OBSERVATION_ATTRIBUTES
         for attr in check_attrs:
-            if attr in patient and patient[attr] == -1.0:
+            # Absent OR explicitly padded (-1.0) == unobserved. Absent is the runtime case:
+            # non-visible attributes are simply not in the patient dict (never -1-padded).
+            if patient.get(attr, -1.0) == -1.0:
                 uncertainty += 1
         return uncertainty
     

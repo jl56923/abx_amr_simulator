@@ -296,12 +296,20 @@ class OptionLibrary:
                     # they will surface at runtime when the option is actually executed.
                     pass
 
-        # Inject full observable attribute list into options that support it
-        # (e.g., HeuristicWorker uses this for uncertainty scoring)
-        visible_attrs_list = list(patient_generator.visible_patient_attributes)
+        # Inject the population's CONFIGURED attribute list (a superset of the visible
+        # attributes) into options that support it, so the uncertainty gate can tell which
+        # attributes are masked for a given patient.
+        #
+        # eng_2 (uncertainty-gate-injection): the old code injected
+        # `visible_patient_attributes`, but a visible attribute is by construction never
+        # masked, so `compute_relative_uncertainty_score` counted zero and the gate never
+        # fired at any threshold. `attribute_configs` holds every attribute this population
+        # models (visible + masked); the masked ones are exactly the information degradation
+        # the gate is meant to measure. See heuristic_option_loader.compute_relative_uncertainty_score.
+        configured_attrs_list = list(patient_generator.attribute_configs.keys())
         for option_name, option in self.options.items():
             if hasattr(option, 'set_observable_attributes'):
-                option.set_observable_attributes(visible_attrs_list)
+                option.set_observable_attributes(configured_attrs_list)
 
     def _build_test_env_state(
         self,

@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### Uncertainty gate can now actually fire (`eng_2 (uncertainty-gate-injection)`, September 3, 2026)
+
+- **`hrl/options.py`**: `OptionLibrary` now injects the population's **configured** attribute set
+  (`patient_generator.attribute_configs.keys()`) into each worker's `set_observable_attributes`,
+  instead of `visible_patient_attributes`. A visible attribute is by construction never masked, so
+  the old injection guaranteed a relative-uncertainty score of 0.
+- **`options/.../heuristic/heuristic_option_loader.py`**: `compute_relative_uncertainty_score` now
+  counts an attribute as unobserved when it is **absent from the patient dict OR equal to `-1.0`**
+  (was: only explicit `-1.0`). This is the load-bearing half — the runtime patient dict built by
+  `OptionsWrapper._extract_patients_from_obs` contains only the visible attributes (real values) and
+  omits masked ones entirely; it never pads with `-1`, so the old check scored 0 in every real run.
+- **Effect.** With `use_relative_uncertainty: true` (what all current EoID/LPP libraries use), the
+  gate now refuses to prescribe when a patient's masked-attribute count exceeds the option's
+  `uncertainty_threshold`. The scorer-side change fixes both the `OptionsWrapper` and `marl_wrapper`
+  paths. The `absolute` path is unchanged (`len(KNOWN_ATTRIBUTE_TYPES) - num_visible` either way).
+- **Behaviour change.** Any run with `use_relative_uncertainty: true`, masked attributes, and a
+  threshold low enough to fire now behaves differently. **EoID is unaffected** (its libraries pin
+  `NEVER_REFUSE_UNCERTAINTY`). LPP's pre-fix results would change, but LPP is being re-run wholesale
+  on rebuilt libraries. VOI is unsubmitted.
+- **Tests:** `tests/hrl/test_uncertainty_gate_fires.py` — real scorer + real
+  `PatientGenerator`/`ABXAMREnv`/`OptionLibrary`/`OptionsWrapper`, proving the gate fires end-to-end
+  on a limited-visibility population and stays inert on a full-visibility one.
+
 ### Changed
 
 #### `leak` upper bound removed — it is a dose rate, not a fraction (August 10, 2026)
