@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+#### `PatientGeneratorMixer` exposes `attribute_configs` (`eng_10 (mixer-attribute-configs)`, September 4, 2026)
+
+- **`core/patient_generator.py`**: `PatientGeneratorMixer.__init__` now sets `self.attribute_configs`
+  to the **union of its child generators' `attribute_configs`**. The mixer deliberately skips
+  `super().__init__()` (it has no distribution configs of its own), so it previously never set the
+  attribute, and `eng_2`'s uncertainty-gate injection (`hrl/options.py`, which reads
+  `patient_generator.attribute_configs.keys()` at every `OptionsWrapper`/`MARLOptionsWrapper`
+  construction) raised `AttributeError` on any mixer population. That is every LPP/VOI run whose
+  population is a mixer (e.g. LPP's 50/50 high/low-risk `agent_n`) and whose option library has
+  heuristic options. The union is the population's configured attribute superset, matching `eng_2`'s
+  single-generator semantics and the mixer's `-1`-padded observation basis, so uncertainty scoring is
+  correct (0 under full visibility → the gate stays inert). Regression tests in
+  `tests/hrl/test_uncertainty_gate_fires.py`.
+
 #### Uncertainty gate can now actually fire (`eng_2 (uncertainty-gate-injection)`, September 3, 2026)
 
 - **`hrl/options.py`**: `OptionLibrary` now injects the population's **configured** attribute set

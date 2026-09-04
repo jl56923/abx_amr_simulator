@@ -16,6 +16,7 @@ tests exercise the real scorer, a real ``PatientGenerator`` / ``ABXAMREnv`` / ``
 
 import pytest
 
+from abx_amr_simulator.core.patient_generator import PatientGeneratorMixer
 from abx_amr_simulator.hrl import OptionLibrary, OptionsWrapper
 from abx_amr_simulator.options.defaults.option_types.heuristic.heuristic_option_loader import (
     HeuristicWorker,
@@ -190,3 +191,59 @@ class TestGateFiresEndToEnd:
         )
         assert set(env_state['patients'][0].keys()) == ALL_SIX_ATTRS
         assert worker.compute_relative_uncertainty_score(env_state['patients'][0]) == 0
+
+
+# --------------------------------------------------------------------------------------
+# eng_10 (mixer-attribute-configs): a mixer population must expose attribute_configs
+# --------------------------------------------------------------------------------------
+
+class TestMixerExposesAttributeConfigs:
+    """The eng_2 injection reads ``patient_generator.attribute_configs``. A PatientGeneratorMixer
+    skips ``super().__init__()`` and, before eng_10, never set it — so building an OptionLibrary
+    over a mixer population crashed with AttributeError. That is every LPP/VOI run whose population
+    is a mixer (e.g. LPP's 50/50 high/low-risk agent_n) and whose library has heuristic options."""
+
+    def _full_visibility_generator(self):
+        """A real PatientGenerator with all six attributes configured and visible."""
+        env = make_env(
+            antibiotic_names=['A'],
+            num_patients_per_time_step=3,
+            visible_patient_attributes=sorted(ALL_SIX_ATTRS),
+        )
+        return env.unwrapped.patient_generator
+
+    def test_mixer_attribute_configs_is_union_of_children(self):
+        child_a = self._full_visibility_generator()
+        child_b = self._full_visibility_generator()
+        mixer = PatientGeneratorMixer(
+            config={'generators': [child_a, child_b], 'proportions': [0.5, 0.5], 'seed': 7}
+        )
+        expected = set(child_a.attribute_configs) | set(child_b.attribute_configs)
+        assert set(mixer.attribute_configs.keys()) == expected
+        assert set(mixer.attribute_configs.keys()) == ALL_SIX_ATTRS
+
+    def test_option_library_validation_over_mixer_does_not_crash(self):
+        """The exact regression path: OptionLibrary.validate_environment_compatibility reads
+        patient_generator.attribute_configs and injects it. Pre-eng_10 this raised AttributeError
+        on a mixer; now it injects the mixer's configured superset."""
+        # A separate env supplies the antibiotic mapping / reward the OptionLibrary needs.
+        env = make_env(
+            antibiotic_names=['A'],
+            num_patients_per_time_step=3,
+            visible_patient_attributes=sorted(ALL_SIX_ATTRS),
+        )
+        mixer = PatientGeneratorMixer(
+            config={
+                'generators': [self._full_visibility_generator(), self._full_visibility_generator()],
+                'proportions': [0.5, 0.5],
+                'seed': 11,
+            }
+        )
+        worker = _make_worker(uncertainty_threshold=99.0)  # inert: full vis -> score 0 -> never gates
+        lib = OptionLibrary.from_env(env)
+        lib.add_option(worker)
+
+        lib.validate_environment_compatibility(patient_generator=mixer)  # must not raise
+
+        assert set(worker._observable_patient_attributes) == set(mixer.attribute_configs.keys())
+        assert set(worker._observable_patient_attributes) == ALL_SIX_ATTRS

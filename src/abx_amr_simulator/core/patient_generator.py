@@ -908,6 +908,22 @@ class PatientGeneratorMixer(PatientGenerator):
         self.generators: List[PatientGenerator] = generators
         self.proportions: np.ndarray = proportions_array
 
+        # eng_10 (mixer-attribute-configs): expose attribute_configs as the union across children.
+        # This mixer skips super().__init__() (below, it has no distribution configs of its own),
+        # so it would otherwise never set attribute_configs. But eng_2's uncertainty-gate injection
+        # (hrl/options.py: `list(patient_generator.attribute_configs.keys())`) reads it to learn the
+        # population's CONFIGURED attribute superset, and crashes on a mixer without it — which is
+        # every LPP/VOI run whose population is a mixer and whose option library has heuristic
+        # options. The union of the children's configured attributes is exactly that superset
+        # (matching eng_2's single-generator semantics: absent/masked attributes are counted), so the
+        # injected list matches the mixer's padded observation basis. Each child is a real
+        # PatientGenerator with its own attribute_configs; first child wins on a key collision (only
+        # the key set is read by the injection).
+        self.attribute_configs: Dict[str, Dict[str, Any]] = {}
+        for gen in self.generators:
+            for attr_name, attr_cfg in getattr(gen, "attribute_configs", {}).items():
+                self.attribute_configs.setdefault(attr_name, attr_cfg)
+
         # Logging configuration: inherit from children and validate.
         # If child generators differ, use deterministic union to avoid silent attr loss.
         child_logging_attrs: List[List[str]] = []
