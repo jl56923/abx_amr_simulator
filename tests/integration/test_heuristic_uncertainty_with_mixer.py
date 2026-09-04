@@ -205,6 +205,7 @@ class TestUncertaintyWithUniformVisibility:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # Inject the full observable attributes list
@@ -268,6 +269,7 @@ class TestUncertaintyWithHeterogeneousVisibility:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # Inject the full observable attributes list (union of both generators)
@@ -346,6 +348,7 @@ class TestUncertaintyWithHeterogeneousVisibility:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         worker.set_observable_attributes(attributes=mixer.visible_patient_attributes)
         
@@ -452,6 +455,7 @@ class TestUncertaintyWithHeterogeneousVisibility:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         worker.set_observable_attributes(attributes=mixer.visible_patient_attributes)
         

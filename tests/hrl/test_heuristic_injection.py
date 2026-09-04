@@ -19,6 +19,7 @@ class TestObservableAttributeInjection:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         assert worker._observable_patient_attributes == []
     
@@ -29,6 +30,7 @@ class TestObservableAttributeInjection:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         attrs = ['prob_infected', 'benefit_value_multiplier', 'failure_value_multiplier']
@@ -43,6 +45,7 @@ class TestObservableAttributeInjection:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # No injection - should use REQUIRES_OBSERVATION_ATTRIBUTES (just prob_infected)
@@ -62,6 +65,7 @@ class TestObservableAttributeInjection:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # Inject full attribute list
@@ -96,6 +100,7 @@ class TestObservableAttributeInjection:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # No injection - should use REQUIRES_OBSERVATION_ATTRIBUTES
@@ -119,6 +124,7 @@ class TestObservableAttributeInjection:
             duration=10,
             action_thresholds={'prescribe_A': 0.5, 'no_treatment': 0.0},
             uncertainty_threshold=2.0,
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # Inject full attribute list
@@ -156,6 +162,7 @@ class TestObservableAttributeInjection:
                 'no_treatment': 0.0
             },
             uncertainty_threshold=1.0,  # Strict: refuse if >1 attributes padded
+            default_recovery_without_treatment_prob=0.1,
         )
         
         # Inject full attribute list

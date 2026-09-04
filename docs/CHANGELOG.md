@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+#### Stale `HeuristicWorker` test constructions restored (`eng_11 (heuristic-worker-test-callsites)`, September 4, 2026)
+
+- **`tests/hrl/test_heuristic_injection.py`** (7) and **`tests/integration/test_heuristic_uncertainty_with_mixer.py`**
+  (4): added the required `default_recovery_without_treatment_prob=0.1` to every `HeuristicWorker(...)`
+  construction that omitted it (required since `b19cd3b`), which had been raising `TypeError` at run.
+  `0.1` is the pre-`b19cd3b` default, so no assertion changed.
+
 #### `PatientGeneratorMixer` exposes `attribute_configs` (`eng_10 (mixer-attribute-configs)`, September 4, 2026)
 
 - **`core/patient_generator.py`**: `PatientGeneratorMixer.__init__` now sets `self.attribute_configs`
