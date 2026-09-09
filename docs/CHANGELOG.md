@@ -30,8 +30,11 @@ All notable changes to this project will be documented in this file.
   a networked filesystem where SQLite file locking is unreliable.
   - New `build_sqlite_storage(storage_path, busy_timeout_seconds=60)` builds an `RDBStorage` with a
     SQLite **busy timeout** (via the `sqlite3` `timeout` connect arg, so it applies to *every*
-    connection incl. optimize commits) and best-effort **WAL** journal mode (via a SQLAlchemy connect
-    listener, wrapped so a version quirk can never break tuning). WAL needs a local FS.
+    connection incl. optimize commits) and **WAL** journal mode on a local FS. WAL is set on a
+    `connect` listener *and* deterministically via a disposed-pool + explicit `raw_connection` PRAGMA
+    (the pool connection opened during `RDBStorage.__init__` predates the listener and would otherwise
+    be reused, leaving WAL unset — the first cut printed `journal_mode=delete`); the result is verified
+    and the whole block is wrapped so a version quirk can never break tuning. WAL needs a local FS.
   - New `--optuna-db-dir` CLI arg (default `--optimization-dir`) relocates only `optuna_study.db`;
     results / best_params / configs stay under `--optimization-dir`. Callers point it at node-local
     disk so many workers avoid NFS SQLite locking. Overwrite now also clears `-wal`/`-shm` sidecars.

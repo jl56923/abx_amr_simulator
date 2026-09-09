@@ -402,12 +402,15 @@ def build_sqlite_storage(storage_path: str, busy_timeout_seconds: int = 60):
         url=f"sqlite:///{storage_path}",
         engine_kwargs={"connect_args": {"timeout": busy_timeout_seconds}},
     )
+    wal_ok = False
     try:
         from sqlalchemy import event
         engine = getattr(storage, "engine", None) or getattr(
             getattr(storage, "_backend", None), "engine", None
         )
         if engine is not None:
+            # Set the pragmas on every physical connection. busy_timeout is per-connection; WAL is a
+            # persistent property of the DB file (once any connection sets it, it sticks).
             @event.listens_for(engine, "connect")
             def _set_sqlite_pragmas(dbapi_connection, _connection_record):
                 cursor = dbapi_connection.cursor()
@@ -416,10 +419,31 @@ def build_sqlite_storage(storage_path: str, busy_timeout_seconds: int = 60):
                     cursor.execute(f"PRAGMA busy_timeout={busy_ms}")
                 finally:
                     cursor.close()
+
+            # RDBStorage.__init__ already opened (and pooled) a connection to create tables, BEFORE
+            # the listener existed, and later work reuses it — so the listener never fires and WAL is
+            # never set. Dispose the pool so the next checkout is a fresh connect that fires it...
+            engine.dispose()
+            # ...and set WAL deterministically now (persists on the file), verifying it took.
+            raw = engine.raw_connection()
+            try:
+                cursor = raw.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                row = cursor.fetchone()
+                cursor.execute(f"PRAGMA busy_timeout={busy_ms}")
+                cursor.close()
+                raw.commit()
+                wal_ok = bool(row) and str(row[0]).lower() == "wal"
+            finally:
+                raw.close()
     except Exception as exc:  # never let pragma wiring break tuning
-        print(f"[tune] WARN: could not attach SQLite pragma listener ({exc}); "
+        print(f"[tune] WARN: could not enable WAL/busy_timeout pragmas ({exc}); "
               f"relying on connect_args timeout={busy_timeout_seconds}s")
-    print(f"Using SQLite storage (busy_timeout={busy_timeout_seconds}s, WAL best-effort): {storage_path}")
+    if not wal_ok:
+        # Expected on a networked FS (WAL needs local shared memory); busy_timeout still applies.
+        print(f"[tune] NOTE: WAL not enabled for {storage_path} (non-local FS?); "
+              f"busy_timeout={busy_timeout_seconds}s still active")
+    print(f"Using SQLite storage (busy_timeout={busy_timeout_seconds}s, WAL={'on' if wal_ok else 'off'}): {storage_path}")
     return storage
 
 
