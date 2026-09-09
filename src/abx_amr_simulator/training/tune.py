@@ -382,6 +382,47 @@ def build_storage_url(
     return storage_url
 
 
+def build_sqlite_storage(storage_path: str, busy_timeout_seconds: int = 60):
+    """Build an Optuna SQLite storage hardened for many concurrent tuning workers (eng_12).
+
+    Under packing, ~32 tuning workers per node were writing one SQLite DB on an NFS filesystem,
+    which produced a flood of `sqlite3.OperationalError: database is locked` and `disk I/O error`
+    that crashed the producers. Two SQLite settings address this:
+      - a **busy timeout**, so a writer WAITS for the lock instead of erroring immediately (this is
+        the direct fix for `database is locked`); set via the sqlite3 `timeout` connect arg so it
+        applies to EVERY connection, including per-trial commits inside ``study.optimize``;
+      - **WAL** journal mode, so readers do not block the single writer.
+
+    WAL requires the DB to be on a LOCAL filesystem (it uses shared memory), so callers should point
+    ``storage_path`` at node-local disk (e.g. ``$SLURM_TMPDIR``). On a networked FS the WAL PRAGMA is
+    a no-op and only the busy timeout applies; the PRAGMA wiring is best-effort and never fatal.
+    """
+    busy_ms = int(busy_timeout_seconds * 1000)
+    storage = optuna.storages.RDBStorage(
+        url=f"sqlite:///{storage_path}",
+        engine_kwargs={"connect_args": {"timeout": busy_timeout_seconds}},
+    )
+    try:
+        from sqlalchemy import event
+        engine = getattr(storage, "engine", None) or getattr(
+            getattr(storage, "_backend", None), "engine", None
+        )
+        if engine is not None:
+            @event.listens_for(engine, "connect")
+            def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.execute(f"PRAGMA busy_timeout={busy_ms}")
+                finally:
+                    cursor.close()
+    except Exception as exc:  # never let pragma wiring break tuning
+        print(f"[tune] WARN: could not attach SQLite pragma listener ({exc}); "
+              f"relying on connect_args timeout={busy_timeout_seconds}s")
+    print(f"Using SQLite storage (busy_timeout={busy_timeout_seconds}s, WAL best-effort): {storage_path}")
+    return storage
+
+
 def suggest_hyperparameters(trial: optuna.Trial, search_space: Dict[str, Any]) -> Dict[str, Any]:
     """Suggest hyperparameters for the current trial based on search space config.
     
@@ -986,6 +1027,15 @@ def main():
         help='Directory where optimization results should be saved. If not specified, uses current working directory + "optimization"'
     )
     parser.add_argument(
+        '--optuna-db-dir',
+        type=str,
+        default=None,
+        help='Directory for the Optuna SQLite study DB (optuna_study.db). Defaults to '
+             '--optimization-dir. Point this at node-local disk (e.g. $SLURM_TMPDIR) so many '
+             'parallel workers do not hit NFS SQLite lock failures; results / best_params / configs '
+             'still go under --optimization-dir. Ignored for --use-postgres. (eng_12)'
+    )
+    parser.add_argument(
         '--skip-if-exists',
         action='store_true',
         help='Skip this tuning run if an optimization with the same run name already exists in the registry'
@@ -1401,23 +1451,37 @@ def main():
     # Get base seed from umbrella config
     base_seed = umbrella_config.get('training', {}).get('seed', 42)
     
-    storage_url = build_storage_url(
-        use_postgres=args.use_postgres,
-        run_name=run_name,
-        optimization_dir=optimization_dir
-    )
+    # eng_12: the SQLite study DB may live in a node-local dir (--optuna-db-dir) to avoid NFS lock
+    # failures under many concurrent workers; results / best_params / configs still go under
+    # optimization_dir. Defaults to optimization_dir, so behavior is unchanged when unset.
+    db_dir = args.optuna_db_dir or optimization_dir
+    Path(db_dir).mkdir(parents=True, exist_ok=True)
+
+    storage_url = None
     storage_path = None
 
     # Determine whether to load existing study or start fresh
     load_if_exists = not args.overwrite_existing_study
 
-    if not args.use_postgres:
-        storage_path = os.path.join(optimization_dir, 'optuna_study.db')
+    if args.use_postgres:
+        storage = build_storage_url(
+            use_postgres=True,
+            run_name=run_name,
+            optimization_dir=optimization_dir
+        )
+        storage_url = storage
+    else:
+        storage_path = os.path.join(db_dir, 'optuna_study.db')
         # Only worker 0 should delete the database to avoid multi-worker race conditions
         if args.overwrite_existing_study and os.path.exists(storage_path):
             if args.worker_id == 0:
                 print(f"\n⚠️  [Worker 0] Overwriting existing study database: {storage_path}")
-                os.remove(storage_path)
+                # WAL leaves -wal / -shm sidecars; remove them too so the fresh study is clean.
+                for suffix in ('', '-wal', '-shm'):
+                    try:
+                        os.remove(storage_path + suffix)
+                    except FileNotFoundError:
+                        pass
             else:
                 print(f"\n⚠️  [Worker {args.worker_id}] Waiting for worker 0 to initialize database...")
                 # Wait for worker 0 to delete and recreate the database
@@ -1425,6 +1489,7 @@ def main():
                 time.sleep(15)
         elif load_if_exists and os.path.exists(storage_path):
             print(f"\n✓ Found existing study database, will continue: {storage_path}")
+        storage = build_sqlite_storage(storage_path)
 
     # Create Optuna study with retry logic for Postgres enum creation race condition
     # and SQLite table/study creation race conditions
@@ -1436,7 +1501,7 @@ def main():
                 direction=direction,
                 sampler=sampler,
                 study_name=args.study_name or run_name,
-                storage=storage_url,
+                storage=storage,
                 load_if_exists=current_load_if_exists
             )
             break  # Success

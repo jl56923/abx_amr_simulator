@@ -6,6 +6,23 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+#### Optuna SQLite tuning storage hardened against concurrent-worker lock failures (`eng_12 (node-local-sqlite-tuning)`, September 9, 2026)
+
+- **`training/tune.py`**: parallel tuning workers writing one SQLite study DB flooded
+  `sqlite3.OperationalError: database is locked` and `disk I/O error` under load (surfaced when the
+  packed cluster submitter put ~32 workers/node on one DB on an NFS filesystem, crashing producers).
+  Root gaps: the previous `create_study` retry only wrapped study *creation*, while the failures came
+  from per-trial commits inside `study.optimize` which had **no busy timeout**; and the DB lived on
+  a networked filesystem where SQLite file locking is unreliable.
+  - New `build_sqlite_storage(storage_path, busy_timeout_seconds=60)` builds an `RDBStorage` with a
+    SQLite **busy timeout** (via the `sqlite3` `timeout` connect arg, so it applies to *every*
+    connection incl. optimize commits) and best-effort **WAL** journal mode (via a SQLAlchemy connect
+    listener, wrapped so a version quirk can never break tuning). WAL needs a local FS.
+  - New `--optuna-db-dir` CLI arg (default `--optimization-dir`) relocates only `optuna_study.db`;
+    results / best_params / configs stay under `--optimization-dir`. Callers point it at node-local
+    disk so many workers avoid NFS SQLite locking. Overwrite now also clears `-wal`/`-shm` sidecars.
+  - Backward compatible: unset `--optuna-db-dir` = prior path; the busy timeout is a pure improvement.
+
 #### Stale `HeuristicWorker` test constructions restored (`eng_11 (heuristic-worker-test-callsites)`, September 4, 2026)
 
 - **`tests/hrl/test_heuristic_injection.py`** (7) and **`tests/integration/test_heuristic_uncertainty_with_mixer.py`**
