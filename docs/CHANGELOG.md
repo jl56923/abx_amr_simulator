@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+#### Tuning completion check made early-stopping aware (`eng_13 (early-stopping-aware-guard)`, September 9, 2026)
+
+- **`training/tune.py`**: the post-run guard required *exactly* `optimization.n_trials` COMPLETE
+  trials, which contradicts `EarlyStoppingStudyCallback` — when a study converges it calls
+  `study.stop()` and finishes with fewer trials on purpose. That legitimate outcome (e.g. 29/32 on a
+  flat HRL landscape) was failing the guard, killing the producer and cascading its consumers.
+  - `EarlyStoppingStudyCallback` now records `study.set_user_attr("stopped_early", True)` before
+    stopping (persisted in storage for a separate guard process to read).
+  - New `evaluate_tuning_completion(study, target_n_trials, optimization_config) -> (ok, reason)`:
+    accepts a study flagged `stopped_early` (provided it cleared the early-stopping warmup floor) or
+    one that reached/exceeded the target; still **fails** a shortfall with no early-stop flag (a
+    crashed/undershooting worker). The shell post-run guard now calls this instead of `!= n_trials`,
+    so the decision is unit-tested in the package rather than duplicated in a shell heredoc.
+
 #### Optuna SQLite tuning storage hardened against concurrent-worker lock failures (`eng_12 (node-local-sqlite-tuning)`, September 9, 2026)
 
 - **`training/tune.py`**: parallel tuning workers writing one SQLite study DB flooded

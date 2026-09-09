@@ -962,6 +962,10 @@ class EarlyStoppingStudyCallback:
             )
             print(f"  Best value: {study.best_value:.4f} (trial {study.best_trial.number})")
             print(f"  Stopping study after {n_completed} completed trials.")
+            # eng_13: record WHY the study stops short of n_trials, so the post-run completion guard
+            # can tell a deliberate convergence stop apart from a crashed/undershooting worker.
+            # Persisted in storage, so a separate guard process that loads the study sees it.
+            study.set_user_attr("stopped_early", True)
             study.stop()
 
 
@@ -997,6 +1001,49 @@ def build_early_stopping_callback(
         warmup_trials=warmup_trials,
         patience=patience,
         min_delta=min_delta,
+    )
+
+
+def evaluate_tuning_completion(study, target_n_trials, optimization_config):
+    """Decide whether a finished tuning study is acceptable (eng_13).
+
+    The post-run guard used to require EXACTLY ``target_n_trials`` COMPLETE trials, which
+    contradicts the ``EarlyStoppingStudyCallback``: when the study converges it deliberately calls
+    ``study.stop()`` and finishes with fewer trials. That legitimate outcome was being treated as a
+    fatal failure, killing the producer and cascading its consumers.
+
+    Acceptance:
+      - the study was flagged ``stopped_early`` (deliberate convergence) AND completed at least the
+        early-stopping warmup floor (so a study that never really ran still fails); OR
+      - it completed at least ``target_n_trials`` (exact, or a slight parallel overshoot).
+    A shortfall with NO early-stop flag (a crashed / undershooting worker) still fails.
+
+    Args:
+        study: a loaded Optuna study.
+        target_n_trials: the configured ``optimization.n_trials`` target.
+        optimization_config: the ``optimization`` section of the tuning config (for the
+            early-stopping warmup floor). May be ``None``.
+
+    Returns:
+        (ok: bool, reason: str)
+    """
+    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    n_completed = len(completed)
+    stopped_early = bool(study.user_attrs.get("stopped_early", False))
+
+    es_config = (optimization_config or {}).get("early_stopping", {}) or {}
+    warmup_floor = int(es_config.get("warmup_trials", 0)) if es_config.get("enabled", False) else 0
+
+    if stopped_early and n_completed >= max(1, warmup_floor):
+        return True, (
+            f"study stopped early by design at {n_completed}/{target_n_trials} "
+            f"completed trials (converged)"
+        )
+    if n_completed >= target_n_trials:
+        return True, f"{n_completed}/{target_n_trials} completed trials"
+    return False, (
+        f"only {n_completed}/{target_n_trials} completed trials and the study was not flagged "
+        f"stopped-early (likely a crashed or undershooting worker)"
     )
 
 
