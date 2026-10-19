@@ -69,8 +69,10 @@ def _hrl_env(workspace: Path):
 
 
 def _summary_patient_totals(model, env, tmp_path: Path, label: str) -> list[int]:
+    experiment_folder = tmp_path / label
+    experiment_folder.mkdir()  # plot_metrics_ensemble_agents requires an existing experiment folder
     plot_metrics_ensemble_agents(
-        models=[model], env=env, experiment_folder=str(tmp_path / label), n_episodes_per_agent=2,
+        models=[model], env=env, experiment_folder=str(experiment_folder), n_episodes_per_agent=2,
         deterministic=True, figures_folder_name="ensemble", per_seed_figures=False, episode_seed_start=0,
     )
     summary = json.loads((tmp_path / label / "ensemble" / "overall_outcomes_summary_raw_vals.json").read_text())
