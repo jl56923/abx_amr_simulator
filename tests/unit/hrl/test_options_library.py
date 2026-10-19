@@ -432,7 +432,12 @@ class TestValidationEnvironmentCompatibility:
         library.validate_environment_compatibility(patient_generator=pg)
 
     def test_validate_injects_observable_attributes(self):
-        """Test that validation injects observable attributes into options."""
+        """Validation injects the population's CONFIGURED attributes, not just the visible subset.
+
+        eng_2 (uncertainty-gate-injection) changed the injection source from
+        ``visible_patient_attributes`` to ``attribute_configs.keys()``: a visible attribute is
+        never masked, so injecting only those made the uncertainty gate count zero and never fire.
+        """
         env = create_mock_environment(antibiotic_names=["A"])
         pg = create_mock_patient_generator()
         pg.visible_patient_attributes = ["prob_infected", "benefit_value_multiplier"]
@@ -442,7 +447,11 @@ class TestValidationEnvironmentCompatibility:
 
         library.validate_environment_compatibility(patient_generator=pg)
 
-        assert option.observed_attributes == ["prob_infected", "benefit_value_multiplier"]
+        configured_attributes = list(pg.attribute_configs.keys())
+        assert option.observed_attributes == configured_attributes
+        # The masked attributes must be included, so the injected list is a strict superset
+        # of the visible subset.
+        assert set(pg.visible_patient_attributes) < set(option.observed_attributes)
 
     def test_validate_with_termination_condition_flag(self):
         """Test validation accepts options that provide termination condition."""
