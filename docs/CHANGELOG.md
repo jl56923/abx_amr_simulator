@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+#### HRL evaluation summaries dropped each episode's first primitive step (`eng_14 (hrl-eval-first-step-dropped)`, October 19, 2026)
+
+- **`utils/metrics.py::_flatten_hrl_trajectory`** built the flattened `infos` from primitive infos only,
+  dropping the reset info. Every summary consumer (`plot_metrics_trained_agent`, `plot_metrics_from_trajectory`,
+  `plot_metrics_ensemble_agents`) skips the reset info with `infos[1:]`, so for HRL agents that slice discarded
+  the **first real primitive step** of every episode. Evaluation summaries (`overall_outcomes_summary_raw_vals.json`)
+  counted 499 of 500 steps for HRL agents against 500 for flat agents: a ~0.2% reward shortfall, below seed noise
+  but systematic across flat-vs-HRL comparisons. The flattened trajectory now keeps the reset info at `infos[0]`,
+  matching the flat convention (`len(infos) == len(actions) + 1`). Training, tuning and in-training evaluation are
+  unaffected; only post-hoc evaluation of trained models changes.
+- **Tests:** `tests/unit/utils/test_hrl_trajectory_flattening.py` updated (it pinned the old length); new
+  `tests/integration/test_hrl_eval_step_count.py` runs a real HRL and a real flat evaluation end to end and asserts
+  both summaries count `max_time_steps × cohort` patients per episode.
+
 #### Tuning completion check made early-stopping aware (`eng_13 (early-stopping-aware-guard)`, September 9, 2026)
 
 - **`training/tune.py`**: the post-run guard required *exactly* `optimization.n_trials` COMPLETE

@@ -741,7 +741,9 @@ def _flatten_hrl_trajectory(trajectory):
             - 'obs': Expanded with intermediate primitive observations
             - 'actions': Expanded from primitive_actions
             - 'rewards': Distributed across primitive steps
-            - 'infos': Expanded from primitive_infos
+            - 'infos': The reset info, then one info per primitive step (expanded from
+              primitive_infos) -- the same convention as a flat trajectory, which consumers
+              skip with ``infos[1:]``. So len(infos) == len(actions) + 1.
             - 'macro_action_boundaries': List of indices where each macro-action starts
     
     Note:
@@ -750,7 +752,10 @@ def _flatten_hrl_trajectory(trajectory):
         - Final obs of each macro-action taken from manager-level obs
         - Macro-action boundaries recorded for optional visualization
     """
-    flattened = {"obs": [trajectory["obs"][0]], "actions": [], "rewards": [], "infos": []}
+    # eng_14 (hrl-eval-first-step-dropped): keep the reset info at infos[0], matching the flat-trajectory
+    # convention. Every consumer skips it with `infos[1:]`; without it, that slice dropped the FIRST REAL
+    # primitive step of every HRL episode (499 of 500 steps counted in the evaluation summaries).
+    flattened = {"obs": [trajectory["obs"][0]], "actions": [], "rewards": [], "infos": [trajectory["infos"][0]]}
     macro_boundaries = [0]  # First boundary always at timestep 0
     
     for step_idx, (manager_info, next_obs) in enumerate(zip(trajectory["infos"][1:], trajectory["obs"][1:])):

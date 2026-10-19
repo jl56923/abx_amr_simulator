@@ -48,7 +48,10 @@ def test_flatten_hrl_trajectory_simple_two_steps():
     # Should have 5 + 3 = 8 primitive steps
     assert len(flattened["actions"]) == 8
     assert len(flattened["rewards"]) == 8
-    assert len(flattened["infos"]) == 8
+    # eng_14: infos = the reset info, then one per primitive step (consumers skip infos[0]).
+    assert len(flattened["infos"]) == 9
+    assert flattened["infos"][0] == {}
+    assert [info["step"] for info in flattened["infos"][1:]] == list(range(8))
 
     # First 5 actions should match option 1's primitive actions
     assert flattened["actions"][:5] == [0, 1, 0, 1, 0]
@@ -92,7 +95,7 @@ def test_flatten_hrl_trajectory_single_option():
     # Should have 10 primitive steps
     assert len(flattened["actions"]) == 10
     assert len(flattened["rewards"]) == 10
-    assert len(flattened["infos"]) == 10
+    assert len(flattened["infos"]) == 11  # reset info + 10 primitive steps (eng_14)
 
     # Rewards should be distributed: 50.0 / 10 = 5.0 per step
     expected_rewards = [5.0] * 10
@@ -141,7 +144,7 @@ def test_flatten_hrl_trajectory_multiple_options():
     # Total: 2 + 4 + 1 = 7 primitive steps
     assert len(flattened["actions"]) == 7
     assert len(flattened["rewards"]) == 7
-    assert len(flattened["infos"]) == 7
+    assert len(flattened["infos"]) == 8  # reset info + 7 primitive steps (eng_14)
 
     # Verify rewards distributed correctly
     expected_rewards = [5.0, 5.0] + [5.0] * 4 + [30.0]  # 10/2, 20/4, 30/1
@@ -229,9 +232,10 @@ def test_flatten_hrl_trajectory_infos_preserved():
 
     flattened = _flatten_hrl_trajectory(trajectory=trajectory)
 
-    # Should have exactly 3 flattened infos from the primitive steps
-    assert len(flattened["infos"]) == 3
+    # The reset info first (eng_14), then exactly 3 flattened infos from the primitive steps
+    assert len(flattened["infos"]) == 4
+    assert flattened["infos"][0] == {}
 
-    # Check that each primitive info is preserved
+    # Check that each primitive info is preserved, in order, after the reset info
     for i, expected_info in enumerate(primitive_infos):
-        assert flattened["infos"][i] == expected_info
+        assert flattened["infos"][i + 1] == expected_info
