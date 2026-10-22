@@ -141,7 +141,33 @@ class HeuristicWorker(OptionBase):
             - See docs/tutorials/custom_heuristic_attribute_estimation.md for full guide
         """
         return patient
-    
+
+    def _adjust_expected_rewards_for_uncertainty(
+        self,
+        expected_rewards: Dict[str, float],
+        uncertainty: int,
+    ) -> Dict[str, float]:
+        """Extension point: reweight one patient's expected rewards by their uncertainty score.
+
+        Override this in a subclass to make the prescribing decision depend on uncertainty more
+        finely than the hard ``uncertainty_threshold`` gate does (e.g. discounting rewards as more
+        attributes go missing).
+
+        Called by ``_select_action_for_patient`` AFTER the hard gate (a patient the gate refuses
+        never reaches it) and BEFORE the threshold / no-treatment comparison, so whatever it returns
+        is what the selection logic -- including ``compare_against_no_treatment`` -- acts on. It is
+        deliberately separate from ``compute_expected_reward``, which other code (the
+        fixed-prescribing comparator) calls directly and must keep returning undiscounted values.
+
+        Args:
+            expected_rewards: Action key ('prescribe_{abx}', 'no_treatment') -> expected reward.
+            uncertainty: This patient's uncertainty score, from the same scorer the gate used.
+
+        Returns:
+            The rewards to select on. Default: the input unchanged.
+        """
+        return expected_rewards
+
     def compute_expected_reward(
         self,
         patient: Dict[str, float],
@@ -447,7 +473,13 @@ class HeuristicWorker(OptionBase):
         if uncertainty > self.uncertainty_threshold:
             # Too much missing data—default to no treatment
             return 'no_treatment'
-        
+
+        # Extension point (identity by default): a subclass may reweight by uncertainty here.
+        expected_rewards = self._adjust_expected_rewards_for_uncertainty(
+            expected_rewards=expected_rewards,
+            uncertainty=uncertainty,
+        )
+
         # Find best action exceeding its threshold.
         #
         # `best_value` is the bar an antibiotic has to clear, and which bar is used is the whole

@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### `HeuristicWorker._adjust_expected_rewards_for_uncertainty` extension point (`voi_5 (standard-modulated-worker)`, October 21, 2026)
+
+- **What it is.** An identity-by-default hook, called by `_select_action_for_patient` **after** the hard
+  `uncertainty_threshold` gate and **before** the threshold / `compare_against_no_treatment` selection.
+- **What it lets a subclass do.** Reweight a patient's expected rewards by their uncertainty score (the same score
+  the gate used) without overriding `decide()` and without touching `compute_expected_reward`, which the
+  fixed-prescribing comparator calls directly and which must keep returning undiscounted values.
+- **Behaviour change for the base worker:** none.
+- **Tests:** `tests/hrl/test_heuristic_uncertainty_hook.py` (identity; on the decision path; receives the gate's score;
+  not called for gate-refused patients; called once per patient through `decide()`).
+
 ### Fixed
 
 #### HRL evaluation summaries dropped each episode's first primitive step (`eng_14 (hrl-eval-first-step-dropped)`, October 19, 2026)
