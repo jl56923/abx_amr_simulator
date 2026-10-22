@@ -29,6 +29,7 @@ ALL_ATTRIBUTES = list(PatientGenerator.KNOWN_ATTRIBUTE_TYPES)
 
 # A patient the base worker prescribes for: likely infected, unlikely to recover unaided.
 TREATABLE_PATIENT = {"prob_infected": 0.9, "recovery_without_treatment_prob": 0.05}
+PRESCRIBE_A_THRESHOLD = 0.3
 
 
 def _make_reward_calculator() -> RewardCalculator:
@@ -77,7 +78,8 @@ def _worker_kwargs(uncertainty_threshold: float = 99.0) -> dict:
     return {
         "name": "HEURISTIC_hook_test",
         "duration": 10,
-        "action_thresholds": {"prescribe_A": 0.5, "no_treatment": 0.0},
+        # 0.3, below this patient's E[R]_A = 0.394 (pinned in test_treatable_patient_clears_the_threshold).
+        "action_thresholds": {"prescribe_A": PRESCRIBE_A_THRESHOLD, "no_treatment": 0.0},
         "uncertainty_threshold": uncertainty_threshold,
         "default_recovery_without_treatment_prob": 0.1,
         "compare_against_no_treatment": False,
@@ -121,6 +123,26 @@ def test_default_hook_is_the_identity():
     worker = HeuristicWorker(**_worker_kwargs())
     rewards: Dict[str, float] = {"prescribe_A": 3.0, "no_treatment": -1.0}
     assert worker._adjust_expected_rewards_for_uncertainty(expected_rewards=rewards, uncertainty=4) == rewards
+
+
+def test_treatable_patient_clears_the_threshold():
+    """Pin the premise the tests below rest on, with the normalised rewards (max |reward| = 10 -> RB = 1.0,
+    RF = -0.5, AE_A = -0.2):
+
+        E[R]_A = 0.9*0.8*0.6*1.0 + 0.9*0.2*0.2*(-0.5) + 0.1*(-0.2) = 0.394 >= 0.3
+
+    If the reward formula or normalisation changes, this fails with the number, instead of the hook tests
+    failing for a reason unrelated to the hook.
+    """
+    worker = HeuristicWorker(**_worker_kwargs())
+    rewards = worker.compute_expected_reward(
+        patient=dict(TREATABLE_PATIENT),
+        antibiotic_names=list(ANTIBIOTIC_NAMES),
+        current_amr_levels=dict(AMR_LEVELS),
+        reward_calculator=_make_reward_calculator(),
+    )
+    assert abs(rewards["prescribe_A"] - 0.394) < 1e-9
+    assert rewards["prescribe_A"] >= PRESCRIBE_A_THRESHOLD
 
 
 def test_base_worker_still_prescribes_the_treatable_patient():
